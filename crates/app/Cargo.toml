@@ -20,10 +20,24 @@ directories.workspace = true
 gethostname.workspace = true
 gpui-kit.workspace = true
 if-addrs.workspace = true
+image = { workspace = true, features = ["png"] }
 rpassword.workspace = true
+serde.workspace = true
+sys-locale.workspace = true
 tokio = { workspace = true, features = ["signal"] }
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile = "3"
+
+[[test]]
+name = "gui"
+# Needs GPUI's Metal renderer on the main thread; select explicitly with --test gui.
+test = false
+harness = false
 
 [lints]
 workspace = true

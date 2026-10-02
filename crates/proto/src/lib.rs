@@ -22,6 +22,6 @@ pub use input::{
     InputEvent, KeyCode, MAX_FUNCTION_KEY, MAX_INPUT_TEXT_CHARS, MAX_SCROLL_LINES, MouseButton,
     NamedKey, PointerPosition,
 };
-pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError};
+pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, sanitize_display_text};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};
 pub use video::VideoPacket;

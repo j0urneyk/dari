@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{Context as _, bail};
-use open_desk_proto::MAX_DEVICE_NAME_CHARS;
+use open_desk_proto::{MAX_DEVICE_NAME_CHARS, sanitize_display_text};
 
 /// UDP port hosts listen on unless configured otherwise.
 pub(crate) const DEFAULT_PORT: u16 = 47821;
@@ -20,11 +20,7 @@ pub(crate) fn data_directory() -> anyhow::Result<PathBuf> {
 pub(crate) fn device_name() -> String {
     let raw = gethostname::gethostname().to_string_lossy().into_owned();
     let raw = raw.strip_suffix(".local").unwrap_or(&raw);
-    let name: String = raw
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_DEVICE_NAME_CHARS)
-        .collect();
+    let name = sanitize_display_text(raw, MAX_DEVICE_NAME_CHARS);
     if name.trim().is_empty() {
         "open-desk".into()
     } else {

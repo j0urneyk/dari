@@ -19,3 +19,6 @@ All notable changes to this project are documented here. The format follows
   released when a session ends; ⌘/Ctrl shortcut mapping between macOS and Windows.
 - Host and viewer sessions with screen/input availability reporting, and the headless
   `open-desk host` / `open-desk connect` commands.
+- Desktop app: share this device (addresses, one-time password, connected viewer, macOS
+  permission guidance) and connect to another device in a viewer window that forwards
+  keyboard, mouse, and wheel input. Korean and English UI.

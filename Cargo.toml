@@ -29,6 +29,8 @@ getrandom = "0.3"
 gpui-kit = "0.7"
 hmac = "0.12"
 if-addrs = "0.15"
+image = { version = "0.25", default-features = false }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
 objc2-core-graphics = "0.3"
 openh264 = "0.9"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
@@ -40,8 +42,10 @@ serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 spake2 = "0.4"
 subtle = "2"
+sys-locale = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+toml = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -35,3 +35,22 @@
 
 - macOS 두 프로세스(또는 macOS↔Windows)로 GUI에서 접속·제어·종료가 동작
 - 뷰어 창을 오래 켜 두어도 메모리가 계속 늘지 않음 (프레임 이미지 해제 확인)
+
+## 구현 노트
+
+- 앱 크레이트를 라이브러리 + 얇은 바이너리로 나눴다. GPUI의 macOS 플랫폼은 메인 스레드에서만
+  만들 수 있어 표준 테스트 하네스로는 GUI를 테스트할 수 없기 때문이다. `tests/gui.rs`는
+  `harness = false`인 자체 `main`으로 실행하며, GPUI 헤드리스 Metal 렌더러로 실제 창을 그려
+  `target/gui-snapshots/*.png`로 저장한다(`cargo test -p open-desk --test gui`, macOS CI에서도 실행).
+- 뷰어 GUI 테스트는 합성 화면 호스트에 실제 QUIC으로 접속해 프레임이 창에 그려지는지 확인하고,
+  GPUI 입력 이벤트(마우스 이동·클릭, 키 입력)를 창에 주입해 호스트 입력 백엔드까지 도착하는지 검증한다.
+- tokio 런타임은 GPUI 전역으로 두고, 세션 작업은 tokio에서, UI 갱신은 GPUI 태스크가 tokio 채널/
+  JoinHandle을 await해서 처리한다(tokio 동기화 도구는 실행기와 무관하게 동작).
+- 프레임마다 새 `RenderImage`를 만들고 이전 이미지는 `window.drop_image`로 GPU 아틀라스에서 해제한다.
+- 화면 영역은 `canvas`로 직접 그리며, 그린 레터박스 영역을 기억해 포인터 좌표를 정규화한다. 창이
+  비활성화되면 눌린 키·버튼·수정자를 모두 해제해 원격에 키가 눌린 채로 남지 않게 한다.
+- macOS 권한: 화면 기록은 `CGPreflightScreenCaptureAccess`, 손쉬운 사용은 `AXIsProcessTrusted`로
+  확인(3초마다 갱신)하고, 권한 요청 버튼과 시스템 설정 바로가기를 제공한다.
+- Ctrl+Alt+Del 전송은 Windows 보안 주의 시퀀스(SAS)를 일반 프로세스의 SendInput으로 보낼 수 없어
+  제외했다(알려진 한계).
+- UI 문자열은 시스템 로캘이 한국어면 한국어, 아니면 영어(`text.rs`).

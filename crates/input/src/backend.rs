@@ -66,6 +66,19 @@ impl EnigoBackend {
     }
 }
 
+impl EnigoBackend {
+    /// Shows the macOS Accessibility prompt if the permission is missing.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn prompt_for_permission() -> bool {
+        let settings = Settings {
+            open_prompt_to_get_permissions: true,
+            release_keys_when_dropped: false,
+            ..Settings::default()
+        };
+        Enigo::new(&settings).is_ok()
+    }
+}
+
 fn direction(pressed: bool) -> Direction {
     if pressed {
         Direction::Press
@@ -250,6 +263,16 @@ impl InputBackend for RecordingBackend {
     fn text(&mut self, text: &str) -> Result<(), InjectError> {
         self.actions.push(RecordedAction::Text(text.to_owned()));
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "one argument-less Accessibility API call")]
+pub(crate) mod macos {
+    /// Whether macOS lists this process as a trusted accessibility client. Never prompts.
+    pub(crate) fn process_is_trusted() -> bool {
+        // SAFETY: AXIsProcessTrusted takes no arguments and only reads process state.
+        unsafe { objc2_application_services::AXIsProcessTrusted() }
     }
 }
 

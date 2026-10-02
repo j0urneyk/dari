@@ -32,10 +32,32 @@ pub(crate) fn validate_display_text(
             max: max_chars,
         });
     }
-    if value.chars().any(char::is_control) {
+    if value
+        .chars()
+        .any(|character| character.is_control() || is_invisible_format(character))
+    {
         return Err(ValidationError::ControlCharacters { field });
     }
     Ok(())
+}
+
+/// Drops characters [`Validate`] would reject and truncates to `max_chars`, for text this side
+/// sends (e.g. its own device name).
+pub fn sanitize_display_text(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control() && !is_invisible_format(*character))
+        .take(max_chars)
+        .collect()
+}
+
+/// Bidirectional overrides and zero-width characters, which can make a peer's name render as
+/// something other than what it is.
+fn is_invisible_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'
+    )
 }
 
 #[cfg(test)]
@@ -56,5 +78,10 @@ mod tests {
             validate_display_text("name", "evil\u{1b}[2J", 64),
             Err(ValidationError::ControlCharacters { field: "name" })
         );
+        assert_eq!(
+            validate_display_text("name", "admin\u{202E}gpj.exe", 64),
+            Err(ValidationError::ControlCharacters { field: "name" })
+        );
+        assert!(validate_display_text("name", "김코코의 MacBook", 64).is_ok());
     }
 }
