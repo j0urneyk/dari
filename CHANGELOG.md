@@ -22,3 +22,6 @@ All notable changes to this project are documented here. The format follows
 - Desktop app: share this device (addresses, one-time password, connected viewer, macOS
   permission guidance) and connect to another device in a viewer window that forwards
   keyboard, mouse, and wheel input. Korean and English UI.
+- Connection approval (allow control, view only, or decline) before anything is shared;
+  text clipboard sharing; nearby devices on the local network (mDNS); display switching and
+  speed/balanced/quality stream presets.

@@ -13,6 +13,7 @@ open-desk-media.workspace = true
 open-desk-net.workspace = true
 open-desk-proto.workspace = true
 
+arboard.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

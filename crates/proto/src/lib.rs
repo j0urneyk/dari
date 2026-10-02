@@ -14,7 +14,10 @@ mod video;
 pub use codec::{
     CONTROL_FRAME_LIMIT, CodecError, HANDSHAKE_FRAME_LIMIT, MessageCodec, VIDEO_FRAME_LIMIT,
 };
-pub use control::{Availability, ControlMessage, HostStatus};
+pub use control::{
+    Availability, ControlMessage, DisplayDescription, HostStatus, MAX_CLIPBOARD_BYTES,
+    MAX_DISPLAYS, QualityPreset,
+};
 pub use handshake::{
     AuthOutcome, ClientHello, HandshakeMessage, KEY_CONFIRMATION_LEN, Os, RejectReason, ServerHello,
 };

@@ -18,6 +18,7 @@ open-desk-proto = { path = "crates/proto" }
 open-desk-session = { path = "crates/session" }
 
 anyhow = "1"
+arboard = { version = "3", default-features = false }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
@@ -29,6 +30,7 @@ getrandom = "0.3"
 gpui-kit = "0.7"
 hmac = "0.12"
 if-addrs = "0.15"
+mdns-sd = { version = "0.21", features = ["async"] }
 image = { version = "0.25", default-features = false }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
 objc2-core-graphics = "0.3"

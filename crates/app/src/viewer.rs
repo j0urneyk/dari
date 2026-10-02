@@ -7,13 +7,14 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme, Sizable as _, StyledExt as _};
+use gpui_kit::component::{ActiveTheme, Selectable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
 use open_desk_media::DecodedFrame;
 use open_desk_proto::{
-    Availability, HostStatus, InputEvent, KeyCode, MouseButton as RemoteButton, PointerPosition,
+    Availability, DisplayDescription, HostStatus, InputEvent, KeyCode, MouseButton as RemoteButton,
+    PointerPosition, QualityPreset,
 };
 use open_desk_session::{SessionEndReason, ViewerEvent, ViewerHandle};
 use tokio::sync::mpsc;
@@ -77,6 +78,10 @@ pub struct ViewerView {
     picture: Rc<Cell<Option<Bounds<Pixels>>>>,
     status: Option<HostStatus>,
     ended: Option<SessionEndReason>,
+    awaiting_approval: bool,
+    displays: Vec<DisplayDescription>,
+    active_display: Option<u32>,
+    quality: QualityPreset,
     focus: FocusHandle,
     modifiers: Modifiers,
     held_keys: Vec<KeyCode>,
@@ -160,6 +165,10 @@ impl ViewerView {
             picture: Rc::new(Cell::new(None)),
             status: None,
             ended: None,
+            awaiting_approval: false,
+            displays: Vec::new(),
+            active_display: None,
+            quality: QualityPreset::Balanced,
             focus,
             modifiers: Modifiers::default(),
             held_keys: Vec::new(),
@@ -200,7 +209,15 @@ impl ViewerView {
 
     fn on_event(&mut self, event: ViewerEvent, cx: &mut Context<Self>) {
         match event {
-            ViewerEvent::HostStatus(status) => self.status = Some(status),
+            ViewerEvent::AwaitingApproval => self.awaiting_approval = true,
+            ViewerEvent::HostStatus(status) => {
+                self.awaiting_approval = false;
+                self.status = Some(status);
+            }
+            ViewerEvent::Displays { displays, active } => {
+                self.displays = displays;
+                self.active_display = Some(active);
+            }
             ViewerEvent::Ended(reason) => {
                 self.ended = Some(reason);
                 self.session = None;
@@ -331,6 +348,53 @@ impl ViewerView {
                     .child(stats),
             )
             .child(div().flex_1())
+            .when(
+                self.session.is_some() && self.displays.len() > 1,
+                |toolbar| {
+                    toolbar.children(self.displays.iter().enumerate().map(|(index, display)| {
+                        let id = display.id;
+                        Button::new(SharedString::from(format!("display-{id}")))
+                            .small()
+                            .ghost()
+                            .selected(self.active_display == Some(id))
+                            .label(format!("{} {}", text().display, index + 1))
+                            .tooltip(format!(
+                                "{} · {}×{}",
+                                display.name, display.width, display.height
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(session) = &this.session {
+                                    session.select_display(id);
+                                }
+                                cx.notify();
+                            }))
+                    }))
+                },
+            )
+            .when(self.session.is_some() && self.status.is_some(), |toolbar| {
+                toolbar.children(
+                    [
+                        (QualityPreset::Speed, text().quality_speed),
+                        (QualityPreset::Balanced, text().quality_balanced),
+                        (QualityPreset::Quality, text().quality_quality),
+                    ]
+                    .into_iter()
+                    .map(|(preset, label)| {
+                        Button::new(SharedString::from(format!("quality-{preset:?}")))
+                            .small()
+                            .ghost()
+                            .selected(self.quality == preset)
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.quality = preset;
+                                if let Some(session) = &this.session {
+                                    session.set_quality(preset);
+                                }
+                                cx.notify();
+                            }))
+                    }),
+                )
+            })
             .when(self.session.is_some(), |toolbar| {
                 toolbar.child(
                     Button::new("disconnect")
@@ -350,13 +414,24 @@ impl ViewerView {
                 text().session_end_reason(reason)
             ));
         }
+        if self.awaiting_approval {
+            return Some(text().waiting_for_approval.into());
+        }
         let status = self.status?;
         match status.screen {
             Availability::PermissionDenied => return Some(text().remote_screen_permission.into()),
-            Availability::Unavailable => return Some(text().remote_screen_unavailable.into()),
+            Availability::Unavailable | Availability::NotAllowed => {
+                return Some(text().remote_screen_unavailable.into());
+            }
             Availability::Available => {}
         }
-        (status.input != Availability::Available).then(|| text().remote_input_unavailable.into())
+        match status.input {
+            Availability::Available => None,
+            Availability::NotAllowed => Some(text().view_only_session.into()),
+            Availability::PermissionDenied | Availability::Unavailable => {
+                Some(text().remote_input_unavailable.into())
+            }
+        }
     }
 }
 
@@ -424,7 +499,7 @@ impl Render for ViewerView {
             }))
             .child(screen);
 
-        if self.image.is_none() && self.ended.is_none() {
+        if self.image.is_none() && self.ended.is_none() && !self.awaiting_approval {
             surface = surface.child(
                 div()
                     .absolute()

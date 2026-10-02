@@ -12,10 +12,14 @@ use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _,
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use open_desk_media::StreamSettings;
-use open_desk_net::{AccessPassword, ConnectError, HandshakeError, PeerInfo};
+use open_desk_net::{
+    AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
+    NearbyDevice, PeerInfo, fingerprint_hint,
+};
 use open_desk_proto::{Availability, HostStatus};
 use open_desk_session::{
-    HostConfig, HostEvent, HostHandle, SystemPlatform, ViewerConfig, connect_viewer, start_host,
+    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, SystemClipboard,
+    SystemPlatform, ViewerConfig, connect_viewer, start_host,
 };
 
 use crate::config::{device_name, local_addresses, resolve_address};
@@ -48,10 +52,31 @@ impl Home {
     }
 }
 
+/// Hooks for the headless GUI tests.
+#[doc(hidden)]
 impl Home {
-    #[doc(hidden)]
     pub fn has_password(&self, cx: &App) -> bool {
         self.host.read(cx).password.is_some()
+    }
+
+    pub fn password_text(&self, cx: &App) -> Option<String> {
+        let password = self.host.read(cx).password.as_ref()?;
+        Some(password.display_text().as_str().to_owned())
+    }
+
+    pub fn host_port(&self, cx: &App) -> Option<u16> {
+        match &self.host.read(cx).hosting {
+            Hosting::Running(handle) => Some(handle.local_address().port()),
+            Hosting::Off | Hosting::Failed(_) => None,
+        }
+    }
+
+    pub fn has_pending_approval(&self, cx: &App) -> bool {
+        self.host.read(cx).approval.is_some()
+    }
+
+    pub fn admitted_session_status(&self, cx: &App) -> Option<HostStatus> {
+        self.host.read(cx).session_status
     }
 }
 
@@ -123,6 +148,9 @@ pub(crate) struct HostPanel {
     session_status: Option<HostStatus>,
     addresses: Vec<IpAddr>,
     permissions: LocalPermissions,
+    /// A viewer waiting for the host user's decision.
+    approval: Option<(PeerInfo, ApprovalRequest)>,
+    advertisement: Option<Advertisement>,
     host_events: Option<Task<()>>,
     _refresh: Task<()>,
 }
@@ -145,6 +173,8 @@ impl HostPanel {
             session_status: None,
             addresses: local_addresses(),
             permissions: LocalPermissions::check(),
+            approval: None,
+            advertisement: None,
             host_events: None,
             _refresh: refresh,
         };
@@ -183,13 +213,17 @@ impl HostPanel {
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, AppState::settings(cx).port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
+            require_approval: AppState::settings(cx).require_approval,
+            clipboard: AppState::settings(cx).clipboard_sync,
         };
         let started = TokioRuntime::enter(cx, || {
             start_host(config, &identity, Arc::new(SystemPlatform))
         });
         match started {
             Ok((handle, mut events)) => {
+                let port = handle.local_address().port();
                 self.hosting = Hosting::Running(handle);
+                self.update_advertisement(port, cx);
                 self.host_events = Some(cx.spawn(async move |this, cx| {
                     while let Some(event) = events.recv().await {
                         let Ok(()) = this.update(cx, |this, cx| this.on_host_event(event, cx))
@@ -209,6 +243,8 @@ impl HostPanel {
     fn stop(&mut self) {
         self.hosting = Hosting::Off;
         self.host_events = None;
+        self.advertisement = None;
+        self.approval = None;
         self.password = None;
         self.viewer = None;
         self.session_status = None;
@@ -230,14 +266,139 @@ impl HostPanel {
             HostEvent::SessionStarted(peer) => {
                 self.viewer = Some(peer);
                 self.session_status = None;
+                // Authenticating consumed the one-time password; a new one is issued when the
+                // session ends, so showing the old one would only mislead.
+                self.password = None;
             }
-            HostEvent::SessionStatus(status) => self.session_status = Some(status),
+            HostEvent::ApprovalRequested { peer, request } => self.approval = Some((peer, request)),
+            HostEvent::SessionStatus(status) => {
+                self.approval = None;
+                self.session_status = Some(status);
+            }
             HostEvent::SessionEnded { .. } => {
+                self.approval = None;
                 self.viewer = None;
                 self.session_status = None;
             }
         }
         cx.notify();
+    }
+
+    /// Announces this device on the local network while hosting, if the user allows it.
+    fn update_advertisement(&mut self, port: u16, cx: &App) {
+        self.advertisement = None;
+        if !AppState::settings(cx).lan_discovery {
+            return;
+        }
+        let Ok(identity) = AppState::identity(cx) else {
+            return;
+        };
+        match Advertisement::start(&device_name(), port, &identity.fingerprint()) {
+            Ok(advertisement) => self.advertisement = Some(advertisement),
+            Err(error) => tracing::warn!(%error, "cannot announce this device on the network"),
+        }
+    }
+
+    fn answer(&mut self, decision: ApprovalDecision, cx: &mut Context<Self>) {
+        if let Some((_, request)) = self.approval.take() {
+            request.respond(decision);
+        }
+        cx.notify();
+    }
+
+    fn set_policy(
+        &mut self,
+        change: impl FnOnce(&mut crate::settings::Settings),
+        cx: &mut Context<Self>,
+    ) {
+        AppState::update_settings(cx, change);
+        let settings = AppState::settings(cx).clone();
+        if let Hosting::Running(handle) = &self.hosting {
+            handle.set_policy(settings.require_approval, settings.clipboard_sync);
+            let port = handle.local_address().port();
+            self.update_advertisement(port, cx);
+        }
+        cx.notify();
+    }
+
+    fn render_approval(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let (peer, _) = self.approval.as_ref()?;
+        Some(
+            div()
+                .v_flex()
+                .gap_2()
+                .p_3()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().primary)
+                .child(div().text_sm().font_semibold().child(text().approval_title))
+                .child(div().text_sm().child(text().approval_prompt(&peer.name)))
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("approval-control")
+                                .primary()
+                                .small()
+                                .label(text().allow_control)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalDecision::AllowControl, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("approval-view")
+                                .small()
+                                .label(text().allow_view_only)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalDecision::ViewOnly, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("approval-decline")
+                                .small()
+                                .ghost()
+                                .label(text().decline)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalDecision::Deny, cx);
+                                })),
+                        ),
+                ),
+        )
+    }
+
+    fn render_policy(cx: &mut Context<Self>) -> Div {
+        let settings = AppState::settings(cx).clone();
+        div()
+            .v_flex()
+            .gap_2()
+            .child(
+                Switch::new("policy-approval")
+                    .label(text().require_approval)
+                    .checked(settings.require_approval)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.set_policy(|settings| settings.require_approval = checked, cx);
+                    })),
+            )
+            .child(
+                Switch::new("policy-clipboard")
+                    .label(text().clipboard_sync)
+                    .checked(settings.clipboard_sync)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.set_policy(|settings| settings.clipboard_sync = checked, cx);
+                    })),
+            )
+            .child(
+                Switch::new("policy-discovery")
+                    .label(text().lan_discovery)
+                    .checked(settings.lan_discovery)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.set_policy(|settings| settings.lan_discovery = checked, cx);
+                    })),
+            )
     }
 
     fn render_addresses(&self, cx: &App) -> Div {
@@ -384,6 +545,10 @@ impl HostPanel {
     }
 
     fn render_session(&self, cx: &mut Context<Self>) -> Div {
+        if self.approval.is_some() {
+            // The approval card speaks for the waiting viewer until the host user decides.
+            return div();
+        }
         let Some(viewer) = &self.viewer else {
             return div()
                 .text_sm()
@@ -457,7 +622,9 @@ impl Render for HostPanel {
                         .child(label(text().password, cx))
                         .child(self.render_password(cx)),
                 )
-                .child(self.render_session(cx)),
+                .children(self.render_approval(cx))
+                .child(self.render_session(cx))
+                .child(Self::render_policy(cx)),
         };
         panel.children(self.render_permissions(cx))
     }
@@ -469,6 +636,9 @@ pub(crate) struct ConnectPanel {
     password: Entity<InputState>,
     connecting: bool,
     error: Option<String>,
+    /// Hosts announced on the local network, newest last.
+    nearby: Vec<NearbyDevice>,
+    _discovery: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -502,13 +672,51 @@ impl ConnectPanel {
             cx.subscribe_in(&address, window, submit_on_enter),
             cx.subscribe_in(&password, window, submit_on_enter),
         ];
+        let discovery = Self::browse(cx);
         Self {
             address,
             password,
             connecting: false,
             error: None,
+            nearby: Vec::new(),
+            _discovery: discovery,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Watches the local network for hosts, ignoring this device's own announcement.
+    fn browse(cx: &mut Context<Self>) -> Option<Task<()>> {
+        let own_hint = AppState::identity(cx)
+            .ok()
+            .map(|identity| fingerprint_hint(&identity.fingerprint()));
+        let mut browser = match Browser::start() {
+            Ok(browser) => browser,
+            Err(error) => {
+                tracing::warn!(%error, "cannot browse the local network");
+                return None;
+            }
+        };
+        // `Browser::next` does not depend on an executor, so a GPUI task can await it.
+        Some(cx.spawn(async move |this, cx| {
+            while let Some(event) = browser.next().await {
+                let own = own_hint.clone();
+                let Ok(()) = this.update(cx, |this, cx| {
+                    match event {
+                        DiscoveryEvent::Found(device) => {
+                            if own.as_deref() == Some(device.fingerprint_hint.as_str()) {
+                                return;
+                            }
+                            this.nearby.retain(|known| known.id != device.id);
+                            this.nearby.push(device);
+                        }
+                        DiscoveryEvent::Lost { id } => this.nearby.retain(|known| known.id != id),
+                    }
+                    cx.notify();
+                }) else {
+                    break;
+                };
+            }
+        }))
     }
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -529,6 +737,7 @@ impl ConnectPanel {
         cx.notify();
 
         let map_shortcut_modifier = AppState::settings(cx).map_shortcut_modifier;
+        let clipboard_sync = AppState::settings(cx).clipboard_sync;
         let target = address_text.clone();
         let attempt = TokioRuntime::spawn(cx, async move {
             let address = resolve_address(&target)
@@ -538,6 +747,7 @@ impl ConnectPanel {
                 address,
                 client_name: device_name(),
                 map_shortcut_modifier,
+                clipboard: clipboard_sync.then(SystemClipboard::factory),
             };
             connect_viewer(config, &password)
                 .await
@@ -568,6 +778,20 @@ impl ConnectPanel {
     }
 }
 
+/// The address to put in the connect form for a discovered device.
+fn nearby_address(device: &NearbyDevice) -> String {
+    let address = device
+        .addresses
+        .first()
+        .copied()
+        .unwrap_or(IpAddr::from([0, 0, 0, 0]));
+    match (address, device.port) {
+        (IpAddr::V4(v4), crate::config::DEFAULT_PORT) => v4.to_string(),
+        (IpAddr::V4(v4), port) => format!("{v4}:{port}"),
+        (IpAddr::V6(v6), port) => format!("[{v6}]:{port}"),
+    }
+}
+
 fn describe_connect_error(error: &ConnectError) -> String {
     match error {
         ConnectError::Handshake(HandshakeError::Rejected(reason)) => {
@@ -586,14 +810,14 @@ impl Render for ConnectPanel {
                     .v_flex()
                     .gap_1()
                     .child(label(text().address, cx))
-                    .child(Input::new(&self.address)),
+                    .child(Input::new(&self.address).id("connect-address")),
             )
             .child(
                 div()
                     .v_flex()
                     .gap_1()
                     .child(label(text().password, cx))
-                    .child(Input::new(&self.password)),
+                    .child(Input::new(&self.password).id("connect-password")),
             )
             .child(
                 Switch::new("map-shortcut-modifier")
@@ -624,6 +848,27 @@ impl Render for ConnectPanel {
                     .clone()
                     .map(|error| div().text_sm().text_color(cx.theme().danger).child(error)),
             )
+            .when(!self.nearby.is_empty(), |panel| {
+                panel.child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .child(label(text().nearby_devices, cx))
+                        .children(self.nearby.iter().map(|device| {
+                            let address = nearby_address(device);
+                            Button::new(SharedString::from(format!("nearby-{}", device.id)))
+                                .ghost()
+                                .small()
+                                .label(format!("{} · {address}", device.name))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let address = address.clone();
+                                    this.address.update(cx, |input, cx| {
+                                        input.set_value(address, window, cx);
+                                    });
+                                }))
+                        })),
+                )
+            })
             .when(!recent.is_empty(), |panel| {
                 panel.child(
                     div()

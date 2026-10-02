@@ -39,6 +39,20 @@ pub(crate) struct Text {
     pub(crate) remote_screen_permission: &'static str,
     pub(crate) remote_input_unavailable: &'static str,
     pub(crate) session_ended: &'static str,
+    pub(crate) approval_title: &'static str,
+    pub(crate) allow_control: &'static str,
+    pub(crate) allow_view_only: &'static str,
+    pub(crate) decline: &'static str,
+    pub(crate) require_approval: &'static str,
+    pub(crate) clipboard_sync: &'static str,
+    pub(crate) lan_discovery: &'static str,
+    pub(crate) nearby_devices: &'static str,
+    pub(crate) waiting_for_approval: &'static str,
+    pub(crate) view_only_session: &'static str,
+    pub(crate) display: &'static str,
+    pub(crate) quality_speed: &'static str,
+    pub(crate) quality_balanced: &'static str,
+    pub(crate) quality_quality: &'static str,
     korean: bool,
 }
 
@@ -48,6 +62,16 @@ impl Text {
             format!("{name}이(가) 이 기기에 접속해 있습니다")
         } else {
             format!("{name} is connected to this device")
+        }
+    }
+
+    pub(crate) fn approval_prompt(&self, name: &str) -> String {
+        if self.korean {
+            format!(
+                "{name}이(가) 이 기기에 접속하려고 합니다. 30초 안에 응답하지 않으면 거부됩니다."
+            )
+        } else {
+            format!("{name} wants to connect to this device. It is declined after 30 seconds.")
         }
     }
 
@@ -103,6 +127,8 @@ impl Text {
             (SessionEndReason::ViewerLeft, false) => "You disconnected".into(),
             (SessionEndReason::HostEnded, true) => "상대 기기가 세션을 종료했습니다".into(),
             (SessionEndReason::HostEnded, false) => "The remote device ended the session".into(),
+            (SessionEndReason::Declined, true) => "상대방이 접속을 거부했습니다".into(),
+            (SessionEndReason::Declined, false) => "The remote side declined the connection".into(),
             (SessionEndReason::ConnectionLost(detail), true) => {
                 format!("연결이 끊어졌습니다 ({detail})")
             }
@@ -150,6 +176,20 @@ static KOREAN: Text = Text {
     remote_screen_permission: "원격 기기에 화면 기록 권한이 없습니다. 상대 기기에서 권한을 허용해야 합니다.",
     remote_input_unavailable: "원격 기기를 제어할 수 없습니다(손쉬운 사용 권한 필요). 화면 보기만 가능합니다.",
     session_ended: "세션이 종료되었습니다",
+    approval_title: "접속 요청",
+    allow_control: "제어 허용",
+    allow_view_only: "보기만 허용",
+    decline: "거부",
+    require_approval: "접속할 때마다 승인 요청",
+    clipboard_sync: "클립보드 공유",
+    lan_discovery: "같은 네트워크에 이 기기 표시",
+    nearby_devices: "근처 기기",
+    waiting_for_approval: "상대방이 접속을 허용하기를 기다리는 중…",
+    view_only_session: "보기 전용 세션입니다. 상대방이 제어를 허용하지 않았습니다.",
+    display: "화면",
+    quality_speed: "속도",
+    quality_balanced: "균형",
+    quality_quality: "화질",
     korean: true,
 };
 
@@ -186,6 +226,20 @@ static ENGLISH: Text = Text {
     remote_screen_permission: "The remote device has not granted Screen Recording permission.",
     remote_input_unavailable: "The remote device cannot be controlled (Accessibility permission needed). View only.",
     session_ended: "Session ended",
+    approval_title: "Connection request",
+    allow_control: "Allow control",
+    allow_view_only: "View only",
+    decline: "Decline",
+    require_approval: "Ask before each connection",
+    clipboard_sync: "Share clipboard",
+    lan_discovery: "Show this device on the local network",
+    nearby_devices: "Nearby devices",
+    waiting_for_approval: "Waiting for the remote side to allow the connection…",
+    view_only_session: "View-only session: the remote side did not allow control.",
+    display: "Display",
+    quality_speed: "Speed",
+    quality_balanced: "Balanced",
+    quality_quality: "Quality",
     korean: false,
 };
 

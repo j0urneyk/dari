@@ -12,6 +12,7 @@ open-desk-proto.workspace = true
 
 futures-util.workspace = true
 getrandom.workspace = true
+mdns-sd.workspace = true
 hmac.workspace = true
 postcard.workspace = true
 quinn.workspace = true

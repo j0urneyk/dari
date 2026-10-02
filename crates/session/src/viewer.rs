@@ -9,12 +9,16 @@ use futures_util::{SinkExt, StreamExt};
 use open_desk_input::ModifierMapping;
 use open_desk_media::{DecodedFrame, VideoDecoder};
 use open_desk_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect};
-use open_desk_proto::{ControlMessage, HostStatus, InputEvent, Os, VideoPacket};
+use open_desk_proto::{
+    Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent, Os, QualityPreset,
+    VideoPacket,
+};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::SessionEndReason;
+use crate::clipboard::{ClipboardFactory, ClipboardSync};
 
 /// Input events buffered towards the host. Pointer moves arrive at display rate; anything
 /// beyond this means the network is stalled and dropping is better than lagging.
@@ -26,19 +30,39 @@ const DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 /// Encoded packets waiting for the decoder.
 const DECODE_QUEUE: usize = 4;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ViewerConfig {
     pub address: SocketAddr,
     pub client_name: String,
     /// Translate the shortcut modifier between macOS (⌘) and Windows (Ctrl).
     pub map_shortcut_modifier: bool,
+    /// Share clipboard text once the host allows control; `None` disables it.
+    pub clipboard: Option<ClipboardFactory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewerEvent {
+    /// The host user is being asked to allow this session.
+    AwaitingApproval,
     HostStatus(HostStatus),
+    /// The host's displays and the one being shown.
+    Displays {
+        displays: Vec<DisplayDescription>,
+        active: u32,
+    },
     /// The session is over; no further events follow.
     Ended(SessionEndReason),
+}
+
+impl std::fmt::Debug for ViewerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ViewerConfig")
+            .field("address", &self.address)
+            .field("client_name", &self.client_name)
+            .field("map_shortcut_modifier", &self.map_shortcut_modifier)
+            .field("clipboard", &self.clipboard.is_some())
+            .finish()
+    }
 }
 
 /// Viewer-side counters.
@@ -51,6 +75,9 @@ pub struct ViewerStats {
 enum Outgoing {
     Input(InputEvent),
     RequestKeyframe,
+    SelectDisplay(u32),
+    SetQuality(QualityPreset),
+    Clipboard(String),
     Disconnect,
 }
 
@@ -70,6 +97,9 @@ impl std::fmt::Debug for Outgoing {
         f.write_str(match self {
             Outgoing::Input(_) => "Input",
             Outgoing::RequestKeyframe => "RequestKeyframe",
+            Outgoing::SelectDisplay(_) => "SelectDisplay",
+            Outgoing::SetQuality(_) => "SetQuality",
+            Outgoing::Clipboard(_) => "Clipboard",
             Outgoing::Disconnect => "Disconnect",
         })
     }
@@ -87,6 +117,16 @@ impl ViewerHandle {
     pub fn send_input(&self, event: InputEvent) -> bool {
         admits(&event, self.outgoing.capacity())
             && self.outgoing.try_send(Outgoing::Input(event)).is_ok()
+    }
+
+    /// Asks the host to stream another of its displays.
+    pub fn select_display(&self, id: u32) {
+        let _sent = self.outgoing.try_send(Outgoing::SelectDisplay(id));
+    }
+
+    /// Asks the host for a different stream quality.
+    pub fn set_quality(&self, preset: QualityPreset) {
+        let _sent = self.outgoing.try_send(Outgoing::SetQuality(preset));
     }
 
     /// The most recent decoded frame. Older frames are skipped, never queued.
@@ -150,6 +190,7 @@ pub async fn connect_viewer(
         events,
         stats.clone(),
         mapping,
+        config.clipboard,
     ));
     Ok((
         ViewerHandle {
@@ -178,14 +219,17 @@ async fn supervise(
     events: mpsc::UnboundedSender<ViewerEvent>,
     stats: Arc<ViewerStats>,
     mapping: Option<ModifierMapping>,
+    clipboard_factory: Option<ClipboardFactory>,
 ) {
     let mut writer = tokio::spawn(write_control(control_sender, outgoing_receiver, mapping));
     let mut video = Some(tokio::spawn(receive_video(
         link.clone(),
         frames,
-        outgoing,
+        outgoing.clone(),
         stats,
     )));
+    let (clipboard_out, mut clipboard_changes) = mpsc::channel(4);
+    let mut clipboard: Option<ClipboardSync> = None;
 
     let reason = loop {
         tokio::select! {
@@ -193,14 +237,45 @@ async fn supervise(
                 None => break SessionEndReason::ConnectionLost("control stream closed".into()),
                 Some(Err(error)) => break SessionEndReason::from_control_error(&error),
                 Some(Ok(ControlMessage::HostStatus(status))) => {
+                    // Clipboard sharing follows the host user's "allow control" decision, which is
+                    // independent of whether input injection itself works on the host.
+                    if status.input == Availability::NotAllowed {
+                        clipboard = None;
+                    } else if clipboard.is_none() {
+                        clipboard = clipboard_factory
+                            .clone()
+                            .and_then(|factory| ClipboardSync::start(factory, clipboard_out.clone()));
+                    }
                     let _sent = events.send(ViewerEvent::HostStatus(status));
+                }
+                Some(Ok(ControlMessage::AwaitingApproval)) => {
+                    let _sent = events.send(ViewerEvent::AwaitingApproval);
+                }
+                Some(Ok(ControlMessage::Declined)) => break SessionEndReason::Declined,
+                Some(Ok(ControlMessage::Displays { displays, active })) => {
+                    let _sent = events.send(ViewerEvent::Displays { displays, active });
+                }
+                Some(Ok(ControlMessage::Clipboard(text))) => {
+                    if let Some(clipboard) = &clipboard {
+                        clipboard.apply_remote(text);
+                    }
                 }
                 Some(Ok(ControlMessage::Disconnect)) => break SessionEndReason::HostEnded,
                 Some(Ok(ControlMessage::Pong { .. } | ControlMessage::Ping { .. })) => {}
-                Some(Ok(ControlMessage::Input(_) | ControlMessage::RequestKeyframe)) => {
+                Some(Ok(
+                    ControlMessage::Input(_)
+                    | ControlMessage::RequestKeyframe
+                    | ControlMessage::SelectDisplay(_)
+                    | ControlMessage::SetQuality(_),
+                )) => {
                     break SessionEndReason::ProtocolError("host sent a viewer message".into());
                 }
             },
+            text = clipboard_changes.recv() => {
+                if let Some(text) = text {
+                    let _sent = outgoing.try_send(Outgoing::Clipboard(text));
+                }
+            }
             result = &mut writer => {
                 break match result {
                     Ok(Ok(())) => SessionEndReason::ViewerLeft,
@@ -254,6 +329,9 @@ async fn write_control(
                 None => event,
             }),
             Outgoing::RequestKeyframe => ControlMessage::RequestKeyframe,
+            Outgoing::SelectDisplay(id) => ControlMessage::SelectDisplay(id),
+            Outgoing::SetQuality(preset) => ControlMessage::SetQuality(preset),
+            Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
             Outgoing::Disconnect => {
                 let _sent = control.send(&ControlMessage::Disconnect).await;
                 let _closed = control.close().await;

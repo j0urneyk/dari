@@ -12,6 +12,7 @@ const MAX_RECENT: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(clippy::struct_excessive_bools, reason = "independent user toggles")]
 pub struct Settings {
     /// Whether this device accepts viewers when the app starts.
     pub hosting_enabled: bool,
@@ -19,6 +20,12 @@ pub struct Settings {
     /// Translate ⌘ and Ctrl when controlling a device with a different OS.
     pub map_shortcut_modifier: bool,
     pub recent_addresses: Vec<String>,
+    /// Ask before a viewer that knows the password may see this screen.
+    pub require_approval: bool,
+    /// Share clipboard text in sessions that allow control.
+    pub clipboard_sync: bool,
+    /// Announce this device to viewers on the local network.
+    pub lan_discovery: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +35,9 @@ impl Default for Settings {
             port: DEFAULT_PORT,
             map_shortcut_modifier: true,
             recent_addresses: Vec::new(),
+            require_approval: true,
+            clipboard_sync: true,
+            lan_discovery: true,
         }
     }
 }

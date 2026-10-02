@@ -1,4 +1,6 @@
 use open_desk_input::{EnigoBackend, InjectError, InputBackend};
+
+use crate::clipboard::{ClipboardFactory, SystemClipboard};
 use open_desk_media::{CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer, list_displays};
 
 /// The host machine's screen and input devices.
@@ -11,6 +13,10 @@ pub trait HostPlatform: Send + Sync + 'static {
     fn open_capturer(&self, display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError>;
     /// Opens the input backend. Called on the input thread.
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError>;
+    /// The clipboard to synchronize, if any.
+    fn clipboard(&self) -> Option<ClipboardFactory> {
+        None
+    }
 }
 
 /// The real screen (xcap) and input (enigo).
@@ -28,5 +34,9 @@ impl HostPlatform for SystemPlatform {
 
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
         Ok(Box::new(EnigoBackend::new()?))
+    }
+
+    fn clipboard(&self) -> Option<ClipboardFactory> {
+        Some(SystemClipboard::factory())
     }
 }

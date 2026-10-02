@@ -203,6 +203,8 @@ mod macos {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             host_name: "synthetic-host".into(),
             stream: StreamSettings::default(),
+            require_approval: false,
+            clipboard: false,
         };
         let (host, mut host_events) = cx
             .update(|cx| TokioRuntime::enter(cx, || start_host(config, &identity, platform)))
@@ -215,6 +217,7 @@ mod macos {
             address: host.local_address(),
             client_name: "gui-test".into(),
             map_shortcut_modifier: false,
+            clipboard: None,
         };
         let attempt = cx.update(|cx| {
             TokioRuntime::spawn(
@@ -388,8 +391,67 @@ mod macos {
         runtime.block_on(handle)
     }
 
+    /// The whole user flow in one app: fill in the connect form with this device's own address
+    /// and password, connect, see the approval request on the host side, allow it.
+    pub(super) fn connecting_through_the_form_asks_the_host_user_first() {
+        let data = tempfile::tempdir().unwrap();
+        Settings {
+            port: 0,
+            ..Settings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let mut cx = app(data.path());
+        let (window, home) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(960., 900.), cx, |window, cx| {
+                    cx.new(|cx| Home::new(window, cx))
+                })
+            })
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(5), |cx| {
+            cx.update(|cx| home.read(cx).has_password(cx))
+        });
+        let (password, port) = cx.update(|cx| {
+            let home = home.read(cx);
+            (home.password_text(cx).unwrap(), home.host_port(cx).unwrap())
+        });
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("connect-address", cx);
+            window.input(&format!("127.0.0.1:{port}"), cx);
+            window.click("connect-password", cx);
+            window.input(&password, cx);
+            window.click("connect", cx);
+        })
+        .unwrap();
+
+        // Approval is on by default: the host side asks before anything is shared.
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| home.read(cx).has_pending_approval(cx))
+        });
+        assert!(
+            cx.update(|cx| home.read(cx).admitted_session_status(cx))
+                .is_none()
+        );
+        save(&mut cx, window, "home-approval");
+
+        cx.update_window(window, |_, window, cx| window.click("approval-control", cx))
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| home.read(cx).admitted_session_status(cx))
+                .is_some()
+        });
+        // A viewer window opened next to the home window.
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    }
+
     pub(super) fn run() {
-        let tests: [(&str, fn()); 2] = [
+        let tests: [(&str, fn()); 3] = [
+            (
+                "connecting_through_the_form_asks_the_host_user_first",
+                connecting_through_the_form_asks_the_host_user_first,
+            ),
             (
                 "home_window_shows_address_and_password",
                 home_window_shows_address_and_password,

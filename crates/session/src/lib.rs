@@ -5,11 +5,16 @@
 //! [`connect_viewer`] runs the viewer side: it authenticates, decodes the video into the latest
 //! frame, and forwards input. Both report to the UI through event channels and never block it.
 
+mod clipboard;
 mod host;
+mod host_session;
 mod platform;
 mod viewer;
 
-pub use host::{HostConfig, HostError, HostEvent, HostHandle, start_host};
+pub use clipboard::{ClipboardAccess, ClipboardFactory, SystemClipboard};
+pub use host::{
+    ApprovalDecision, ApprovalRequest, HostConfig, HostError, HostEvent, HostHandle, start_host,
+};
 pub use platform::{HostPlatform, SystemPlatform};
 pub use viewer::{ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, connect_viewer};
 
@@ -20,6 +25,8 @@ pub enum SessionEndReason {
     ViewerLeft,
     /// The host ended the session.
     HostEnded,
+    /// The host user declined the viewer (or did not answer in time).
+    Declined,
     /// The connection dropped or timed out.
     ConnectionLost(String),
     /// The peer broke the protocol.
@@ -45,6 +52,7 @@ impl std::fmt::Display for SessionEndReason {
         match self {
             SessionEndReason::ViewerLeft => f.write_str("the viewer disconnected"),
             SessionEndReason::HostEnded => f.write_str("the host ended the session"),
+            SessionEndReason::Declined => f.write_str("the host declined the session"),
             SessionEndReason::ConnectionLost(detail) => write!(f, "connection lost: {detail}"),
             SessionEndReason::ProtocolError(detail) => write!(f, "protocol error: {detail}"),
         }

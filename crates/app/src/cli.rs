@@ -27,6 +27,9 @@ pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
+            // The headless host has no one to ask; anyone with the password gets control.
+            require_approval: false,
+            clipboard: false,
         },
         &identity,
         Arc::new(SystemPlatform),
@@ -56,6 +59,9 @@ pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
                 Some(HostEvent::PasswordChanged(None)) => println!("Not accepting viewers."),
                 Some(HostEvent::SessionStarted(peer)) => {
                     println!("{} ({:?}) connected from {}", peer.name, peer.os, peer.address);
+                }
+                Some(HostEvent::ApprovalRequested { request, .. }) => {
+                    request.respond(open_desk_session::ApprovalDecision::AllowControl);
                 }
                 Some(HostEvent::SessionStatus(status)) => {
                     println!("screen: {:?}, input: {:?}", status.screen, status.input);
@@ -89,6 +95,7 @@ pub(crate) async fn connect(address: &str) -> anyhow::Result<()> {
             address,
             client_name: device_name(),
             map_shortcut_modifier: true,
+            clipboard: None,
         },
         &password,
     )
@@ -108,6 +115,10 @@ pub(crate) async fn connect(address: &str) -> anyhow::Result<()> {
                 viewer.disconnect();
             }
             event = events.recv() => match event {
+                Some(ViewerEvent::AwaitingApproval) => println!("Waiting for the host to allow the session…"),
+                Some(ViewerEvent::Displays { displays, active }) => {
+                    println!("host displays: {} (showing {active})", displays.len());
+                }
                 Some(ViewerEvent::HostStatus(status)) => {
                     println!("host screen: {:?}, host input: {:?}", status.screen, status.input);
                 }
