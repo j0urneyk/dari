@@ -13,6 +13,11 @@ All notable changes to this project are documented here. The format follows
   TLS exporter label, SPAKE2 identities, relay datagram tags) all use the new name. Dari cannot connect to
   open-desk 0.1.0 devices or relays. On macOS, grant Screen Recording and Accessibility again for the new
   bundle. The device certificate and relay ID are regenerated because the data directory moved.
+- Moved to the public repository [j0urneyk/dari](https://github.com/j0urneyk/dari).
+
+### Added
+
+- Licensed under MIT OR Apache-2.0.
 
 ## [0.1.0] - 2026-10-03
 
@@ -40,5 +45,5 @@ All notable changes to this project are documented here. The format follows
 - Packaging: macOS app/dmg and Windows installer via cargo-packager, app icon, macOS local
   network declarations, and a tag-triggered release workflow that also ships the Linux relay.
 
-[Unreleased]: https://github.com/j0urneyk/open-desk/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/j0urneyk/open-desk/releases/tag/v0.1.0
+[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/j0urneyk/dari/releases/tag/v0.1.0

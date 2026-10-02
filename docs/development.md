@@ -164,5 +164,5 @@ cd target/release && hdiutil create -volname Dari -srcfolder Dari.app -ov -forma
 산출물을 추가합니다.
 
 ```bash
-gh workflow run release.yml --ref v0.1.0
+gh workflow run release.yml --ref vX.Y.Z
 ```
