@@ -23,11 +23,8 @@ The UI follows the system language: Korean or English.
 
 ## Status
 
-Dari is early. It was first released as open-desk 0.1.0 and has since been renamed, and Dari itself has no
-release yet, so for now build it from source (see [Building from source](#building-from-source)).
-
-Automated tests run real QUIC sessions against synthetic screens, and GUI tests render the app on macOS. Some
-things haven't been checked on real hardware yet:
+Dari is early: 0.1.0 is its first release. Automated tests run real QUIC sessions against synthetic screens, and
+GUI tests render the app on macOS. Some things haven't been checked on real hardware yet:
 
 - A session between a physical Mac and a physical Windows 11 PC.
 - Screen sharing and input injection with the macOS permissions actually granted.
@@ -35,7 +32,7 @@ things haven't been checked on real hardware yet:
 
 ## Install
 
-Releases will be published on [Releases](https://github.com/j0urneyk/dari/releases) with these files:
+Download a build from [Releases](https://github.com/j0urneyk/dari/releases):
 
 | Platform | File |
 | --- | --- |
