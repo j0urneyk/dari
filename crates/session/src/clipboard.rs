@@ -1,7 +1,7 @@
 //! Text clipboard synchronization between host and viewer.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dari_proto::MAX_CLIPBOARD_BYTES;
@@ -20,8 +20,19 @@ pub trait ClipboardAccess: Send {
 /// Creates clipboard access on the clipboard thread; `None` if there is no clipboard.
 pub type ClipboardFactory = Arc<dyn Fn() -> Option<Box<dyn ClipboardAccess>> + Send + Sync>;
 
+/// Serializes every use of the OS clipboard in this process. macOS's pasteboard is not
+/// thread-safe: a host and a viewer session polling it from their own threads at the same time
+/// crash the process inside `AppKit`.
+static SYSTEM_CLIPBOARD: Mutex<()> = Mutex::new(());
+
+fn system_clipboard_lock() -> MutexGuard<'static, ()> {
+    SYSTEM_CLIPBOARD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The OS clipboard.
-pub struct SystemClipboard(arboard::Clipboard);
+pub struct SystemClipboard(Option<arboard::Clipboard>);
 
 impl std::fmt::Debug for SystemClipboard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -31,8 +42,9 @@ impl std::fmt::Debug for SystemClipboard {
 
 impl SystemClipboard {
     pub fn open() -> Option<Self> {
+        let _serialized = system_clipboard_lock();
         match arboard::Clipboard::new() {
-            Ok(clipboard) => Some(Self(clipboard)),
+            Ok(clipboard) => Some(Self(Some(clipboard))),
             Err(error) => {
                 warn!(%error, "clipboard unavailable");
                 None
@@ -48,11 +60,22 @@ impl SystemClipboard {
 
 impl ClipboardAccess for SystemClipboard {
     fn read_text(&mut self) -> Option<String> {
-        self.0.get_text().ok()
+        let _serialized = system_clipboard_lock();
+        self.0.as_mut()?.get_text().ok()
     }
 
     fn write_text(&mut self, text: &str) -> bool {
-        self.0.set_text(text).is_ok()
+        let _serialized = system_clipboard_lock();
+        self.0
+            .as_mut()
+            .is_some_and(|clipboard| clipboard.set_text(text).is_ok())
+    }
+}
+
+impl Drop for SystemClipboard {
+    fn drop(&mut self) {
+        let _serialized = system_clipboard_lock();
+        drop(self.0.take());
     }
 }
 
@@ -124,6 +147,29 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn the_system_clipboard_can_be_read_from_several_threads_at_once() {
+        // Host and viewer sessions in one process each poll the clipboard on their own thread.
+        // AppKit's pasteboard crashes the process (SIGTRAP) on concurrent access unless
+        // SystemClipboard serializes it.
+        if SystemClipboard::open().is_none() {
+            return;
+        }
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let mut clipboard = SystemClipboard::open().unwrap();
+                    for _ in 0..300 {
+                        let _text = clipboard.read_text();
+                    }
+                })
+            })
+            .collect();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+    }
 
     /// A clipboard shared between test threads.
     #[derive(Clone, Default)]
