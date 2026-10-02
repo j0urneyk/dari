@@ -1,4 +1,4 @@
-//! Screen capture and video coding for open-desk.
+//! Screen capture and video coding for Dari.
 //!
 //! The host side captures a display ([`DisplayCapturer`]), scales the frame to the stream's size
 //! limit ([`FrameScaler`]), and encodes it as H.264 ([`VideoEncoder`]). [`spawn_capture_stream`]

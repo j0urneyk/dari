@@ -1,7 +1,7 @@
 # 와이어 프로토콜
 
-호스트와 뷰어는 QUIC(TLS 1.3, ALPN `open-desk/1`) 연결 하나 위에서 이야기합니다. 메시지 타입은 모두
-`open-desk-proto`(`crates/proto`)에 있고, 이 문서는 그 형식과 순서를 정리합니다. 현재 프로토콜 버전은
+호스트와 뷰어는 QUIC(TLS 1.3, ALPN `dari/1`) 연결 하나 위에서 이야기합니다. 메시지 타입은 모두
+`dari-proto`(`crates/proto`)에 있고, 이 문서는 그 형식과 순서를 정리합니다. 현재 프로토콜 버전은
 **1.0**(`PROTOCOL_VERSION`)입니다.
 
 ## 버전 호환
@@ -28,7 +28,7 @@
 | 핸드셰이크 | `HandshakeMessage` | 4 KiB | 뷰어가 여는 양방향 스트림 |
 | 제어 | `ControlMessage` | 2 MiB | 인증이 끝난 핸드셰이크 스트림을 그대로 사용 |
 | 비디오 | `VideoPacket` | 16 MiB | 호스트가 여는 단방향 스트림 |
-| 릴레이 제어 | `RelayRequest` / `RelayResponse` | 2 MiB | 릴레이와의 양방향 스트림(ALPN `open-desk-relay/1`) |
+| 릴레이 제어 | `RelayRequest` / `RelayResponse` | 2 MiB | 릴레이와의 양방향 스트림(ALPN `dari-relay/1`) |
 
 제어 채널 상한은 계획(64 KiB)보다 큰 2 MiB입니다. 최대 1 MiB의 클립보드 텍스트가 같은 채널을 쓰기
 때문입니다. 인증이 끝나면 핸드셰이크 스트림의 코덱만 바꿔(`map_decoder`/`map_encoder`) 제어 스트림으로
@@ -49,12 +49,12 @@ viewer                                         host
   │◄────────────────────── Outcome(Accepted) ────│
 ```
 
-- SPAKE2는 Ed25519 그룹을 쓰며 신원 문자열은 뷰어 `open-desk viewer`, 호스트 `open-desk host`입니다.
+- SPAKE2는 Ed25519 그룹을 쓰며 신원 문자열은 뷰어 `dari viewer`, 호스트 `dari host`입니다.
   비밀번호는 정규화된 형식(대문자 10자, 구분자 없음)의 ASCII 바이트입니다. 화면에는 `K7MXQ-3PTWA`처럼
   표시하고, 입력할 때는 대소문자와 공백·`-`를 무시합니다.
-- `exporter`는 TLS `export_keying_material(32, "EXPORTER-open-desk-auth-v1")`입니다.
+- `exporter`는 TLS `export_keying_material(32, "EXPORTER-dari-auth-v1")`입니다.
 - `transcript`는 두 hello의 postcard 인코딩을 각각 4바이트 길이 접두사와 함께 SHA-256으로 해시한 값입니다.
-- 확인값은 `HMAC-SHA256(K, "open-desk key confirmation v1" ‖ role ‖ exporter ‖ transcript)`이며 `role`은
+- 확인값은 `HMAC-SHA256(K, "dari key confirmation v1" ‖ role ‖ exporter ‖ transcript)`이며 `role`은
   `"viewer"` 또는 `"host\0\0"`입니다.
 - 호스트는 뷰어의 확인값을 검증한 **뒤에만** 자기 확인값을 보냅니다. 비밀번호를 모르는 뷰어는 호스트로부터
   비밀번호를 검증할 단서를 하나도 얻지 못합니다.
@@ -122,7 +122,7 @@ VideoPacket { sequence: u64, timestamp_us: u64, keyframe: bool, width: u32, heig
 
 ## 릴레이
 
-릴레이 제어 연결은 별도 ALPN(`open-desk-relay/1`)의 QUIC 연결입니다. 기본 포트는 UDP 47822입니다.
+릴레이 제어 연결은 별도 ALPN(`dari-relay/1`)의 QUIC 연결입니다. 기본 포트는 UDP 47822입니다.
 
 | 메시지 | 방향 | 의미 |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ VideoPacket { sequence: u64, timestamp_us: u64, keyframe: bool, width: u32, heig
 | `RelayResponse::Refused(RelayError)` | 릴레이 → 기기 | `NotFound`, `TooManyRequests`, `CertificateRequired`, `Unavailable` |
 
 `Allocation { port, token }`은 한쪽이 보낼 릴레이 UDP 포트와 16바이트 토큰입니다. 각 쪽은 자기 소켓에서
-`"ODRB" ‖ token` 데이터그램을 그 포트로 보내 주소를 바인딩하고, 릴레이는 `"ODRA" ‖ token`으로 확인합니다.
+`"DRRB" ‖ token` 데이터그램을 그 포트로 보내 주소를 바인딩하고, 릴레이는 `"DRRA" ‖ token`으로 확인합니다.
 클라이언트는 확인이 올 때까지 400ms 간격으로 최대 6번 다시 보냅니다. 두 쪽이 모두 바인딩되면 릴레이는 두
 주소 사이의 데이터그램(최대 65,535바이트)을 내용을 보지 않고 전달하며, 그 위에서 위의 QUIC 세션이 그대로
 진행됩니다. `DeviceId`는 100000000..=999999999 범위이며 `123 456 789`로 표시하고, 입력할 때는 공백과 `-`를
@@ -151,4 +151,4 @@ VideoPacket { sequence: u64, timestamp_us: u64, keyframe: bool, width: u32, heig
 | 승인 대기 | 30초 | `crates/session/src/host_session.rs` |
 | 클립보드 폴링 간격 | 250ms | `crates/session/src/clipboard.rs` |
 | 뷰어 입력 큐 / 키용 예약분 | 512 / 128 | `crates/session/src/viewer.rs` |
-| mDNS 서비스 | `_open-desk._udp.local.` | `crates/net/src/discovery.rs` |
+| mDNS 서비스 | `_dari._udp.local.` | `crates/net/src/discovery.rs` |

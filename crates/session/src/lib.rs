@@ -38,12 +38,12 @@ pub enum SessionEndReason {
 
 impl SessionEndReason {
     /// Classifies a failure reading the control stream.
-    pub(crate) fn from_control_error(error: &open_desk_proto::CodecError) -> Self {
+    pub(crate) fn from_control_error(error: &dari_proto::CodecError) -> Self {
         match error {
-            open_desk_proto::CodecError::Io(error) => {
+            dari_proto::CodecError::Io(error) => {
                 SessionEndReason::ConnectionLost(error.to_string())
             }
-            open_desk_proto::CodecError::Malformed(_) | open_desk_proto::CodecError::Invalid(_) => {
+            dari_proto::CodecError::Malformed(_) | dari_proto::CodecError::Invalid(_) => {
                 SessionEndReason::ProtocolError(error.to_string())
             }
         }

@@ -9,12 +9,12 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_net::{
+use dari_net::{
     AccessPassword, ConnectError, DeviceIdentity, HandshakeError, HostEndpoint, HostSettings,
     connect,
 };
-use open_desk_proto::{ControlMessage, RejectReason, VideoPacket};
+use dari_proto::{ControlMessage, RejectReason, VideoPacket};
+use futures_util::{SinkExt, StreamExt};
 
 fn host() -> HostEndpoint {
     let identity = DeviceIdentity::generate().unwrap();

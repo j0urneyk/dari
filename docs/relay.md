@@ -1,7 +1,7 @@
 # 릴레이 서버 운영
 
 서로 다른 네트워크(각자 공유기/NAT 뒤)에 있는 기기는 직접 접속할 수 없습니다. 이때 공인 IP가 있는
-서버에서 `open-desk-relay`를 실행하면, 호스트는 9자리 ID를 받고 뷰어는 ID와 일회용 비밀번호로
+서버에서 `dari-relay`를 실행하면, 호스트는 9자리 ID를 받고 뷰어는 ID와 일회용 비밀번호로
 접속할 수 있습니다.
 
 ## 동작 방식과 보안
@@ -21,8 +21,8 @@
 ## 실행
 
 ```bash
-cargo build --release -p open-desk-relay
-./target/release/open-desk-relay --listen 0.0.0.0:47822 --data-dir /var/lib/open-desk-relay
+cargo build --release -p dari-relay
+./target/release/dari-relay --listen 0.0.0.0:47822 --data-dir /var/lib/dari-relay
 ```
 
 | 옵션 | 기본값 | 설명 |
@@ -36,7 +36,7 @@ cargo build --release -p open-desk-relay
 
 `--data-dir`에는 릴레이 자신의 인증서(`identity-cert.der`, `identity-key.der`)와 ID 표(`ids.toml`)가 저장됩니다.
 `ids.toml`을 잃으면 모든 호스트가 새 ID를 받으므로 백업해 두세요. 로그 수준은 `RUST_LOG` 환경 변수로
-조절합니다(기본 `info`). 릴리스에는 Linux x86_64 바이너리(`open-desk-relay_<버전>_linux_x86_64.tar.gz`)가
+조절합니다(기본 `info`). 릴리스에는 Linux x86_64 바이너리(`dari-relay_<버전>_linux_x86_64.tar.gz`)가
 포함됩니다.
 
 ### Docker
@@ -45,16 +45,16 @@ cargo build --release -p open-desk-relay
 FROM rust:1.99 AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p open-desk-relay
+RUN cargo build --release -p dari-relay
 
 FROM debian:stable-slim
-COPY --from=build /src/target/release/open-desk-relay /usr/local/bin/
+COPY --from=build /src/target/release/dari-relay /usr/local/bin/
 VOLUME /data
-ENTRYPOINT ["open-desk-relay", "--listen", "0.0.0.0:47822", "--data-dir", "/data"]
+ENTRYPOINT ["dari-relay", "--listen", "0.0.0.0:47822", "--data-dir", "/data"]
 ```
 
 ```bash
-docker run -d --network host -v open-desk-relay:/data open-desk-relay
+docker run -d --network host -v dari-relay:/data dari-relay
 ```
 
 전달 포트가 임시 포트이므로 `--network host`로 실행하는 것이 가장 간단합니다.
@@ -64,7 +64,7 @@ docker run -d --network host -v open-desk-relay:/data open-desk-relay
 - 호스트: "이 기기" 카드의 **릴레이 서버**에 `서버주소` 또는 `서버주소:포트`를 입력하고 Enter.
   등록되면 **내 ID**가 표시됩니다.
 - 뷰어: 같은 릴레이 서버를 설정한 뒤 주소 칸에 상대의 9자리 ID를 입력하고 접속합니다.
-- CLI: `open-desk host --relay 서버주소`, `open-desk connect 123456789 --relay 서버주소`.
+- CLI: `dari host --relay 서버주소`, `dari connect 123456789 --relay 서버주소`.
 
 ## 남용 방지
 

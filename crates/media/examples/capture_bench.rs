@@ -1,14 +1,14 @@
 //! Captures and encodes the primary display for a few seconds and reports throughput.
 //!
 //! ```sh
-//! cargo run --release -p open-desk-media --example capture_bench -- [seconds] [max-long-edge]
+//! cargo run --release -p dari-media --example capture_bench -- [seconds] [max-long-edge]
 //! ```
 
 #![allow(clippy::print_stdout, reason = "benchmark output")]
 
 use std::time::{Duration, Instant};
 
-use open_desk_media::{
+use dari_media::{
     CaptureError, PermissionState, RgbaFrame, ScreenCapturer, StreamSettings, list_displays,
     screen_capture_access, spawn_capture_stream,
 };

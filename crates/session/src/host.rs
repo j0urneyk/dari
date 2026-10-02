@@ -4,12 +4,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use open_desk_media::StreamSettings;
-use open_desk_net::{
+use dari_media::StreamSettings;
+use dari_net::{
     AccessPassword, DeviceIdentity, EndpointError, HostEndpoint, HostSettings, PasswordError,
     PeerInfo, RelayRegistration, RelayedAcceptor, bind_to_allocation,
 };
-use open_desk_proto::{DEFAULT_RELAY_PORT, DeviceId, HostStatus};
+use dari_proto::{DEFAULT_RELAY_PORT, DeviceId, HostStatus};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;

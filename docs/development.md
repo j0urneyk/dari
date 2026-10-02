@@ -37,7 +37,7 @@ cargo test --workspace --locked
 ```
 
 ```bash
-cargo test -p open-desk --test gui
+cargo test -p dari --test gui
 ```
 
 ```bash
@@ -61,7 +61,7 @@ lint를 풉니다. macOS의 `AXIsProcessTrusted`(손쉬운 사용 권한 확인)
 Windows 전용 코드는 macOS에서도 검사할 수 있습니다.
 
 ```bash
-cargo clippy -p open-desk-input --target x86_64-pc-windows-msvc -- -D warnings
+cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
 ## 테스트
@@ -73,13 +73,13 @@ cargo clippy -p open-desk-input --target x86_64-pc-windows-msvc -- -D warnings
 | 세션 E2E | `crates/session/tests/loopback.rs` | 합성 화면 + 기록 입력으로 호스트·뷰어 전체 경로: 프레임 수신, 입력 주입, 키 해제, 권한 상태 보고, 승인 허용·거부·보기 전용, 디스플레이 전환, 양방향 클립보드, 릴레이 경유 접속 |
 | 릴레이 E2E | `crates/relay/tests/relay.rs` | ID로 접속, 틀린 비밀번호는 호스트가 거부, 없는 ID, 재시작 후 같은 ID |
 | GUI | `crates/app/tests/gui.rs` | 헤드리스 Metal 렌더러로 실제 창을 그리고 입력을 주입(아래) |
-| mDNS | `crates/net/src/discovery.rs` | 로컬 네트워크 멀티캐스트가 필요해 기본으로 건너뜀. `cargo test -p open-desk-net -- --ignored`로 실행 |
+| mDNS | `crates/net/src/discovery.rs` | 로컬 네트워크 멀티캐스트가 필요해 기본으로 건너뜀. `cargo test -p dari-net -- --ignored`로 실행 |
 
 실제 화면 캡처와 인코딩 성능은 예제로 잽니다. 주 디스플레이를 몇 초간 캡처·인코딩해 처리량을 출력합니다.
 macOS에서 화면 기록 권한이 없어도 바탕화면만 담긴 원본 크기 프레임이 나오므로 비용 측정에는 충분합니다.
 
 ```bash
-cargo run --release -p open-desk-media --example capture_bench -- 5 1920
+cargo run --release -p dari-media --example capture_bench -- 5 1920
 ```
 
 세션 계층은 `HostPlatform` 트레이트로 화면과 입력을 바꿔 끼울 수 있어서, CI 러너처럼 화면 권한이 없는
@@ -90,7 +90,7 @@ cargo run --release -p open-desk-media --example capture_bench -- 5 1920
 
 GPUI의 macOS 플랫폼은 메인 스레드에서만 만들 수 있어 표준 테스트 하네스를 쓸 수 없습니다. 그래서
 `crates/app/tests/gui.rs`는 `harness = false`인 자체 `main`을 가진 테스트이고, 앱 크레이트는 라이브러리를
-노출합니다(`open_desk::test_support`). 각 테스트는 `HeadlessAppContext`로 창을 그리고 결과를
+노출합니다(`dari::test_support`). 각 테스트는 `HeadlessAppContext`로 창을 그리고 결과를
 `target/gui-snapshots/*.png`로 저장하므로 화면을 눈으로 검토할 수 있습니다.
 
 - 홈 창에 주소와 비밀번호가 표시된다.
@@ -130,9 +130,9 @@ GPUI의 macOS 플랫폼은 메인 스레드에서만 만들 수 있어 표준 �
 ## 패키징과 릴리스
 
 패키징 설정은 `crates/app/Cargo.toml`의 `[package.metadata.packager]`에 있습니다(번들 ID
-`dev.open-desk.app`, macOS 최소 12.0, Windows NSIS 사용자 단위 설치). 아이콘은 `crates/app/assets/icon.svg`가
+`dev.dari.app`, macOS 최소 12.0, Windows NSIS 사용자 단위 설치). 아이콘은 `crates/app/assets/icon.svg`가
 원본이고 PNG와 `.icns`(`iconutil`)를 만들어 둡니다. `assets/Info.plist`에는 로컬 네트워크 사용 설명
-(`NSLocalNetworkUsageDescription`)과 Bonjour 서비스(`_open-desk._udp`)가 있습니다. macOS 15부터 이것이 없으면
+(`NSLocalNetworkUsageDescription`)과 Bonjour 서비스(`_dari._udp`)가 있습니다. macOS 15부터 이것이 없으면
 LAN 접속과 mDNS가 차단됩니다. macOS의 화면 기록·손쉬운 사용 권한은 번들 ID 단위로 부여되므로 번들 ID를 바꾸면
 사용자가 권한을 다시 줘야 합니다.
 
@@ -144,7 +144,7 @@ cd crates/app && cargo packager --release --formats app
 ```
 
 ```bash
-cd target/release && hdiutil create -volname open-desk -srcfolder open-desk.app -ov -format UDZO open-desk.dmg
+cd target/release && hdiutil create -volname Dari -srcfolder Dari.app -ov -format UDZO dari.dmg
 ```
 
 릴리스 절차:

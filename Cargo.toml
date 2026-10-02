@@ -11,12 +11,12 @@ publish = false
 repository = "https://github.com/j0urneyk/open-desk"
 
 [workspace.dependencies]
-open-desk-input = { path = "crates/input" }
-open-desk-media = { path = "crates/media" }
-open-desk-net = { path = "crates/net" }
-open-desk-proto = { path = "crates/proto" }
-open-desk-relay = { path = "crates/relay" }
-open-desk-session = { path = "crates/session" }
+dari-input = { path = "crates/input" }
+dari-media = { path = "crates/media" }
+dari-net = { path = "crates/net" }
+dari-proto = { path = "crates/proto" }
+dari-relay = { path = "crates/relay" }
+dari-session = { path = "crates/session" }
 
 anyhow = "1"
 arboard = { version = "3", default-features = false }

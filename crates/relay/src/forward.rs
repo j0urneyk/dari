@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use open_desk_proto::{Allocation, RELAY_TOKEN_LEN};
+use dari_proto::{Allocation, RELAY_TOKEN_LEN};
 use subtle::ConstantTimeEq;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;

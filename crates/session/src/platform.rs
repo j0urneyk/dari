@@ -1,7 +1,7 @@
-use open_desk_input::{EnigoBackend, InjectError, InputBackend};
+use dari_input::{EnigoBackend, InjectError, InputBackend};
 
 use crate::clipboard::{ClipboardFactory, SystemClipboard};
-use open_desk_media::{CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer, list_displays};
+use dari_media::{CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer, list_displays};
 
 /// The host machine's screen and input devices.
 ///

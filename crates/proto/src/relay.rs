@@ -10,11 +10,11 @@ use crate::validate::{Validate, ValidationError};
 /// UDP port relays listen on unless configured otherwise.
 pub const DEFAULT_RELAY_PORT: u16 = 47822;
 /// ALPN of the relay control protocol.
-pub const RELAY_ALPN: &[u8] = b"open-desk-relay/1";
+pub const RELAY_ALPN: &[u8] = b"dari-relay/1";
 /// Prefix of the datagram each side sends to bind its address to an allocation.
-pub const RELAY_BIND_MAGIC: &[u8; 4] = b"ODRB";
+pub const RELAY_BIND_MAGIC: &[u8; 4] = b"DRRB";
 /// Prefix of the relay's reply confirming a binding datagram.
-pub const RELAY_ACK_MAGIC: &[u8; 4] = b"ODRA";
+pub const RELAY_ACK_MAGIC: &[u8; 4] = b"DRRA";
 /// Length of an allocation token.
 pub const RELAY_TOKEN_LEN: usize = 16;
 

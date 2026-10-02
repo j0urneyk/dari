@@ -5,16 +5,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_input::ModifierMapping;
-use open_desk_media::{DecodedFrame, VideoDecoder};
-use open_desk_net::{
-    AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay,
-};
-use open_desk_proto::{
+use dari_input::ModifierMapping;
+use dari_media::{DecodedFrame, VideoDecoder};
+use dari_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay};
+use dari_proto::{
     Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
     QualityPreset, VideoPacket,
 };
+use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -232,8 +230,8 @@ pub async fn connect_viewer(
 )]
 async fn supervise(
     link: Arc<SessionLink>,
-    control_sender: open_desk_net::MessageSender<ControlMessage>,
-    mut control_receiver: open_desk_net::MessageReceiver<ControlMessage>,
+    control_sender: dari_net::MessageSender<ControlMessage>,
+    mut control_receiver: dari_net::MessageReceiver<ControlMessage>,
     outgoing: mpsc::Sender<Outgoing>,
     outgoing_receiver: mpsc::Receiver<Outgoing>,
     frames: watch::Sender<Option<Arc<DecodedFrame>>>,
@@ -339,7 +337,7 @@ async fn supervise(
 }
 
 async fn write_control(
-    mut control: open_desk_net::MessageSender<ControlMessage>,
+    mut control: dari_net::MessageSender<ControlMessage>,
     mut outgoing: mpsc::Receiver<Outgoing>,
     mapping: Option<ModifierMapping>,
 ) -> Result<(), String> {
@@ -380,7 +378,7 @@ async fn receive_video(
     let (packets, packet_receiver) = mpsc::channel(DECODE_QUEUE);
     let decode_stats = stats.clone();
     let decoder = std::thread::Builder::new()
-        .name("open-desk-decode".into())
+        .name("dari-decode".into())
         .spawn(move || decode_loop(packet_receiver, &frames, &outgoing, &decode_stats))
         .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
 
@@ -442,7 +440,7 @@ fn decode_loop(
 
 #[cfg(test)]
 mod tests {
-    use open_desk_proto::{KeyCode, NamedKey, PointerPosition};
+    use dari_proto::{KeyCode, NamedKey, PointerPosition};
 
     use super::*;
 

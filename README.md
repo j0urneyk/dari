@@ -1,8 +1,8 @@
-# open-desk
+# Dari
 
-open-desk is a remote desktop app for macOS and Windows 11, in the spirit of AnyDesk, RustDesk, and Windows
+Dari is a remote desktop app for macOS and Windows 11, in the spirit of AnyDesk, RustDesk, and Windows
 Remote Desktop. The same app shares your screen (host) and controls another computer (viewer), so a Mac can
-control a Windows PC and the other way around.
+control a Windows PC and the other way around. The name is Korean for "bridge" (다리).
 
 Every session is end-to-end encrypted and authenticated with a one-time password shown on the host. By default,
 the person at the host also has to approve each connection before anything is shared. It's written in Rust with a
@@ -37,9 +37,9 @@ Download a build from [Releases](https://github.com/j0urneyk/open-desk/releases)
 
 | Platform | File | v0.1.0 |
 | --- | --- | --- |
-| macOS (Apple silicon, 12 or later) | `open-desk_<version>_macos_aarch64.dmg` | Available |
-| Windows 11 (x64) | `open-desk_<version>_x64-setup.exe` | Not yet published |
-| Relay server (Linux x64) | `open-desk-relay_<version>_linux_x86_64.tar.gz` | Available |
+| macOS (Apple silicon, 12 or later) | `dari_<version>_macos_aarch64.dmg` | Available |
+| Windows 11 (x64) | `Dari_<version>_x64-setup.exe` | Not yet published |
+| Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` | Available |
 
 Release builds aren't code-signed unless signing secrets are configured. The first time you run the app on
 macOS, right-click it in Finder and choose **Open**. On Windows, choose **More info → Run anyway** when
@@ -73,11 +73,11 @@ The password is used up the moment a viewer authenticates. The host gets a new o
 
 ### Connecting across networks
 
-Computers behind different routers can't reach each other directly. For that case, run `open-desk-relay` on a
+Computers behind different routers can't reach each other directly. For that case, run `dari-relay` on a
 server with a public IP:
 
 ```bash
-open-desk-relay --listen 0.0.0.0:47822 --data-dir /var/lib/open-desk-relay
+dari-relay --listen 0.0.0.0:47822 --data-dir /var/lib/dari-relay
 ```
 
 Enter the relay's address in the **Relay server** field on both computers. The host then shows **My ID**. On the
@@ -93,7 +93,7 @@ The `host` and `connect` subcommands run without the GUI, which is handy on serv
 optionally registering with a relay:
 
 ```bash
-open-desk host --port 47821 --relay relay.example.com
+dari host --port 47821 --relay relay.example.com
 ```
 
 `host` prints its addresses, the current password, and its relay ID. There's nobody to approve requests, so a
@@ -103,7 +103,7 @@ it where that's acceptable.
 To connect by address, or by ID when `--relay` is given:
 
 ```bash
-open-desk connect 192.168.0.10
+dari connect 192.168.0.10
 ```
 
 `connect` asks for the password, or reads it from stdin when piped, and then reports received frames and bitrate
@@ -146,13 +146,13 @@ and OpenH264 are large.
 To run the app:
 
 ```bash
-cargo run -p open-desk
+cargo run -p dari
 ```
 
 To build the relay:
 
 ```bash
-cargo build --release -p open-desk-relay
+cargo build --release -p dari-relay
 ```
 
 Before opening a pull request, run the checks CI runs. `cargo lint` is an alias for clippy with `-D warnings`:
@@ -173,20 +173,20 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
-On macOS, `cargo test -p open-desk --test gui` also runs the headless Metal GUI tests and saves PNG snapshots to
+On macOS, `cargo test -p dari --test gui` also runs the headless Metal GUI tests and saves PNG snapshots to
 `target/gui-snapshots/`.
 
 The crates depend on each other in one direction, `app → session → {net, media, input} → proto`:
 
 | Crate | Role |
 | --- | --- |
-| `open-desk-proto` | Messages, protocol version, length-bounded framing |
-| `open-desk-net` | QUIC, device certificates, SPAKE2 authentication, throttling, LAN discovery, relay client |
-| `open-desk-media` | Screen capture, scaling, H.264 encode/decode |
-| `open-desk-input` | Input injection, held-key tracking, shortcut mapping |
-| `open-desk-session` | Host and viewer sessions, approval, clipboard |
-| `open-desk-relay` | Relay server |
-| `open-desk` | gpui-kit desktop app and CLI |
+| `dari-proto` | Messages, protocol version, length-bounded framing |
+| `dari-net` | QUIC, device certificates, SPAKE2 authentication, throttling, LAN discovery, relay client |
+| `dari-media` | Screen capture, scaling, H.264 encode/decode |
+| `dari-input` | Input injection, held-key tracking, shortcut mapping |
+| `dari-session` | Host and viewer sessions, approval, clipboard |
+| `dari-relay` | Relay server |
+| `dari` | gpui-kit desktop app and CLI |
 
 ## Documentation
 

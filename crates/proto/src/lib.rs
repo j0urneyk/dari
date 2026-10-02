@@ -1,4 +1,4 @@
-//! Wire protocol shared by open-desk hosts and viewers.
+//! Wire protocol shared by Dari hosts and viewers.
 //!
 //! This crate defines every message exchanged over a session, the protocol version rules,
 //! and a length-bounded framing codec. It performs no I/O of its own.

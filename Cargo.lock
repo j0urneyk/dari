@@ -1581,6 +1581,134 @@ dependencies = [
 ]
 
 [[package]]
+name = "dari"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dari-input",
+ "dari-media",
+ "dari-net",
+ "dari-proto",
+ "dari-relay",
+ "dari-session",
+ "directories",
+ "gethostname",
+ "gpui-kit",
+ "if-addrs",
+ "image",
+ "rpassword",
+ "serde",
+ "sys-locale",
+ "tempfile",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dari-input"
+version = "0.1.0"
+dependencies = [
+ "dari-proto",
+ "enigo",
+ "objc2-application-services",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "dari-media"
+version = "0.1.0"
+dependencies = [
+ "fast_image_resize",
+ "objc2-core-graphics",
+ "openh264",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "xcap",
+]
+
+[[package]]
+name = "dari-net"
+version = "0.1.0"
+dependencies = [
+ "dari-proto",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hmac",
+ "mdns-sd",
+ "postcard",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "sha2 0.10.9",
+ "spake2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "dari-proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "postcard",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
+
+[[package]]
+name = "dari-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dari-net",
+ "dari-proto",
+ "futures-util",
+ "getrandom 0.3.4",
+ "quinn",
+ "rustls",
+ "serde",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dari-session"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "dari-input",
+ "dari-media",
+ "dari-net",
+ "dari-proto",
+ "dari-relay",
+ "futures-util",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5327,134 +5455,6 @@ checksum = "aa576c76302b7b808eecc68061e67336c47833ef9d22caa74dda10fa9675eebc"
 dependencies = [
  "is-wsl",
  "libc",
-]
-
-[[package]]
-name = "open-desk"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "directories",
- "gethostname",
- "gpui-kit",
- "if-addrs",
- "image",
- "open-desk-input",
- "open-desk-media",
- "open-desk-net",
- "open-desk-proto",
- "open-desk-relay",
- "open-desk-session",
- "rpassword",
- "serde",
- "sys-locale",
- "tempfile",
- "tokio",
- "toml 1.1.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "open-desk-input"
-version = "0.1.0"
-dependencies = [
- "enigo",
- "objc2-application-services",
- "open-desk-proto",
- "thiserror 2.0.21",
- "tracing",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "open-desk-media"
-version = "0.1.0"
-dependencies = [
- "fast_image_resize",
- "objc2-core-graphics",
- "openh264",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "xcap",
-]
-
-[[package]]
-name = "open-desk-net"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "getrandom 0.3.4",
- "hmac",
- "mdns-sd",
- "open-desk-proto",
- "postcard",
- "quinn",
- "rcgen",
- "rustls",
- "sha2 0.10.9",
- "spake2",
- "subtle",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "open-desk-proto"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "postcard",
- "serde",
- "thiserror 2.0.21",
- "tokio-util",
-]
-
-[[package]]
-name = "open-desk-relay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "getrandom 0.3.4",
- "open-desk-net",
- "open-desk-proto",
- "quinn",
- "rustls",
- "serde",
- "subtle",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "toml 1.1.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "open-desk-session"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "futures-util",
- "open-desk-input",
- "open-desk-media",
- "open-desk-net",
- "open-desk-proto",
- "open-desk-relay",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]

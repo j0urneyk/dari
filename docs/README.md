@@ -1,6 +1,6 @@
-# open-desk 문서
+# Dari 문서
 
-open-desk는 macOS와 Windows 11이 서로 접속할 수 있는 원격 데스크톱 프로그램입니다. 설치와 기본 사용법은
+Dari는 macOS와 Windows 11이 서로 접속할 수 있는 원격 데스크톱 프로그램입니다. 설치와 기본 사용법은
 저장소 [README](../README.md)에 있고, 이 디렉터리에는 그보다 깊은 내용을 모았습니다.
 
 | 문서 | 내용 |

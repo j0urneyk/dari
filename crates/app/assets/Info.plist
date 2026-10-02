@@ -4,10 +4,10 @@
 <dict>
 	<!-- macOS 15+ asks before an app talks to the local network (direct connections, mDNS). -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>open-desk connects to other devices on your network for remote desktop sessions and finds nearby devices.</string>
+	<string>Dari connects to other devices on your network for remote desktop sessions and finds nearby devices.</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_open-desk._udp</string>
+		<string>_dari._udp</string>
 	</array>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>

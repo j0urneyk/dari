@@ -58,8 +58,8 @@
 
 | OS | 위치 |
 | --- | --- |
-| macOS | `~/Library/Application Support/dev.open-desk.open-desk/` |
-| Windows | `%LOCALAPPDATA%\open-desk\open-desk\data\` |
+| macOS | `~/Library/Application Support/dev.dari.dari/` |
+| Windows | `%LOCALAPPDATA%\dari\dari\data\` |
 
 | 파일 | 내용 |
 | --- | --- |
@@ -85,24 +85,24 @@ relay_address = ""            # 릴레이 서버
 GUI 없이 쓰는 하위 명령입니다. 서버나 테스트용입니다.
 
 ```bash
-open-desk host --port 47821 --relay relay.example.com
+dari host --port 47821 --relay relay.example.com
 ```
 
 ```bash
-open-desk connect 192.168.0.10 --relay relay.example.com
+dari connect 192.168.0.10 --relay relay.example.com
 ```
 
 `host`는 주소, 기기 지문, 비밀번호(세션마다 바뀜), 릴레이 ID를 출력하고 Ctrl+C까지 기다립니다. 승인할 사람이
 없으므로 비밀번호를 아는 뷰어에게 바로 제어를 허용하고 클립보드는 끕니다. `connect`는 비밀번호를 물은 뒤
 (파이프로 넘겨도 됩니다) 접속해 초당 수신 프레임과 비트레이트를 출력합니다.
 
-로그는 `RUST_LOG` 환경 변수로 조절합니다(기본 `info`). 예: `RUST_LOG=open_desk_net=debug open-desk host`.
+로그는 `RUST_LOG` 환경 변수로 조절합니다(기본 `info`). 예: `RUST_LOG=dari_net=debug dari host`.
 
 ## 문제 해결
 
 | 증상 | 확인할 것 |
 | --- | --- |
-| 같은 네트워크인데 접속이 안 됨 | 호스트의 "원격 접속 허용"이 켜져 있는지, 주소·포트가 맞는지. Windows 방화벽에서 개인 네트워크 접근을 허용했는지. macOS 15 이상이면 시스템 설정 → 개인정보 보호 및 보안 → 로컬 네트워크에서 open-desk가 켜져 있는지 |
+| 같은 네트워크인데 접속이 안 됨 | 호스트의 "원격 접속 허용"이 켜져 있는지, 주소·포트가 맞는지. Windows 방화벽에서 개인 네트워크 접근을 허용했는지. macOS 15 이상이면 시스템 설정 → 개인정보 보호 및 보안 → 로컬 네트워크에서 Dari가 켜져 있는지 |
 | "근처 기기"에 상대가 안 보임 | 상대의 "같은 네트워크에 이 기기 표시"가 켜져 있는지. 공용 Wi-Fi나 회사망은 mDNS를 막기도 합니다. 이때는 주소를 직접 입력하세요 |
 | "비밀번호가 맞지 않습니다" | 비밀번호는 한 번 쓰면 바뀝니다. 상대 화면에 지금 표시된 값을 다시 확인하세요 |
 | "실패한 시도가 너무 많습니다" | 여러 번 틀리면 잠시(최대 5분) 막힙니다. 기다렸다가 다시 시도하세요 |

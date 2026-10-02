@@ -1,7 +1,7 @@
 //! Fitting the remote screen into the viewer window and mapping the pointer back.
 
+use dari_proto::{MAX_SCROLL_LINES, PointerPosition};
 use gpui_kit::{Bounds, Pixels, Point, Size, point, px, size};
-use open_desk_proto::{MAX_SCROLL_LINES, PointerPosition};
 
 /// The largest rectangle with the frame's aspect ratio that fits `area`, centered.
 pub(crate) fn letterbox(area: Bounds<Pixels>, frame: Size<u32>) -> Bounds<Pixels> {

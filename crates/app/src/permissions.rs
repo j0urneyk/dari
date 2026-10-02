@@ -1,6 +1,6 @@
 //! The OS permissions hosting needs (macOS privacy settings).
 
-use open_desk_media::PermissionState;
+use dari_media::PermissionState;
 
 /// What this machine currently allows a remote viewer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,8 +12,8 @@ pub(crate) struct LocalPermissions {
 impl LocalPermissions {
     pub(crate) fn check() -> Self {
         Self {
-            screen: open_desk_media::screen_capture_access() != PermissionState::Denied,
-            input: open_desk_input::input_access_granted(),
+            screen: dari_media::screen_capture_access() != PermissionState::Denied,
+            input: dari_input::input_access_granted(),
         }
     }
 
@@ -25,10 +25,10 @@ impl LocalPermissions {
 /// Shows the OS prompts for whatever is missing.
 pub(crate) fn request_missing(current: LocalPermissions) {
     if !current.screen {
-        open_desk_media::request_screen_capture_access();
+        dari_media::request_screen_capture_access();
     }
     if !current.input {
-        open_desk_input::request_input_access();
+        dari_input::request_input_access();
     }
 }
 

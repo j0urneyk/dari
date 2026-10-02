@@ -1,6 +1,6 @@
 [package]
-name = "open-desk-relay"
-description = "Rendezvous and UDP relay server that lets open-desk devices reach each other across NATs"
+name = "dari-relay"
+description = "Rendezvous and UDP relay server that lets Dari devices reach each other across NATs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-open-desk-net.workspace = true
-open-desk-proto.workspace = true
+dari-net.workspace = true
+dari-proto.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

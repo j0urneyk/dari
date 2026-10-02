@@ -4,19 +4,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_input::{DisplayGeometry, InjectError, InputSession};
-use open_desk_media::{
+use dari_input::{DisplayGeometry, InjectError, InputSession};
+use dari_media::{
     CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError, StreamSettings,
     spawn_capture_stream,
 };
-use open_desk_net::{
-    AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink,
-};
-use open_desk_proto::{
+use dari_net::{AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink};
+use dari_proto::{
     Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
     MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, VideoPacket, sanitize_display_text,
 };
+use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -507,7 +505,7 @@ fn spawn_input_thread(
     let thread_stopped = stopped.clone();
     let (report, availability) = oneshot::channel();
     let spawned = std::thread::Builder::new()
-        .name("open-desk-input".into())
+        .name("dari-input".into())
         .spawn(move || {
             let backend = match platform.open_input() {
                 Ok(backend) => {

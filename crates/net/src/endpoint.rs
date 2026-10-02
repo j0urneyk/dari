@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use open_desk_proto::{ClientHello, Os, PROTOCOL_VERSION, RejectReason, ServerHello};
+use dari_proto::{ClientHello, Os, PROTOCOL_VERSION, RejectReason, ServerHello};
 use thiserror::Error;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
@@ -49,7 +49,7 @@ pub enum ConnectError {
     #[error("the remote device did not answer in time")]
     TimedOut,
     #[error("the relay refused: {0}")]
-    Relay(open_desk_proto::RelayError),
+    Relay(dari_proto::RelayError),
     #[error("the relay is unavailable: {0}")]
     RelayUnavailable(String),
 }

@@ -4,15 +4,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{Context as _, bail};
-use open_desk_proto::{DeviceId, MAX_DEVICE_NAME_CHARS, sanitize_display_text};
-use open_desk_session::ViewerTarget;
+use dari_proto::{DeviceId, MAX_DEVICE_NAME_CHARS, sanitize_display_text};
+use dari_session::ViewerTarget;
 
 /// UDP port hosts listen on unless configured otherwise.
 pub(crate) const DEFAULT_PORT: u16 = 47821;
 
 /// Per-user directory for the device identity and settings.
 pub(crate) fn data_directory() -> anyhow::Result<PathBuf> {
-    directories::ProjectDirs::from("dev", "open-desk", "open-desk")
+    directories::ProjectDirs::from("dev", "dari", "dari")
         .map(|directories| directories.data_local_dir().to_owned())
         .context("cannot determine the user's application data directory")
 }
@@ -23,7 +23,7 @@ pub(crate) fn device_name() -> String {
     let raw = raw.strip_suffix(".local").unwrap_or(&raw);
     let name = sanitize_display_text(raw, MAX_DEVICE_NAME_CHARS);
     if name.trim().is_empty() {
-        "open-desk".into()
+        "Dari".into()
     } else {
         name
     }

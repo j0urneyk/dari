@@ -1,7 +1,7 @@
+use dari_proto::{KeyCode, MouseButton, NamedKey};
 #[cfg(not(windows))]
 use enigo::Coordinate;
 use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, NewConError, Settings};
-use open_desk_proto::{KeyCode, MouseButton, NamedKey};
 
 use crate::InjectError;
 

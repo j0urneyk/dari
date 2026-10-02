@@ -4,7 +4,7 @@
 //! instead of the test harness, and it needs a Metal device, so it only runs when selected:
 //!
 //! ```sh
-//! cargo test -p open-desk --test gui
+//! cargo test -p dari --test gui
 //! ```
 //!
 //! Each test also writes a PNG of what it rendered to `target/gui-snapshots/` for review.
@@ -31,19 +31,19 @@ mod macos {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::*;
-    use open_desk_input::{InjectError, InputBackend, RecordedAction};
-    use open_desk_media::{
+    use dari_input::{InjectError, InputBackend, RecordedAction};
+    use dari_media::{
         CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer,
     };
-    use open_desk_net::{AccessPassword, DeviceIdentity};
-    use open_desk_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
-    use open_desk_session::{
+    use dari_net::{AccessPassword, DeviceIdentity};
+    use dari_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
+    use dari_session::{
         HostConfig, HostEvent, HostPlatform, ViewerConfig, ViewerTarget, connect_viewer, start_host,
     };
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::*;
 
-    use open_desk::test_support::{
+    use dari::test_support::{
         AppState, Home, Settings, TokioRuntime, init_viewer, open_viewer_window,
     };
 
@@ -366,7 +366,7 @@ mod macos {
 
     fn view_frames(
         cx: &mut HeadlessAppContext,
-        view: &Entity<open_desk::test_support::ViewerView>,
+        view: &Entity<dari::test_support::ViewerView>,
     ) -> u64 {
         cx.update(|cx| view.read(cx).frames_shown())
     }
@@ -402,7 +402,7 @@ mod macos {
         let relay_runtime = tokio::runtime::Runtime::new().unwrap();
         let relay = {
             let _entered = relay_runtime.enter();
-            open_desk_relay::RelayServer::start(&open_desk_relay::RelayConfig {
+            dari_relay::RelayServer::start(&dari_relay::RelayConfig {
                 listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 data_directory: relay_data.path().to_owned(),
                 max_allocations: 4,

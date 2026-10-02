@@ -142,7 +142,7 @@ where
     });
     let thread_control = control.clone();
     let thread = std::thread::Builder::new()
-        .name("open-desk-capture".into())
+        .name("dari-capture".into())
         .spawn(move || {
             if let Err(error) = run(open_capturer, settings, &sink, &thread_control) {
                 warn!(%error, "capture stream failed to start");

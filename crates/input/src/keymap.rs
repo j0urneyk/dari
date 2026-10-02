@@ -1,4 +1,4 @@
-use open_desk_proto::{InputEvent, KeyCode, NamedKey, Os};
+use dari_proto::{InputEvent, KeyCode, NamedKey, Os};
 
 /// Translates shortcut modifiers between operating systems on the viewer side.
 ///

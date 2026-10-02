@@ -1,27 +1,27 @@
 # 아키텍처
 
-open-desk는 앱 하나가 호스트(내 화면 공유)와 뷰어(원격 화면 제어)를 모두 맡습니다. 코드는 계층별
+Dari는 앱 하나가 호스트(내 화면 공유)와 뷰어(원격 화면 제어)를 모두 맡습니다. 코드는 계층별
 크레이트로 나뉘고 의존은 한 방향으로만 흐릅니다. 그래서 세션 로직 전체를 UI 없이 테스트할 수 있고,
 GUI가 잠시 멈춰도 네트워크와 미디어 처리는 계속 돕니다.
 
 ```text
-open-desk (app) ──► open-desk-session ──► open-desk-net ───┐
-                                      ├──► open-desk-media  ├──► open-desk-proto
-                                      └──► open-desk-input ─┘
-open-desk-relay ──► open-desk-net, open-desk-proto
+dari (app) ──► dari-session ──► dari-net ───┐
+                                      ├──► dari-media  ├──► dari-proto
+                                      └──► dari-input ─┘
+dari-relay ──► dari-net, dari-proto
 ```
 
 ## 크레이트
 
 | 크레이트 | 경로 | 책임 | 주요 의존성 |
 | --- | --- | --- | --- |
-| `open-desk-proto` | `crates/proto` | 메시지 타입, 프로토콜 버전, 길이 제한 프레이밍, 메시지 검증. I/O 없음 | serde, postcard, tokio-util |
-| `open-desk-net` | `crates/net` | 기기 인증서, 일회용 비밀번호, SPAKE2 핸드셰이크, 시도 제한, QUIC 엔드포인트, mDNS 검색, 릴레이 클라이언트 | quinn, rustls(ring), rcgen, spake2, mdns-sd |
-| `open-desk-media` | `crates/media` | 디스플레이 열거·캡처, 축소, H.264 인코드/디코드, 페이싱된 캡처 스레드 | xcap, fast_image_resize, openh264 |
-| `open-desk-input` | `crates/input` | 입력 주입, 눌린 키 추적, ⌘↔Ctrl 매핑, Windows DPI/커서 처리 | enigo, windows |
-| `open-desk-session` | `crates/session` | 호스트 서비스, 호스트 세션(승인·캡처·입력·클립보드), 뷰어 세션 | tokio, arboard |
-| `open-desk-relay` | `crates/relay` | 랑데부(ID 발급)와 UDP 전달 서버 바이너리 | quinn, tokio |
-| `open-desk` | `crates/app` | gpui-kit 데스크톱 앱과 헤드리스 CLI(`host`, `connect`) | gpui-kit, clap, directories, toml |
+| `dari-proto` | `crates/proto` | 메시지 타입, 프로토콜 버전, 길이 제한 프레이밍, 메시지 검증. I/O 없음 | serde, postcard, tokio-util |
+| `dari-net` | `crates/net` | 기기 인증서, 일회용 비밀번호, SPAKE2 핸드셰이크, 시도 제한, QUIC 엔드포인트, mDNS 검색, 릴레이 클라이언트 | quinn, rustls(ring), rcgen, spake2, mdns-sd |
+| `dari-media` | `crates/media` | 디스플레이 열거·캡처, 축소, H.264 인코드/디코드, 페이싱된 캡처 스레드 | xcap, fast_image_resize, openh264 |
+| `dari-input` | `crates/input` | 입력 주입, 눌린 키 추적, ⌘↔Ctrl 매핑, Windows DPI/커서 처리 | enigo, windows |
+| `dari-session` | `crates/session` | 호스트 서비스, 호스트 세션(승인·캡처·입력·클립보드), 뷰어 세션 | tokio, arboard |
+| `dari-relay` | `crates/relay` | 랑데부(ID 발급)와 UDP 전달 서버 바이너리 | quinn, tokio |
+| `dari` | `crates/app` | gpui-kit 데스크톱 앱과 헤드리스 CLI(`host`, `connect`) | gpui-kit, clap, directories, toml |
 
 ### 외부 의존성
 
@@ -55,7 +55,7 @@ CPU를 많이 쓰거나 블로킹 API를 쓰는 작업은 전용 OS 스레드에
 
 ## 호스트 쪽 흐름
 
-`open_desk_session::start_host`가 `HostEndpoint`(QUIC 서버)를 열고 호스트 서비스 태스크를 띄웁니다. UI는
+`dari_session::start_host`가 `HostEndpoint`(QUIC 서버)를 열고 호스트 서비스 태스크를 띄웁니다. UI는
 `HostHandle`로 명령(비밀번호 재발급, 수락 on/off, 승인·클립보드 정책 변경, 세션 종료)을 보내고
 `HostEvent` 채널로 상태를 받습니다(`PasswordChanged`, `ApprovalRequested`, `SessionStarted`,
 `SessionStatus`, `SessionEnded`, `Relay`).
@@ -160,7 +160,7 @@ gpui-kit의 `Root`는 Tab, Shift-Tab, ⌘C/Ctrl+C를 포커스 이동과 복사�
 
 ## LAN 검색
 
-호스트는 mDNS로 `_open-desk._udp.local.` 서비스를 광고합니다(이름, OS, 인증서 지문 앞 4바이트). 뷰어는
+호스트는 mDNS로 `_dari._udp.local.` 서비스를 광고합니다(이름, OS, 인증서 지문 앞 4바이트). 뷰어는
 이를 "근처 기기" 목록에 보여 줄 뿐이고, 접속할 때는 항상 비밀번호 인증을 거칩니다. 인스턴스 이름은 DNS
 레이블 한도(63바이트)에 맞춰 자르고, 자기 자신의 광고는 지문 힌트로 걸러 냅니다. 루프백 주소는 다른 기기에
 쓸모가 없어 결과에서 뺍니다(같은 기기 안의 테스트에서만 포함).

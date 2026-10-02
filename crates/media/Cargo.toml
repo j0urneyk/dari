@@ -1,6 +1,6 @@
 [package]
-name = "open-desk-media"
-description = "Screen capture, scaling, and H.264 encoding/decoding for open-desk"
+name = "dari-media"
+description = "Screen capture, scaling, and H.264 encoding/decoding for dari"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed the project from open-desk to Dari. The app, CLI (`dari`), relay (`dari-relay`), crates (`dari-*`),
+  bundle ID (`dev.dari.app`), data directory, mDNS service (`_dari._udp`), and protocol identifiers (ALPN,
+  TLS exporter label, SPAKE2 identities, relay datagram tags) all use the new name. Dari cannot connect to
+  open-desk 0.1.0 devices or relays. On macOS, grant Screen Recording and Accessibility again for the new
+  bundle. The device certificate and relay ID are regenerated because the data directory moved.
+
 ## [0.1.0] - 2026-10-03
 
 ### Added

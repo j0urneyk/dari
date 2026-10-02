@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use open_desk_proto::{
+use dari_proto::{
     CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, VIDEO_FRAME_LIMIT, VideoPacket,
 };
 use tokio_util::codec::{FramedRead, FramedWrite};

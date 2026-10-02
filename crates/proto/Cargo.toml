@@ -1,6 +1,6 @@
 [package]
-name = "open-desk-proto"
-description = "Wire protocol for open-desk: message types, versioning, and bounded framing"
+name = "dari-proto"
+description = "Wire protocol for dari: message types, versioning, and bounded framing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

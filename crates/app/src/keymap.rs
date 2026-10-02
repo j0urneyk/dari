@@ -1,7 +1,7 @@
 //! Translates GPUI keyboard events into protocol key events.
 
+use dari_proto::{InputEvent, KeyCode, MAX_FUNCTION_KEY, NamedKey};
 use gpui_kit::{Keystroke, Modifiers};
-use open_desk_proto::{InputEvent, KeyCode, MAX_FUNCTION_KEY, NamedKey};
 
 /// The protocol key for a GPUI keystroke, or `None` for keys the protocol does not carry.
 ///

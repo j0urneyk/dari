@@ -1,4 +1,4 @@
-//! open-desk desktop application: shares this device's screen and controls remote devices.
+//! Dari desktop application: shares this device's screen and controls remote devices.
 //!
 //! The binary calls [`run`]. The library form exists so the GUI can be tested headlessly
 //! (`tests/gui.rs`) through [`test_support`].
@@ -59,7 +59,7 @@ pub fn run() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    open_desk_input::prepare_process();
+    dari_input::prepare_process();
 
     let cli = Cli::parse();
     match cli.command {
@@ -90,7 +90,7 @@ fn run_gui() -> anyhow::Result<()> {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("open-desk".into()),
+                    title: Some("Dari".into()),
                     ..Default::default()
                 }),
                 ..Default::default()

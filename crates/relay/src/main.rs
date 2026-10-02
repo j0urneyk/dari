@@ -1,14 +1,14 @@
-//! `open-desk-relay`: run a relay server.
+//! `dari-relay`: run a relay server.
 
 use std::net::{Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
 use clap::Parser;
-use open_desk_relay::{DEFAULT_RELAY_PORT, RelayConfig, RelayServer};
+use dari_relay::{DEFAULT_RELAY_PORT, RelayConfig, RelayServer};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Relay server for open-desk devices behind NATs")]
+#[command(version, about = "Relay server for Dari devices behind NATs")]
 struct Arguments {
     /// Address for the control endpoint; forwarded ports are opened on the same IP.
     #[arg(long, default_value_t = SocketAddr::from((Ipv6Addr::UNSPECIFIED, DEFAULT_RELAY_PORT)))]

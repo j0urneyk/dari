@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::frame::RgbaFrame;
 
-/// Largest frame the decoder accepts, matching what any open-desk host can produce.
+/// Largest frame the decoder accepts, matching what any Dari host can produce.
 const MAX_DECODED_PIXELS: usize = 3840 * 2160;
 
 #[derive(Debug, Error)]

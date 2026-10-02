@@ -1,4 +1,4 @@
-use open_desk_proto::{InputEvent, KeyCode, MouseButton, PointerPosition};
+use dari_proto::{InputEvent, KeyCode, MouseButton, PointerPosition};
 use tracing::debug;
 
 use crate::InjectError;
@@ -125,7 +125,7 @@ impl<B: InputBackend> Drop for InputSession<B> {
 
 #[cfg(test)]
 mod tests {
-    use open_desk_proto::NamedKey;
+    use dari_proto::NamedKey;
 
     use super::*;
     use crate::backend::{RecordedAction, RecordingBackend};

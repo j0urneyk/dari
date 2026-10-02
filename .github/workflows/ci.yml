@@ -63,4 +63,4 @@ jobs:
         run: cargo test --workspace --locked
       - name: GUI tests (Metal)
         if: runner.os == 'macOS'
-        run: cargo test -p open-desk --test gui --locked
+        run: cargo test -p dari --test gui --locked

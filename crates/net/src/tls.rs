@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use open_desk_proto::RELAY_ALPN;
+use dari_proto::RELAY_ALPN;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{IdleTimeout, TransportConfig, VarInt};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::identity::DeviceIdentity;
 
-pub(crate) const ALPN: &[u8] = b"open-desk/1";
+pub(crate) const ALPN: &[u8] = b"dari/1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 

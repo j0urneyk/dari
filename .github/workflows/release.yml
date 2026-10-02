@@ -49,7 +49,7 @@ jobs:
         working-directory: target/release
         run: |
           version="$(grep -m1 '^version' ../../Cargo.toml | cut -d'"' -f2)"
-          hdiutil create -volname open-desk -srcfolder open-desk.app -ov -format UDZO "open-desk_${version}_macos_aarch64.dmg"
+          hdiutil create -volname Dari -srcfolder Dari.app -ov -format UDZO "dari_${version}_macos_aarch64.dmg"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos
@@ -89,15 +89,15 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - name: Build relay
-        run: cargo build --release --locked -p open-desk-relay
+        run: cargo build --release --locked -p dari-relay
       - name: Archive
         run: |
           version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          tar -C target/release -czf "open-desk-relay_${version}_linux_x86_64.tar.gz" open-desk-relay
+          tar -C target/release -czf "dari-relay_${version}_linux_x86_64.tar.gz" dari-relay
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: relay
-          path: open-desk-relay_*.tar.gz
+          path: dari-relay_*.tar.gz
           if-no-files-found: error
 
   publish:
@@ -138,5 +138,5 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$TAG" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" artifacts/* --draft --title "open-desk $TAG" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
+            gh release create "$TAG" artifacts/* --draft --title "dari $TAG" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
           fi

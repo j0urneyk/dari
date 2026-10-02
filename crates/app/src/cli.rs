@@ -12,9 +12,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use open_desk_media::StreamSettings;
-use open_desk_net::{AccessPassword, DeviceIdentity};
-use open_desk_session::{
+use dari_media::StreamSettings;
+use dari_net::{AccessPassword, DeviceIdentity};
+use dari_session::{
     HostConfig, HostEvent, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent, connect_viewer,
     start_host,
 };
@@ -68,7 +68,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
                     RelayStatus::Unavailable(error) => println!("Relay unavailable: {error}"),
                 },
                 Some(HostEvent::ApprovalRequested { request, .. }) => {
-                    request.respond(open_desk_session::ApprovalDecision::AllowControl);
+                    request.respond(dari_session::ApprovalDecision::AllowControl);
                 }
                 Some(HostEvent::SessionStatus(status)) => {
                     println!("screen: {:?}, input: {:?}", status.screen, status.input);

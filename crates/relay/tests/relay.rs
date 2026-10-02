@@ -10,13 +10,13 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_net::{
+use dari_net::{
     AccessPassword, ConnectError, DeviceIdentity, HostEndpoint, HostSettings, RelayRegistration,
     bind_to_allocation, connect_via_relay,
 };
-use open_desk_proto::{ControlMessage, DeviceId, RelayError};
-use open_desk_relay::{RelayConfig, RelayServer};
+use dari_proto::{ControlMessage, DeviceId, RelayError};
+use dari_relay::{RelayConfig, RelayServer};
+use futures_util::{SinkExt, StreamExt};
 
 fn relay(data: &Path) -> RelayServer {
     RelayServer::start(&RelayConfig {

@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_net::{DeviceIdentity, Fingerprint};
-use open_desk_proto::{
+use dari_net::{DeviceIdentity, Fingerprint};
+use dari_proto::{
     Allocation, CONTROL_FRAME_LIMIT, DeviceId, MessageCodec, RelayError, RelayRequest,
     RelayResponse,
 };
+use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -107,7 +107,7 @@ impl RelayServer {
     /// Starts the relay on the current Tokio runtime.
     pub fn start(config: &RelayConfig) -> anyhow::Result<Self> {
         let identity = DeviceIdentity::load_or_generate(&config.data_directory)?;
-        let server_config = open_desk_net::relay_tls::server_config(&identity)?;
+        let server_config = dari_net::relay_tls::server_config(&identity)?;
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
         let state = Arc::new(State {
             hosts: Mutex::new(HashMap::new()),

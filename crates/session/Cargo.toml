@@ -1,6 +1,6 @@
 [package]
-name = "open-desk-session"
-description = "Host and viewer session orchestration for open-desk"
+name = "dari-session"
+description = "Host and viewer session orchestration for dari"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,10 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-open-desk-input.workspace = true
-open-desk-media.workspace = true
-open-desk-net.workspace = true
-open-desk-proto.workspace = true
+dari-input.workspace = true
+dari-media.workspace = true
+dari-net.workspace = true
+dari-proto.workspace = true
 
 arboard.workspace = true
 futures-util.workspace = true
@@ -20,7 +20,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-open-desk-relay.workspace = true
+dari-relay.workspace = true
 tempfile = "3"
 
 [lints]

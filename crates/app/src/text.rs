@@ -2,9 +2,9 @@
 
 use std::sync::OnceLock;
 
-use open_desk_net::PasswordError;
-use open_desk_proto::RejectReason;
-use open_desk_session::SessionEndReason;
+use dari_net::PasswordError;
+use dari_proto::RejectReason;
+use dari_session::SessionEndReason;
 
 pub(crate) struct Text {
     pub(crate) app_subtitle: &'static str,
@@ -109,10 +109,10 @@ impl Text {
             (RejectReason::NotAccepting, true) => "상대 기기가 원격 접속을 허용하지 않고 있습니다",
             (RejectReason::NotAccepting, false) => "The remote device is not accepting connections",
             (RejectReason::IncompatibleVersion, true) => {
-                "상대 기기의 open-desk 버전이 호환되지 않습니다"
+                "상대 기기의 Dari 버전이 호환되지 않습니다"
             }
             (RejectReason::IncompatibleVersion, false) => {
-                "The remote device runs an incompatible open-desk version"
+                "The remote device runs an incompatible Dari version"
             }
         }
     }

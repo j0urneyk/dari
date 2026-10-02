@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use open_desk_net::Fingerprint;
-use open_desk_proto::DeviceId;
+use dari_net::Fingerprint;
+use dari_proto::DeviceId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -82,7 +82,7 @@ impl IdStore {
 
 #[cfg(test)]
 mod tests {
-    use open_desk_net::DeviceIdentity;
+    use dari_net::DeviceIdentity;
 
     use super::*;
 

@@ -6,17 +6,17 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use dari_media::DecodedFrame;
+use dari_proto::{
+    Availability, DisplayDescription, HostStatus, InputEvent, KeyCode, MouseButton as RemoteButton,
+    PointerPosition, QualityPreset,
+};
+use dari_session::{SessionEndReason, ViewerEvent, ViewerHandle};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme, Selectable as _, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
-use open_desk_media::DecodedFrame;
-use open_desk_proto::{
-    Availability, DisplayDescription, HostStatus, InputEvent, KeyCode, MouseButton as RemoteButton,
-    PointerPosition, QualityPreset,
-};
-use open_desk_session::{SessionEndReason, ViewerEvent, ViewerHandle};
 use tokio::sync::mpsc;
 
 use crate::keymap::{key_code, modifier_changes};
@@ -53,7 +53,7 @@ pub fn open_viewer_window(
     events: mpsc::UnboundedReceiver<ViewerEvent>,
     cx: &mut App,
 ) -> anyhow::Result<(AnyWindowHandle, Entity<ViewerView>)> {
-    let title = format!("{} — open-desk", viewer.peer().name);
+    let title = format!("{} — dari", viewer.peer().name);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
         titlebar: Some(TitlebarOptions {

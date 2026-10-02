@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use open_desk_proto::MAX_CLIPBOARD_BYTES;
+use dari_proto::MAX_CLIPBOARD_BYTES;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -70,7 +70,7 @@ impl ClipboardSync {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let spawned = std::thread::Builder::new()
-            .name("open-desk-clipboard".into())
+            .name("dari-clipboard".into())
             .spawn(move || {
                 let Some(mut clipboard) = factory() else {
                     return;

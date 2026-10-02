@@ -6,12 +6,12 @@
 //! sees two different exporters, so its confirmations can never verify even if it relays every
 //! message. An eavesdropper learns nothing it could use to test password guesses offline.
 
-use futures_util::{SinkExt, StreamExt};
-use hmac::{Hmac, Mac};
-use open_desk_proto::{
+use dari_proto::{
     AuthOutcome, ClientHello, CodecError, HANDSHAKE_FRAME_LIMIT, HandshakeMessage,
     KEY_CONFIRMATION_LEN, MessageCodec, PROTOCOL_VERSION, RejectReason, ServerHello,
 };
+use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use subtle::ConstantTimeEq;
@@ -24,11 +24,11 @@ use crate::password::AccessPassword;
 
 /// Length of the TLS exporter value the confirmations are bound to.
 pub(crate) const EXPORTER_LEN: usize = 32;
-pub(crate) const EXPORTER_LABEL: &[u8] = b"EXPORTER-open-desk-auth-v1";
+pub(crate) const EXPORTER_LABEL: &[u8] = b"EXPORTER-dari-auth-v1";
 
-const VIEWER_IDENTITY: &[u8] = b"open-desk viewer";
-const HOST_IDENTITY: &[u8] = b"open-desk host";
-const CONFIRMATION_LABEL: &[u8] = b"open-desk key confirmation v1";
+const VIEWER_IDENTITY: &[u8] = b"dari viewer";
+const HOST_IDENTITY: &[u8] = b"dari host";
+const CONFIRMATION_LABEL: &[u8] = b"dari key confirmation v1";
 
 #[derive(Debug, Error)]
 pub enum HandshakeError {
@@ -270,7 +270,7 @@ fn confirmation(
 
 #[cfg(test)]
 mod tests {
-    use open_desk_proto::Os;
+    use dari_proto::Os;
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf, duplex, split};
 
     use super::*;

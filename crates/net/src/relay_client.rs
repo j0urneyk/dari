@@ -8,11 +8,11 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use open_desk_proto::{
+use dari_proto::{
     Allocation, CONTROL_FRAME_LIMIT, CodecError, DeviceId, MessageCodec, RelayError, RelayRequest,
     RelayResponse,
 };
+use futures_util::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio_util::codec::{FramedRead, FramedWrite};

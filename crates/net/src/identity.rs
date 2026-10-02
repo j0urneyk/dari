@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-/// Subject name in every open-desk certificate; also the TLS server name viewers send.
-pub(crate) const CERTIFICATE_SUBJECT: &str = "open-desk";
+/// Subject name in every Dari certificate; also the TLS server name viewers send.
+pub(crate) const CERTIFICATE_SUBJECT: &str = "dari";
 
 const CERTIFICATE_FILE: &str = "identity-cert.der";
 const PRIVATE_KEY_FILE: &str = "identity-key.der";

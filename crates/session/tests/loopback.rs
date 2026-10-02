@@ -10,13 +10,11 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use open_desk_input::{InjectError, InputBackend, RecordedAction};
-use open_desk_media::{
-    CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer,
-};
-use open_desk_net::{AccessPassword, DeviceIdentity};
-use open_desk_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
-use open_desk_session::{
+use dari_input::{InjectError, InputBackend, RecordedAction};
+use dari_media::{CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer};
+use dari_net::{AccessPassword, DeviceIdentity};
+use dari_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
+use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
     RelayStatus, SessionEndReason, ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer,
     start_host,
@@ -139,7 +137,7 @@ const SECOND_DISPLAY: DisplayInfo = DisplayInfo {
 };
 
 struct Host {
-    handle: open_desk_session::HostHandle,
+    handle: dari_session::HostHandle,
     events: mpsc::UnboundedReceiver<HostEvent>,
     password: AccessPassword,
 }
@@ -222,7 +220,7 @@ async fn viewer_sees_the_screen_and_controls_the_host() {
     ));
     assert_eq!(
         next_event(&mut viewer_events).await,
-        ViewerEvent::HostStatus(open_desk_proto::HostStatus {
+        ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
         })
@@ -316,7 +314,7 @@ async fn missing_input_permission_is_reported_and_the_screen_still_streams() {
         .unwrap();
     assert_eq!(
         next_event(&mut viewer_events).await,
-        ViewerEvent::HostStatus(open_desk_proto::HostStatus {
+        ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::PermissionDenied,
         })
@@ -420,7 +418,7 @@ async fn nothing_is_shared_until_the_host_user_allows_it() {
     .await;
     assert_eq!(
         status,
-        ViewerEvent::HostStatus(open_desk_proto::HostStatus {
+        ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
         })
@@ -469,7 +467,7 @@ async fn view_only_sessions_ignore_input() {
     .await;
     assert_eq!(
         status,
-        ViewerEvent::HostStatus(open_desk_proto::HostStatus {
+        ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::NotAllowed,
         })
@@ -559,7 +557,7 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
 #[tokio::test(flavor = "multi_thread")]
 async fn viewer_reaches_the_host_service_by_relay_id() {
     let data = tempfile::tempdir().unwrap();
-    let relay = open_desk_relay::RelayServer::start(&open_desk_relay::RelayConfig {
+    let relay = dari_relay::RelayServer::start(&dari_relay::RelayConfig {
         listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         data_directory: data.path().to_owned(),
         max_allocations: 4,

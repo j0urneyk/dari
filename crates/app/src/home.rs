@@ -4,6 +4,16 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dari_media::StreamSettings;
+use dari_net::{
+    AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
+    NearbyDevice, PeerInfo, fingerprint_hint,
+};
+use dari_proto::{Availability, HostStatus};
+use dari_session::{
+    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
+    SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
+};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -11,16 +21,6 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, StyledExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use open_desk_media::StreamSettings;
-use open_desk_net::{
-    AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
-    NearbyDevice, PeerInfo, fingerprint_hint,
-};
-use open_desk_proto::{Availability, HostStatus};
-use open_desk_session::{
-    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
-    SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
-};
 
 use crate::config::{device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
@@ -100,7 +100,7 @@ impl Render for Home {
                 div()
                     .v_flex()
                     .gap_1()
-                    .child(div().text_xl().font_semibold().child("open-desk"))
+                    .child(div().text_xl().font_semibold().child("Dari"))
                     .child(
                         div()
                             .text_sm()

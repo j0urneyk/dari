@@ -1,4 +1,4 @@
-//! Secure transport for open-desk.
+//! Secure transport for Dari.
 //!
 //! Hosts listen on QUIC with a self-signed device certificate. Viewers connect and both sides
 //! authenticate with the host's one-time access password using SPAKE2, bound to the TLS session
@@ -30,7 +30,7 @@ pub use relay_client::{
 pub use session::{AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink};
 pub use tls::TlsConfigError;
 
-/// TLS configuration for relay servers (used by `open-desk-relay`).
+/// TLS configuration for relay servers (used by `dari-relay`).
 pub mod relay_tls {
     pub use crate::tls::relay_server_config as server_config;
 }

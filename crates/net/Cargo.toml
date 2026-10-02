@@ -1,6 +1,6 @@
 [package]
-name = "open-desk-net"
-description = "QUIC transport and password-authenticated session handshake for open-desk"
+name = "dari-net"
+description = "QUIC transport and password-authenticated session handshake for dari"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-open-desk-proto.workspace = true
+dari-proto.workspace = true
 
 futures-util.workspace = true
 getrandom.workspace = true

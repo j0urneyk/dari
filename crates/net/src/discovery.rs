@@ -6,13 +6,13 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+use dari_proto::{MAX_DEVICE_NAME_CHARS, Os, sanitize_display_text};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-use open_desk_proto::{MAX_DEVICE_NAME_CHARS, Os, sanitize_display_text};
 use thiserror::Error;
 
 use crate::identity::Fingerprint;
 
-const SERVICE_TYPE: &str = "_open-desk._udp.local.";
+const SERVICE_TYPE: &str = "_dari._udp.local.";
 /// Addresses kept per discovered device.
 const MAX_ADDRESSES: usize = 8;
 /// Devices kept by one browser; the network is small, anything beyond this is noise.
@@ -44,7 +44,7 @@ impl Advertisement {
         let fingerprint_hex = fingerprint_hint(fingerprint);
         let display_name = sanitize_display_text(name, MAX_DEVICE_NAME_CHARS);
         let instance = instance_name(&display_name, &fingerprint_hex);
-        let host_name = format!("open-desk-{fingerprint_hex}.local.");
+        let host_name = format!("dari-{fingerprint_hex}.local.");
         let properties = [
             ("name", display_name.as_str()),
             ("os", os_tag(Os::current())),

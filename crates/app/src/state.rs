@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dari_net::DeviceIdentity;
 use gpui_kit::{App, Global};
-use open_desk_net::DeviceIdentity;
 
 use crate::settings::Settings;
 
