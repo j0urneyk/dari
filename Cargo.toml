@@ -1,0 +1,92 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+repository = "https://github.com/j0urneyk/dari"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+dari-input = { path = "crates/input" }
+dari-media = { path = "crates/media" }
+dari-net = { path = "crates/net" }
+dari-proto = { path = "crates/proto" }
+dari-relay = { path = "crates/relay" }
+dari-session = { path = "crates/session" }
+
+anyhow = "1"
+arboard = { version = "3", default-features = false }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+enigo = "0.6"
+fast_image_resize = "5"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+gethostname = "1"
+getrandom = { version = "0.3", features = ["std"] }
+gpui-kit = "0.7"
+hmac = "0.12"
+if-addrs = "0.15"
+mdns-sd = { version = "0.21", features = ["async"] }
+image = { version = "0.25", default-features = false }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
+objc2-core-graphics = "0.3"
+openh264 = "0.9"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rpassword = "7"
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+spake2 = "0.4"
+subtle = "2"
+sys-locale = "0.3"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+toml = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+windows = "0.62"
+xcap = "0.9"
+zeroize = { version = "1", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that mostly add noise for an application codebase.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# Flags natural pairs such as `encoded`/`decoded`.
+similar_names = "allow"
+# gpui-kit is designed to be used through its `use gpui_kit::*` prelude.
+wildcard_imports = "allow"
+# Restriction lints we opt into.
+dbg_macro = "warn"
+expect_used = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+
+[profile.dev.package."*"]
+# Dependencies (GPUI, codecs) are unusably slow unoptimized; keep our own crates debuggable.
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,26 @@
+[package]
+name = "dari-media"
+description = "Screen capture, scaling, and H.264 encoding/decoding for dari"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+fast_image_resize.workspace = true
+openh264.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+xcap.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-graphics.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
