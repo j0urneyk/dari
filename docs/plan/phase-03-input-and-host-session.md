@@ -49,3 +49,23 @@
 
 - loopback E2E 테스트가 CI에서 통과
 - 로컬에서 `host`/`connect`로 실제 화면 프레임이 수신됨을 확인
+
+## 구현 노트
+
+- 입력 프로토콜: 포인터 좌표는 캡처 디스플레이 기준 0..=65535 정규화 값이다. 문자 키는 "US 배열에서
+  수정자 없이 그 문자를 내는 키"(`KeyCode::Character`)로 보내고, 최종 입력 문자는 호스트의 자판
+  배열·IME가 결정한다(물리 키보드와 같은 방식이라 원격 한글 IME 조합이 그대로 동작한다).
+  한/영, 한자 키는 Windows 호스트에서만 지원한다.
+- Windows: enigo의 절대 좌표 이동은 주 모니터 기준이라 보조 모니터에서 틀어진다. 포인터 위치는
+  `SetCursorPos`(가상 데스크톱 물리 좌표)로 옮기고, 시작 시 `SetProcessDpiAwarenessContext`로
+  Per-Monitor V2 DPI 인식을 켠다. 이 두 Win32 호출만 `unsafe`를 쓴다(`crates/input/src/backend.rs`).
+  Windows 전용 코드는 `cargo clippy --target x86_64-pc-windows-msvc`로 로컬에서도 검사했다.
+- 세션 계층은 `HostPlatform` 트레이트로 화면/입력을 추상화해 합성 화면 + 기록 입력으로 실제
+  QUIC·H.264 경로 전체를 E2E 테스트한다.
+- 호스트 캡처가 실패(권한 없음 등)해도 세션은 유지하고 `HostStatus`로 이유를 알린다. 뷰어는 비디오
+  스트림이 정상 종료되어도 세션을 끝내지 않는다.
+- 연결을 닫기 전에 `Disconnect`가 실제로 전달되도록 양쪽 모두 상대가 연결을 닫기를 최대 1초 기다린다
+  (QUIC close는 전송 전 데이터를 버린다).
+- 실제 CLI 수동 검증(macOS, loopback): 접속·인증·권한 상태 전파·정상 종료·비밀번호 교체 확인.
+  이 개발 환경 프로세스에는 화면 기록/손쉬운 사용 권한이 없어 실제 화면 프레임과 입력 주입은
+  권한이 있는 환경(phase 4 GUI 앱)에서 확인한다.

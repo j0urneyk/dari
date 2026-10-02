@@ -19,6 +19,12 @@ pub trait ScreenCapturer {
     fn capture(&mut self) -> Result<RgbaFrame, CaptureError>;
 }
 
+impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
+    fn capture(&mut self) -> Result<RgbaFrame, CaptureError> {
+        (**self).capture()
+    }
+}
+
 /// Stream parameters the host may change while streaming.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamSettings {

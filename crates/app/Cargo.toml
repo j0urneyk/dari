@@ -8,7 +8,20 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+open-desk-input.workspace = true
+open-desk-media.workspace = true
+open-desk-net.workspace = true
+open-desk-proto.workspace = true
+open-desk-session.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+gethostname.workspace = true
 gpui-kit.workspace = true
+if-addrs.workspace = true
+rpassword.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

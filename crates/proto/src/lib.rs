@@ -6,6 +6,7 @@
 mod codec;
 mod control;
 mod handshake;
+mod input;
 mod validate;
 mod version;
 mod video;
@@ -13,9 +14,13 @@ mod video;
 pub use codec::{
     CONTROL_FRAME_LIMIT, CodecError, HANDSHAKE_FRAME_LIMIT, MessageCodec, VIDEO_FRAME_LIMIT,
 };
-pub use control::ControlMessage;
+pub use control::{Availability, ControlMessage, HostStatus};
 pub use handshake::{
     AuthOutcome, ClientHello, HandshakeMessage, KEY_CONFIRMATION_LEN, Os, RejectReason, ServerHello,
+};
+pub use input::{
+    InputEvent, KeyCode, MAX_FUNCTION_KEY, MAX_INPUT_TEXT_CHARS, MAX_SCROLL_LINES, MouseButton,
+    NamedKey, PointerPosition,
 };
 pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};

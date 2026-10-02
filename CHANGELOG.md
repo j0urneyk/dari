@@ -15,3 +15,7 @@ All notable changes to this project are documented here. The format follows
   authentication bound to the TLS session, failed-attempt throttling, and a single-session slot.
 - Media pipeline: display capture (xcap), downscaling, H.264 encode/decode (OpenH264) on a
   paced capture thread that drops frames before encoding when the network falls behind.
+- Remote input: pointer, buttons, wheel, keys, and text injected with enigo; held keys are
+  released when a session ends; ⌘/Ctrl shortcut mapping between macOS and Windows.
+- Host and viewer sessions with screen/input availability reporting, and the headless
+  `open-desk host` / `open-desk connect` commands.
