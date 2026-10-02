@@ -1,8 +1,9 @@
 # 개발 기록
 
-open-desk v0.1.0은 [구현 계획](plan/README.md)의 phase 0부터 7까지를 phase마다 PR 하나로 쌓아 만들었습니다.
-이 문서는 각 PR이 무엇을 했는지, 리뷰가 무엇을 찾아 어떻게 고쳤는지, 어떤 검증이 되었고 무엇이 남았는지를
-기록합니다. 계획 대비 설계 변경의 세부 내용은 각 phase 문서의 "구현 노트"에 있습니다.
+open-desk v0.1.0은 8개 phase(0–7)로 나눈 구현 계획을 phase마다 PR 하나로 쌓아 만들었습니다. 이 문서는 각 PR이
+무엇을 했는지, 리뷰가 무엇을 찾아 어떻게 고쳤는지, 구현이 계획과 어떻게 달라졌는지, 어떤 검증이 되었고 무엇이
+남았는지를 기록합니다. phase별 계획 문서는 v0.1.0 이후 이 문서와 다른 설계 문서에 내용을 옮기고 삭제했습니다.
+원본은 git 기록(`docs/plan/`, 커밋 `775c4a2`부터)에 남아 있습니다.
 
 ## 진행 방식
 
@@ -124,6 +125,32 @@ cargo-packager 설정, SVG 원본 아이콘, macOS 로컬 네트워크 선언, �
   태그 푸시로 시작된 릴리스 워크플로도 Actions 중단으로 돌지 못해, macOS dmg와 Linux 릴레이(Docker에서 빌드)는
   로컬에서 만들어 고친 규칙으로 추출한 노트와 함께 게시했습니다. 게시된 v0.1.0 노트는 CHANGELOG의 `[0.1.0]`
   섹션과 일치합니다.
+
+## 계획과 달라진 점
+
+구현하면서 계획을 바꾼 결정과 그 이유입니다.
+
+| 영역 | 계획 | 구현 | 이유 |
+| --- | --- | --- | --- |
+| 제어 채널 프레임 상한 | 64 KiB | 2 MiB | 최대 1 MiB 클립보드 텍스트가 같은 채널을 씀 |
+| 제어 스트림 | 인증 후 새로 엶 | 핸드셰이크 스트림을 코덱만 바꿔 재사용 | 핸드셰이크 직후 도착한 메시지를 버퍼에서 잃지 않음 |
+| SPAKE2 신원 문자열 | `open-desk-viewer` / `open-desk-host` | `open-desk viewer` / `open-desk host` | 구현 시 확정. 프로토콜 1.0의 일부 |
+| 확인값 입력 | 키, 역할, exporter | 여기에 두 hello의 transcript 해시 추가 | 버전·이름·OS 바꿔치기 방지 |
+| 비밀번호 소모 | 언급 없음 | 인증 성공 즉시 소모, 세션 시작 실패 시 세대 번호로 복원 | 재사용 방지와 호스트가 멈추는 문제 방지(phase 1 리뷰) |
+| 프로토콜 버전 | phase 5에서 minor 증가 | 1.0 유지 | 첫 릴리스 전이라 호환할 이전 버전이 없음 |
+| `cargo-deny` unmaintained | 전체 트리 | 직접 의존성만 | GPUI의 전이 의존성은 교체 불가. 취약점 권고는 전체 트리 유지 |
+| 의존성 빌드 | 기본 | dev에서도 `opt-level = 2` | GPUI와 코덱이 최적화 없이 너무 느림 |
+| `clippy::wildcard_imports` | 경고 | 허용 | gpui-kit가 프렐류드 사용을 전제 |
+| 앱 크레이트 | 바이너리 | 라이브러리 + 얇은 바이너리 | GPUI macOS 플랫폼이 메인 스레드를 요구해 GUI 테스트에 자체 `main`이 필요 |
+| 뷰어 툴바 | Ctrl+Alt+Del 전송 포함 | 제외 | Windows SAS는 일반 프로세스의 `SendInput`으로 보낼 수 없음 |
+| 한/영·한자 키 | 모든 호스트 | Windows 호스트만 | enigo가 이 키들을 Windows에서만 제공 |
+| 승인·클립보드 정책 변경 | 언급 없음 | 다음 세션부터 적용 | 진행 중 세션의 권한 범위를 중간에 바꾸지 않음 |
+| 릴레이 바인딩 | 토큰 데이터그램만 | `ODRA` 확인 응답과 재전송 추가 | 바인딩 유실 시 호스트가 패킷을 영영 못 받음 |
+| 릴레이 남용 방지 | 대역폭 제한 포함 | 요청 속도·대기 수·할당 수·만료로 제한, 대역폭 제한 없음 | 운영자가 OS·네트워크 수준에서 제어하는 편이 단순 |
+| 릴레이 설정 | 설정 파일 | 명령줄 옵션 3개 | 옵션이 적어 파일이 불필요 |
+| Windows DPI 인식 | 매니페스트 | 실행 시 `SetProcessDpiAwarenessContext` | 패키징 방식과 무관하게 적용(phase 3) |
+| macOS 사용 설명 | `NSScreenCaptureUsageDescription` 등 | `NSLocalNetworkUsageDescription`, `NSBonjourServices` | 화면 기록·손쉬운 사용은 사용 설명 키가 없음. 로컬 네트워크 선언이 없으면 macOS 15+가 LAN을 차단 |
+| macOS dmg와 아이콘 | cargo-packager | `hdiutil`, `iconutil` | cargo-packager의 dmg는 Finder 자동화 권한을, icns 생성은 실패 |
 
 ## CI 중단과 대응
 

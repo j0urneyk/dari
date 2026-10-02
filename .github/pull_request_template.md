@@ -1,6 +1,6 @@
 ## Summary
 
-<!-- What changes and why. Link the phase plan (docs/plan/...) this PR implements. -->
+<!-- What changes and why. Link the issue or the docs/ page this PR affects. -->
 
 ## Verification
 

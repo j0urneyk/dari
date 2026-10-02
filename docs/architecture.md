@@ -23,6 +23,22 @@ open-desk-relay ──► open-desk-net, open-desk-proto
 | `open-desk-relay` | `crates/relay` | 랑데부(ID 발급)와 UDP 전달 서버 바이너리 | quinn, tokio |
 | `open-desk` | `crates/app` | gpui-kit 데스크톱 앱과 헤드리스 CLI(`host`, `connect`) | gpui-kit, clap, directories, toml |
 
+### 외부 의존성
+
+바퀴를 다시 만들지 않는다는 원칙으로 각 영역에 널리 쓰이는 크레이트를 골랐습니다.
+
+| 영역 | 크레이트 |
+| --- | --- |
+| UI | `gpui-kit` 0.7(GPUI 스냅샷을 `=` 버전으로 고정해 다시 내보냄) |
+| 비동기·네트워크 | `tokio`, `tokio-util`, `quinn`, `rustls`(ring provider), `rcgen` |
+| 인증·암호 | `spake2`, `hmac`, `sha2`, `subtle`, `zeroize`, `getrandom` |
+| 직렬화 | `serde`, `postcard` |
+| 화면 캡처·비디오 | `xcap`, `openh264`(Cisco OpenH264 소스 빌드), `fast_image_resize` |
+| 입력 주입 | `enigo`, Windows는 `windows` 크레이트 |
+| 클립보드·LAN 검색 | `arboard`, `mdns-sd` |
+| 설정·로깅·오류·CLI | `directories`, `toml`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `clap`, `sys-locale` |
+| 패키징 | `cargo-packager` |
+
 ## 스레드와 실행기
 
 앱은 두 실행기를 함께 씁니다. GPUI가 메인 스레드에서 UI를 돌리고, tokio 멀티스레드 런타임이 네트워크와
@@ -72,6 +88,12 @@ CPU를 많이 쓰거나 블로킹 API를 쓰는 작업은 전용 OS 스레드에
 **인코딩하기 전에** 건너뜁니다. 인코딩한 뒤 버리면 다음 P-프레임의 참조가 깨지기 때문입니다. 축소는 긴 변
 기준이고, 가로·세로를 짝수로 맞추며 OpenH264 한도(3840×2160) 안으로 제한합니다.
 
+인코더는 OpenH264의 `ScreenContentRealTime` 모드를 씁니다. 이 모드에서는 프레임 건너뛰기를 켜야 목표
+비트레이트를 지킵니다. 건너뛴 프레임은 출력되지 않을 뿐이라 참조 체인에는 영향이 없습니다. 화면 콘텐츠에서
+지원하지 않는 적응형 양자화와 배경 감지는 끕니다. 캡처 해상도가 바뀌면 인코더를 새로 만들어 키프레임부터
+보냅니다. 캡처는 `ScreenCapturer` 트레이트 뒤에 있고, 실제 구현은 `XcapCapturer`, 테스트용은 움직이는 패턴을
+만드는 `SyntheticCapturer`입니다.
+
 | 품질 프리셋 | 긴 변 최대 | 비트레이트 |
 | --- | --- | --- |
 | 속도 | 1280px | 1.5 Mbps |
@@ -79,6 +101,14 @@ CPU를 많이 쓰거나 블로킹 API를 쓰는 작업은 전용 OS 스레드에
 | 화질 | 2560px | 10 Mbps |
 
 FPS 상한은 30입니다. 프리셋은 뷰어가 요청하고 호스트가 자기 상한으로 매핑합니다(`host_session.rs`).
+
+### 입력 좌표와 DPI
+
+뷰어는 포인터 위치를 캡처한 디스플레이 기준 정규화 좌표(0..=65535)로 보내고, 호스트가 대상 디스플레이의 OS
+좌표로 바꿉니다. macOS는 포인트, Windows는 물리 픽셀 단위입니다. Windows에서 enigo의 절대 좌표 이동은 주
+모니터 기준이라 보조 모니터에서 위치가 틀어집니다. 그래서 포인터는 가상 데스크톱 물리 좌표를 받는
+`SetCursorPos`로 옮기고, 프로세스 시작 시 `SetProcessDpiAwarenessContext`로 Per-Monitor V2 DPI 인식을
+켭니다(매니페스트 대신 실행 시 설정). 디스플레이를 바꾸면 입력 좌표계도 새 디스플레이를 따릅니다.
 
 ## 뷰어 쪽 흐름
 
@@ -102,7 +132,7 @@ FPS 상한은 30입니다. 프리셋은 뷰어가 요청하고 호스트가 자�
 | --- | --- |
 | `lib.rs` | 로깅 초기화, 인자 파싱. 하위 명령이 없으면 GUI, 있으면 CLI |
 | `home.rs` | 홈 창: "이 기기" 카드(주소, 비밀번호, 릴레이 ID, 승인 카드, 권한 안내, 설정)와 "원격 기기 제어" 카드(주소·비밀번호, 최근 주소, 근처 기기) |
-| `viewer.rs` | 뷰어 창: 프레임을 `canvas`에 `paint_image`로 그리고, 입력을 프로토콜 이벤트로 변환. 툴바(디스플레이, 화질, 연결 끊기) |
+| `viewer.rs` | 뷰어 창: 프레임을 `canvas`에 `paint_image`로 그리고, 입력을 프로토콜 이벤트로 변환. 툴바(디스플레이, 화질, 초당 프레임·왕복 지연, 연결 끊기) |
 | `video_layout.rs` | 레터박스 계산과 창 좌표 → 정규화 좌표 변환 |
 | `keymap.rs` | GPUI `Keystroke` → 프로토콜 `KeyCode` |
 | `state.rs`, `runtime.rs` | 앱 상태(기기 인증서, 설정)와 tokio 런타임을 GPUI 전역으로 보관 |
@@ -132,4 +162,5 @@ gpui-kit의 `Root`는 Tab, Shift-Tab, ⌘C/Ctrl+C를 포커스 이동과 복사�
 
 호스트는 mDNS로 `_open-desk._udp.local.` 서비스를 광고합니다(이름, OS, 인증서 지문 앞 4바이트). 뷰어는
 이를 "근처 기기" 목록에 보여 줄 뿐이고, 접속할 때는 항상 비밀번호 인증을 거칩니다. 인스턴스 이름은 DNS
-레이블 한도(63바이트)에 맞춰 자르고, 자기 자신의 광고는 지문 힌트로 걸러 냅니다.
+레이블 한도(63바이트)에 맞춰 자르고, 자기 자신의 광고는 지문 힌트로 걸러 냅니다. 루프백 주소는 다른 기기에
+쓸모가 없어 결과에서 뺍니다(같은 기기 안의 테스트에서만 포함).

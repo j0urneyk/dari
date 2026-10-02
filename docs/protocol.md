@@ -32,8 +32,9 @@
 
 제어 채널 상한은 계획(64 KiB)보다 큰 2 MiB입니다. 최대 1 MiB의 클립보드 텍스트가 같은 채널을 쓰기
 때문입니다. 인증이 끝나면 핸드셰이크 스트림의 코덱만 바꿔(`map_decoder`/`map_encoder`) 제어 스트림으로
-쓰므로, 핸드셰이크 직후에 도착해 이미 버퍼에 있는 제어 메시지도 잃지 않습니다. 뷰어는 단방향 스트림을 열
-수 없습니다.
+쓰므로, 핸드셰이크 직후에 도착해 이미 버퍼에 있는 제어 메시지도 잃지 않습니다. QUIC 전송 설정이 상대가 열 수
+있는 스트림 수를 제한합니다. 뷰어는 양방향 스트림 하나(핸드셰이크 후 제어)만 열 수 있고 단방향 스트림은 열 수
+없으며, 미디어용 단방향 스트림은 호스트만 엽니다.
 
 ## 핸드셰이크
 
@@ -95,8 +96,8 @@ viewer                                         host
 `KeyCode::Character`는 "US 배열에서 수정자 없이 그 문자를 내는 키"입니다. 최종 문자는 호스트의 자판 배열과
 IME가 결정하므로 물리 키보드와 똑같이 동작하고, 원격 한글 조합도 그대로 됩니다. `NamedKey`에는 방향키,
 편집 키, F1–F20, 수정자(`Shift`, `Control`, `Alt`=Option, `Meta`=⌘/Windows 키), `CapsLock`, `PrintScreen`,
-`Pause`, `NumLock`, `HangulMode`(한/영), `HanjaMode`(한자)가 있습니다. 한/영·한자 키는 Windows 호스트에서만
-동작합니다.
+`Pause`, `NumLock`, `HangulMode`(한/영), `HanjaMode`(한자)가 있습니다. `Insert`, `PrintScreen`, `Pause`,
+`NumLock`, 한/영, 한자 키는 enigo가 Windows에서만 제공하므로 macOS 호스트에서는 무시됩니다.
 
 ⌘↔Ctrl 매핑은 뷰어가 적용합니다(`ModifierMapping`). 양쪽의 단축키 수정자(macOS는 `Meta`, 그 밖에는
 `Control`)가 다르고 설정이 켜져 있으면 두 키를 서로 맞바꿉니다. 그래서 macOS 뷰어의 ⌘C는 Windows 호스트에

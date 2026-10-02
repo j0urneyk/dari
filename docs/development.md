@@ -12,6 +12,9 @@
 asdf 등 다른 버전 관리자가 PATH 앞쪽에 오래된 `cargo`를 두면 `rust-toolchain.toml`이 무시될 수 있습니다.
 `cargo --version`이 1.99.0인지 먼저 확인하세요.
 
+gpui-kit는 GPUI 스냅샷을 `=` 버전으로 고정해 다시 내보냅니다. gpui-kit 업그레이드는 GPUI 전체를 바꾸므로 다른
+변경과 섞지 말고 별도 PR로만 합니다.
+
 워크스페이스는 resolver 3, edition 2024, `rust-version = "1.99"`이며 공용 의존성 버전은 루트
 `Cargo.toml`의 `[workspace.dependencies]`에서 관리합니다. 의존성은 dev 프로필에서도 `opt-level = 2`로
 빌드합니다. GPUI와 코덱은 최적화 없이 쓸 수 없을 만큼 느리기 때문이고, 우리 크레이트는 디버깅할 수 있게
@@ -72,6 +75,13 @@ cargo clippy -p open-desk-input --target x86_64-pc-windows-msvc -- -D warnings
 | GUI | `crates/app/tests/gui.rs` | 헤드리스 Metal 렌더러로 실제 창을 그리고 입력을 주입(아래) |
 | mDNS | `crates/net/src/discovery.rs` | 로컬 네트워크 멀티캐스트가 필요해 기본으로 건너뜀. `cargo test -p open-desk-net -- --ignored`로 실행 |
 
+실제 화면 캡처와 인코딩 성능은 예제로 잽니다. 주 디스플레이를 몇 초간 캡처·인코딩해 처리량을 출력합니다.
+macOS에서 화면 기록 권한이 없어도 바탕화면만 담긴 원본 크기 프레임이 나오므로 비용 측정에는 충분합니다.
+
+```bash
+cargo run --release -p open-desk-media --example capture_bench -- 5 1920
+```
+
 세션 계층은 `HostPlatform` 트레이트로 화면과 입력을 바꿔 끼울 수 있어서, CI 러너처럼 화면 권한이 없는
 환경에서도 QUIC과 H.264를 포함한 실제 경로를 검증합니다. 시간 의존 테스트(할당 만료 등)는 tokio의 일시정지
 시계를 씁니다.
@@ -109,13 +119,13 @@ GPUI의 macOS 플랫폼은 메인 스레드에서만 만들 수 있어 표준 �
 
 ## 작업 흐름
 
-1. `main`에서 브랜치를 만듭니다(phase 작업은 `phase-NN-<slug>`).
+1. `main`에서 작업 브랜치를 만듭니다.
 2. 구현하고 위 품질 게이트를 로컬에서 통과시킵니다.
 3. PR 템플릿(`.github/pull_request_template.md`)의 Summary, Verification, Release notes를 채워 PR을 엽니다.
 4. `/code-reviewer`와 `/security-review`를 발견 사항이 없을 때까지 반복합니다. 고친 결함에는 회귀 테스트를
    붙입니다.
-5. 사용자에게 보이는 변경은 `CHANGELOG.md`의 `## [Unreleased]`에 적습니다. 계획과 달라진 설계는 해당 phase
-   문서의 "구현 노트"에 남깁니다.
+5. 사용자에게 보이는 변경은 `CHANGELOG.md`의 `## [Unreleased]`에 적습니다. 설계가 바뀌면 이 디렉터리의 해당
+   문서(아키텍처, 프로토콜, 보안 모델 등)를 같은 PR에서 고칩니다.
 
 ## 패키징과 릴리스
 

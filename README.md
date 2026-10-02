@@ -106,7 +106,7 @@ cargo deny check                           # 의존성 보안·라이선스 검�
 
 자세한 문서는 [docs](docs/README.md)에 있습니다: [사용 가이드](docs/user-guide.md), [아키텍처](docs/architecture.md),
 [프로토콜](docs/protocol.md), [보안 모델](docs/security.md), [개발 가이드](docs/development.md),
-[개발 기록](docs/history.md), [구현 계획](docs/plan/README.md). 변경 이력은 [CHANGELOG](CHANGELOG.md)에 있습니다.
+[개발 기록](docs/history.md). 변경 이력은 [CHANGELOG](CHANGELOG.md)에 있습니다.
 
 ### 릴리스
 
