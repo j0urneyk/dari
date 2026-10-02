@@ -13,3 +13,5 @@ All notable changes to this project are documented here. The format follows
 - Wire protocol crate with versioning, validated messages, and length-bounded framing.
 - Secure QUIC transport: self-signed device identity, one-time access passwords, SPAKE2
   authentication bound to the TLS session, failed-attempt throttling, and a single-session slot.
+- Media pipeline: display capture (xcap), downscaling, H.264 encode/decode (OpenH264) on a
+  paced capture thread that drops frames before encoding when the network falls behind.

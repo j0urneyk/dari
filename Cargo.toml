@@ -11,15 +11,19 @@ publish = false
 repository = "https://github.com/j0urneyk/open-desk"
 
 [workspace.dependencies]
+open-desk-media = { path = "crates/media" }
 open-desk-net = { path = "crates/net" }
 open-desk-proto = { path = "crates/proto" }
 
 anyhow = "1"
 bytes = "1"
+fast_image_resize = "5"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 getrandom = "0.3"
 gpui-kit = "0.7"
 hmac = "0.12"
+objc2-core-graphics = "0.3"
+openh264 = "0.9"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
@@ -33,6 +37,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+xcap = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
@@ -48,6 +53,8 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+# Flags natural pairs such as `encoded`/`decoded`.
+similar_names = "allow"
 # gpui-kit is designed to be used through its `use gpui_kit::*` prelude.
 wildcard_imports = "allow"
 # Restriction lints we opt into.
