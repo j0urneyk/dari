@@ -22,7 +22,7 @@ pub type ClipboardFactory = Arc<dyn Fn() -> Option<Box<dyn ClipboardAccess>> + S
 
 /// Serializes every use of the OS clipboard in this process. macOS's pasteboard is not
 /// thread-safe: a host and a viewer session polling it from their own threads at the same time
-/// crash the process inside AppKit.
+/// crash the process inside `AppKit`.
 static SYSTEM_CLIPBOARD: Mutex<()> = Mutex::new(());
 
 fn system_clipboard_lock() -> MutexGuard<'static, ()> {
