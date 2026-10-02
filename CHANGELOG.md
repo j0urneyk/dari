@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-03
+
 ### Added
 
 - Cargo workspace with the `open-desk` gpui-kit application skeleton.
@@ -29,3 +31,6 @@ All notable changes to this project are documented here. The format follows
   connect by a nine-digit ID; sessions stay end-to-end encrypted and authenticated.
 - Packaging: macOS app/dmg and Windows installer via cargo-packager, app icon, macOS local
   network declarations, and a tag-triggered release workflow that also ships the Linux relay.
+
+[Unreleased]: https://github.com/j0urneyk/open-desk/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/j0urneyk/open-desk/releases/tag/v0.1.0
