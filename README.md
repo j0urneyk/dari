@@ -37,7 +37,7 @@ Download a build from [Releases](https://github.com/j0urneyk/dari/releases):
 | Platform | File |
 | --- | --- |
 | macOS (Apple silicon, 12 or later) | `dari_<version>_macos_aarch64.dmg` |
-| Windows 11 (x64) | `Dari_<version>_x64-setup.exe` |
+| Windows 11 (x64) | `dari_<version>_x64-setup.exe` |
 | Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` |
 
 Release builds aren't code-signed unless signing secrets are configured. The first time you run the app on
