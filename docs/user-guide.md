@@ -1,88 +1,91 @@
-# 사용 가이드
+# User guide
 
-설치와 기본 흐름은 [README](../README.md#설치)에 있습니다. 이 문서는 화면의 각 부분과 설정, 파일 위치,
-문제가 생겼을 때 확인할 것을 다룹니다. UI는 시스템 언어가 한국어면 한국어, 아니면 영어로 표시됩니다.
+Installation and the basic flow are in the [README](../README.md#install). This guide covers each part of the
+screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
+when the system language is Korean, and in English otherwise.
 
-## 홈 창
+## Home window
 
-### 이 기기 (내 화면 공유)
+### This device (sharing your screen)
 
-| 항목 | 설명 |
+| Item | Description |
 | --- | --- |
-| **원격 접속 허용** | 끄면 새 접속을 받지 않습니다. 진행 중인 세션에는 영향이 없습니다 |
-| **접속 주소** | 같은 네트워크의 기기가 입력할 `IP:포트` 목록. 기본 포트는 UDP 47821 |
-| **일회용 비밀번호** | `K7MXQ-3PTWA` 형식의 10자. 복사, 보기/숨기기, **새 비밀번호**. 한 번 접속에 쓰이면 사라지고, 세션이 끝나면 새로 만들어집니다 |
-| **내 ID** | 릴레이 서버를 설정하면 표시되는 9자리 ID(`123 456 789`) |
-| **릴레이 서버** | `서버주소` 또는 `서버주소:포트`를 입력하고 Enter. 비워 두면 릴레이를 쓰지 않습니다 |
-| **접속 요청** 카드 | 승인이 켜져 있을 때 접속하려는 기기의 이름과 함께 **제어 허용 / 보기만 허용 / 거부**. 30초 안에 고르지 않으면 거부 |
-| 연결된 뷰어 | 세션 중에는 상대 이름과 **연결 끊기** 버튼 |
-| 권한 안내(macOS) | 화면 기록·손쉬운 사용 권한이 없으면 **권한 요청**과 **시스템 설정 열기** 버튼 |
-| **접속할 때마다 승인 요청** | 기본 켜짐. 끄면 비밀번호를 아는 뷰어가 바로 제어권을 얻습니다 |
-| **클립보드 공유** | 기본 켜짐. 제어가 허용된 세션에서만 텍스트를 주고받습니다 |
-| **같은 네트워크에 이 기기 표시** | 기본 켜짐. mDNS로 이름을 광고해 상대의 "근처 기기"에 나타납니다 |
+| **Allow remote access** | When off, new connections are refused. A running session is not affected |
+| **Addresses** | The `IP:port` list that devices on the same network enter. The default port is UDP 47821 |
+| **One-time password** | Ten characters, like `K7MXQ-3PTWA`. Copy, show/hide, and **New password**. It's gone once a connection uses it, and a new one is made when the session ends |
+| **My ID** | The nine-digit ID (`123 456 789`) shown when a relay server is set |
+| **Relay server** | Enter `server` or `server:port` and press Enter. Leave it empty to not use a relay |
+| **Connection request** card | Shown when approval is on: the connecting device's name with **Allow control / View only / Decline**. Declined if nothing is chosen within 30 seconds |
+| Connected viewer | During a session, the peer's name and a **Disconnect** button |
+| Permission notice (macOS) | When Screen Recording or Accessibility is missing, **Request permission** and **Open System Settings** buttons |
+| **Ask before each connection** | On by default. When off, a viewer that knows the password gets control immediately |
+| **Share clipboard** | On by default. Text is exchanged only in sessions that allow control |
+| **Show this device on the local network** | On by default. Advertises the name over mDNS so it appears in the other side's "Nearby devices" |
 
-승인·클립보드 설정을 바꾸면 다음 세션부터 적용됩니다.
+Changes to the approval and clipboard settings apply from the next session.
 
-### 원격 기기 제어
+### Control a remote device
 
-주소 칸에는 `192.168.0.10`, `192.168.0.10:47821`, `[fe80::…]:47821` 같은 IP 주소, 호스트 이름, 또는 릴레이를
-쓰는 경우 9자리 ID를 입력합니다. 포트를 생략하면 47821을 씁니다. ID로 접속하려면 내 쪽에도 같은 릴레이 서버가
-설정되어 있어야 합니다. 비밀번호는 대소문자와 공백·`-`를 구분하지 않습니다. Enter로 바로 접속할 수 있습니다.
+In the address field, enter an IP address such as `192.168.0.10`, `192.168.0.10:47821`, or `[fe80::…]:47821`, a
+hostname, or, when using a relay, a nine-digit ID. Without a port, 47821 is used. To connect by ID, your side needs
+the same relay server set too. The password ignores case, spaces, and `-`. Press Enter to connect right away.
 
-**최근 접속**에는 최근 주소 5개가, **근처 기기**에는 같은 네트워크에서 광고 중인 기기가 나옵니다. 근처 기기
-정보는 인증되지 않은 표시용 정보이며, 접속할 때는 항상 비밀번호를 확인합니다.
+**Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the same network.
+Nearby-device information is an unauthenticated display hint; connecting always checks the password.
 
-**⌘와 Ctrl 단축키 변환**(기본 켜짐)은 macOS ↔ Windows 사이에서 ⌘와 Ctrl을 맞바꿉니다. Mac에서 Windows를
-제어할 때 ⌘C가 Ctrl+C로 전달되어 평소처럼 복사됩니다.
+**Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
+Windows, ⌘C arrives as Ctrl+C and copies as usual.
 
-## 뷰어 창
+## Viewer window
 
-원격 화면이 비율을 유지한 채 창에 맞춰 그려지고, 남는 부분은 레터박스로 비웁니다. 화면 위에서의 마우스 이동,
-클릭, 휠, 키 입력이 상대 기기로 전달됩니다. Tab, Shift-Tab, ⌘C/Ctrl+C도 원격으로 갑니다. 한글은 상대 기기의
-입력기로 조합되므로 상대 기기에서 한글 입력기를 켜면 됩니다(한/영 키는 Windows 호스트에서만 동작).
+The remote screen is drawn to fit the window while keeping its aspect ratio, with letterboxing for the rest. Mouse
+movement, clicks, the wheel, and key presses over the screen go to the remote device. Tab, Shift-Tab, and
+⌘C/Ctrl+C go to the remote device too. Korean text is composed by the remote device's input method, so turn on the
+Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
 
-툴바에는 초당 프레임 수와 왕복 지연(`30 fps · 12 ms`)이 표시되고, **화면**(여러 모니터 중 선택), 화질(**속도 /
-균형 / 화질**), **연결 끊기**를 고를 수 있습니다. 창을
-닫아도 세션이 끝납니다. 창이 포커스를 잃으면 누르고 있던 키와 버튼을 모두 떼므로 상대 기기에 키가 눌린 채로
-남지 않습니다.
+The toolbar shows frames per second and round-trip latency (`30 fps · 12 ms`), and offers **Display** (choose
+among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. Closing the window also ends the
+session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
+remote device.
 
-상태 메시지:
+Status messages:
 
-- "상대방이 접속을 허용하기를 기다리는 중…": 호스트 사용자의 승인을 기다리는 중입니다.
-- "보기 전용 세션입니다": 호스트가 보기만 허용했습니다. 입력과 클립보드는 전달되지 않습니다.
-- "원격 기기에 화면 기록 권한이 없습니다" / "원격 기기를 제어할 수 없습니다": 상대 Mac에서 권한을 허용해야 합니다.
+- "Waiting for the remote side to allow the connection…": the host user hasn't decided yet.
+- "View-only session: the remote side did not allow control.": input and clipboard are not forwarded.
+- "The remote device has not granted Screen Recording permission." / "The remote device cannot be controlled
+  (Accessibility permission needed). View only.": the permission has to be granted on the remote Mac.
 
-## 파일 위치
+## Where files are stored
 
-앱 데이터 디렉터리에 기기 인증서와 설정이 저장됩니다.
+The device certificate and settings live in the app data directory.
 
-| OS | 위치 |
+| OS | Location |
 | --- | --- |
 | macOS | `~/Library/Application Support/dev.dari.dari/` |
 | Windows | `%LOCALAPPDATA%\dari\dari\data\` |
 
-| 파일 | 내용 |
+| File | Contents |
 | --- | --- |
-| `identity-cert.der`, `identity-key.der` | 기기 인증서와 개인 키. 지우면 새 기기로 취급되어 릴레이 ID가 바뀝니다 |
-| `settings.toml` | 아래 설정 |
+| `identity-cert.der`, `identity-key.der` | The device certificate and private key. Deleting them makes this a new device, and its relay ID changes |
+| `settings.toml` | The settings below |
 
-`settings.toml`의 항목은 다음과 같습니다. 대부분 홈 창에서 바꿀 수 있고, `port`는 이 파일에서만 바꿀 수 있습니다.
-파일을 읽을 수 없으면 경고를 남기고 기본값을 씁니다.
+`settings.toml` holds the following. Most can be changed in the home window; `port` can only be changed in this
+file. If the file can't be read, a warning is logged and the defaults are used.
 
 ```toml
-hosting_enabled = true        # 원격 접속 허용
-port = 47821                  # 호스트가 여는 UDP 포트
-map_shortcut_modifier = true  # ⌘와 Ctrl 단축키 변환
-recent_addresses = []         # 최근 접속 (최대 5개)
-require_approval = true       # 접속할 때마다 승인 요청
-clipboard_sync = true         # 클립보드 공유
-lan_discovery = true          # 같은 네트워크에 이 기기 표시
-relay_address = ""            # 릴레이 서버
+hosting_enabled = true        # Allow remote access
+port = 47821                  # UDP port the host listens on
+map_shortcut_modifier = true  # Translate ⌘ and Ctrl shortcuts
+recent_addresses = []         # Recent addresses (up to 5)
+require_approval = true       # Ask before each connection
+clipboard_sync = true         # Share clipboard
+lan_discovery = true          # Show this device on the local network
+relay_address = ""            # Relay server
 ```
 
-## 명령줄
+## Command line
 
-GUI 없이 쓰는 하위 명령입니다. 서버나 테스트용입니다.
+These subcommands run without the GUI, for servers and testing.
 
 ```bash
 dari host --port 47821 --relay relay.example.com
@@ -92,25 +95,27 @@ dari host --port 47821 --relay relay.example.com
 dari connect 192.168.0.10 --relay relay.example.com
 ```
 
-`host`는 주소, 기기 지문, 비밀번호(세션마다 바뀜), 릴레이 ID를 출력하고 Ctrl+C까지 기다립니다. 승인할 사람이
-없으므로 비밀번호를 아는 뷰어에게 바로 제어를 허용하고 클립보드는 끕니다. `connect`는 비밀번호를 물은 뒤
-(파이프로 넘겨도 됩니다) 접속해 초당 수신 프레임과 비트레이트를 출력합니다.
+`host` prints its addresses, device fingerprint, password (it changes every session), and relay ID, and waits
+until Ctrl+C. There's nobody to approve requests, so it gives control to any viewer that knows the password and
+turns off the clipboard. `connect` asks for the password (it can also be piped in), connects, and prints received
+frames and bitrate every second.
 
-로그는 `RUST_LOG` 환경 변수로 조절합니다(기본 `info`). 예: `RUST_LOG=dari_net=debug dari host`.
+Set the log level with the `RUST_LOG` environment variable (default `info`), for example
+`RUST_LOG=dari_net=debug dari host`.
 
-## 문제 해결
+## Troubleshooting
 
-| 증상 | 확인할 것 |
+| Symptom | What to check |
 | --- | --- |
-| 같은 네트워크인데 접속이 안 됨 | 호스트의 "원격 접속 허용"이 켜져 있는지, 주소·포트가 맞는지. Windows 방화벽에서 개인 네트워크 접근을 허용했는지. macOS 15 이상이면 시스템 설정 → 개인정보 보호 및 보안 → 로컬 네트워크에서 Dari가 켜져 있는지 |
-| "근처 기기"에 상대가 안 보임 | 상대의 "같은 네트워크에 이 기기 표시"가 켜져 있는지. 공용 Wi-Fi나 회사망은 mDNS를 막기도 합니다. 이때는 주소를 직접 입력하세요 |
-| "비밀번호가 맞지 않습니다" | 비밀번호는 한 번 쓰면 바뀝니다. 상대 화면에 지금 표시된 값을 다시 확인하세요 |
-| "실패한 시도가 너무 많습니다" | 여러 번 틀리면 잠시(최대 5분) 막힙니다. 기다렸다가 다시 시도하세요 |
-| "상대 기기가 이미 다른 세션에 연결되어 있습니다" | 한 번에 한 세션만 됩니다 |
-| 화면이 검게 나오거나 바탕화면만 보임 | 상대 Mac에 화면 기록 권한이 필요하며, 허용 뒤 앱을 다시 시작해야 합니다 |
-| 화면은 보이는데 제어가 안 됨 | 상대 Mac의 손쉬운 사용 권한, 또는 상대가 "보기만 허용"을 골랐는지 확인하세요 |
-| Windows에서 UAC 창이나 잠금 화면이 안 보임 | 알려진 한계입니다. 보안 데스크톱은 일반 앱이 캡처·제어할 수 없습니다 |
-| 화면이 끊기거나 느림 | 툴바에서 화질을 "속도"로 낮추세요(1280px, 1.5 Mbps) |
-| "ID로 접속하려면 먼저 릴레이 서버를 설정하세요" | 내 쪽 "릴레이 서버" 칸에 상대와 같은 릴레이 주소를 입력하세요 |
-| "릴레이에 연결할 수 없습니다… 다시 시도하는 중" | 릴레이 주소와 방화벽을 확인하세요. 앱은 2초에서 60초 간격으로 계속 재시도합니다. [릴레이 운영](relay.md) 참조 |
-| 릴레이 경유 세션이 갑자기 끊김 | 공유기가 공인 주소나 포트를 바꾸면(NAT 재바인딩) 다시 접속해야 합니다 |
+| Can't connect on the same network | That "Allow remote access" is on and the address and port are right. That Windows Firewall allows private network access. On macOS 15 or later, that Dari is enabled in System Settings → Privacy & Security → Local Network |
+| The other device isn't in "Nearby devices" | That "Show this device on the local network" is on over there. Public Wi-Fi and corporate networks sometimes block mDNS; enter the address directly instead |
+| "The password is not correct" | The password changes after each use. Check the value shown on the other screen right now |
+| "Too many failed attempts. Try again later" | After several wrong attempts you're blocked for a while (up to 5 minutes). Wait and try again |
+| "The remote device is already in a session" | Only one session at a time is allowed |
+| The screen is black or shows only the wallpaper | The remote Mac needs Screen Recording permission, and the app must be restarted after granting it |
+| The screen is visible but control doesn't work | Check the remote Mac's Accessibility permission, or whether the other side chose "View only" |
+| UAC prompts or the lock screen don't appear on Windows | A known limitation: regular apps can't capture or control the secure desktop |
+| The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
+| "Set a relay server to connect by ID" | Enter the same relay address as the other side in your "Relay server" field |
+| "Cannot reach the relay (…). Retrying…" | Check the relay address and firewall. The app keeps retrying every 2 to 60 seconds. See [relay operations](relay.md) |
+| A relayed session suddenly drops | If the router changes the public address or port (NAT rebinding), you have to reconnect |

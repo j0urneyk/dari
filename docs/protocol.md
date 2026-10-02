@@ -1,18 +1,18 @@
-# 와이어 프로토콜
+# Wire protocol
 
-호스트와 뷰어는 QUIC(TLS 1.3, ALPN `dari/1`) 연결 하나 위에서 이야기합니다. 메시지 타입은 모두
-`dari-proto`(`crates/proto`)에 있고, 이 문서는 그 형식과 순서를 정리합니다. 현재 프로토콜 버전은
-**1.0**(`PROTOCOL_VERSION`)입니다.
+Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
+`dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
+**1.0** (`PROTOCOL_VERSION`).
 
-## 버전 호환
+## Version compatibility
 
-핸드셰이크의 `ClientHello`와 `ServerHello`가 `ProtocolVersion { major, minor }`를 주고받습니다. `major`가
-같으면 호환됩니다. `minor` 증가는 메시지 추가만 뜻하며, 상대가 지원을 알리지 않은 새 메시지는 보내지
-않습니다. 호스트는 `major`가 다르면 `Rejected(IncompatibleVersion)`으로 거절합니다.
+`ClientHello` and `ServerHello` in the handshake exchange a `ProtocolVersion { major, minor }`. Peers with the same
+`major` are compatible. A `minor` bump only adds messages, and a new message is never sent to a peer that didn't
+advertise support for it. The host refuses a different `major` with `Rejected(IncompatibleVersion)`.
 
-## 프레이밍
+## Framing
 
-모든 스트림은 같은 `MessageCodec<T>`를 씁니다.
+Every stream uses the same `MessageCodec<T>`.
 
 ```text
 ┌──────────────────────┬────────────────────────────┐
@@ -20,135 +20,139 @@
 └──────────────────────┴────────────────────────────┘
 ```
 
-길이 헤더가 채널 상한을 넘으면 본문을 버퍼링하기 전에 오류로 연결을 끊습니다. 디코딩된 메시지는
-`Validate`를 통과해야만 호출자에게 전달됩니다.
+If the length header exceeds the channel's limit, the connection fails before the body is buffered. A decoded
+message is handed to the caller only after it passes `Validate`.
 
-| 채널 | 메시지 타입 | 프레임 상한 | 스트림 |
+| Channel | Message type | Frame limit | Stream |
 | --- | --- | --- | --- |
-| 핸드셰이크 | `HandshakeMessage` | 4 KiB | 뷰어가 여는 양방향 스트림 |
-| 제어 | `ControlMessage` | 2 MiB | 인증이 끝난 핸드셰이크 스트림을 그대로 사용 |
-| 비디오 | `VideoPacket` | 16 MiB | 호스트가 여는 단방향 스트림 |
-| 릴레이 제어 | `RelayRequest` / `RelayResponse` | 2 MiB | 릴레이와의 양방향 스트림(ALPN `dari-relay/1`) |
+| Handshake | `HandshakeMessage` | 4 KiB | Bidirectional stream opened by the viewer |
+| Control | `ControlMessage` | 2 MiB | The handshake stream, reused once authenticated |
+| Video | `VideoPacket` | 16 MiB | Unidirectional stream opened by the host |
+| Relay control | `RelayRequest` / `RelayResponse` | 2 MiB | Bidirectional stream to the relay (ALPN `dari-relay/1`) |
 
-제어 채널 상한은 계획(64 KiB)보다 큰 2 MiB입니다. 최대 1 MiB의 클립보드 텍스트가 같은 채널을 쓰기
-때문입니다. 인증이 끝나면 핸드셰이크 스트림의 코덱만 바꿔(`map_decoder`/`map_encoder`) 제어 스트림으로
-쓰므로, 핸드셰이크 직후에 도착해 이미 버퍼에 있는 제어 메시지도 잃지 않습니다. QUIC 전송 설정이 상대가 열 수
-있는 스트림 수를 제한합니다. 뷰어는 양방향 스트림 하나(핸드셰이크 후 제어)만 열 수 있고 단방향 스트림은 열 수
-없으며, 미디어용 단방향 스트림은 호스트만 엽니다.
+The control channel's 2 MiB limit leaves room for clipboard text of up to 1 MiB, which travels on the same channel.
+After authentication only the codec of the handshake stream is swapped (`map_decoder`/`map_encoder`) to turn it
+into the control stream, so control messages that arrived right after the handshake and are already buffered
+aren't lost. The QUIC transport configuration limits how many streams the peer may open: a viewer can open exactly
+one bidirectional stream (handshake, then control) and no unidirectional streams, and only the host opens
+unidirectional streams for media.
 
-## 핸드셰이크
+## Handshake
 
 ```text
 viewer                                         host
-  │── ClientHello {version, name, os} ─────────►│  버전 확인, 사전 검사(busy/throttle/not accepting)
-  │◄──────────── ServerHello {version, name, os}│  (또는 Outcome(Rejected))
+  │── ClientHello {version, name, os} ─────────►│  version check, precheck (busy/throttled/not accepting)
+  │◄──────────── ServerHello {version, name, os}│  (or Outcome(Rejected))
   │── Pake(SPAKE2 A) ──────────────────────────►│
   │◄─────────────────────────── Pake(SPAKE2 B) ─│
-  │── Confirmation(MAC_viewer) ────────────────►│  상수 시간 비교, 세션 슬롯 확보·비밀번호 소모
+  │── Confirmation(MAC_viewer) ────────────────►│  constant-time compare, claim session slot, consume password
   │◄──────────────────── Confirmation(MAC_host) ─│
   │◄────────────────────── Outcome(Accepted) ────│
 ```
 
-- SPAKE2는 Ed25519 그룹을 쓰며 신원 문자열은 뷰어 `dari viewer`, 호스트 `dari host`입니다.
-  비밀번호는 정규화된 형식(대문자 10자, 구분자 없음)의 ASCII 바이트입니다. 화면에는 `K7MXQ-3PTWA`처럼
-  표시하고, 입력할 때는 대소문자와 공백·`-`를 무시합니다.
-- `exporter`는 TLS `export_keying_material(32, "EXPORTER-dari-auth-v1")`입니다.
-- `transcript`는 두 hello의 postcard 인코딩을 각각 4바이트 길이 접두사와 함께 SHA-256으로 해시한 값입니다.
-- 확인값은 `HMAC-SHA256(K, "dari key confirmation v1" ‖ role ‖ exporter ‖ transcript)`이며 `role`은
-  `"viewer"` 또는 `"host\0\0"`입니다.
-- 호스트는 뷰어의 확인값을 검증한 **뒤에만** 자기 확인값을 보냅니다. 비밀번호를 모르는 뷰어는 호스트로부터
-  비밀번호를 검증할 단서를 하나도 얻지 못합니다.
-- 핸드셰이크 전체는 10초 안에 끝나야 합니다.
+- SPAKE2 uses the Ed25519 group, with identity strings `dari viewer` for the viewer and `dari host` for the host.
+  The password is the ASCII bytes of its normalized form (ten uppercase characters, no separator). It's displayed
+  as `K7MXQ-3PTWA`, and input ignores case, spaces, and `-`.
+- `exporter` is the TLS `export_keying_material(32, "EXPORTER-dari-auth-v1")`.
+- `transcript` is the SHA-256 hash of both hellos' postcard encodings, each prefixed with its 4-byte length.
+- The confirmation is `HMAC-SHA256(K, "dari key confirmation v1" ‖ role ‖ exporter ‖ transcript)`, where `role` is
+  `"viewer"` or `"host\0\0"`.
+- The host sends its own confirmation **only after** verifying the viewer's. A viewer that doesn't know the
+  password learns nothing from the host that would let it check a guess.
+- The whole handshake must finish within 10 seconds.
 
-거절 이유(`RejectReason`)는 일부러 거칠게 나눕니다: `IncompatibleVersion`, `AuthenticationFailed`, `Busy`,
-`TooManyAttempts`, `NotAccepting`. 거절할 때는 스트림을 `finish()`하고 최대 2초 동안 뷰어가 닫기를 기다린
-뒤 연결을 닫습니다. QUIC의 즉시 close는 아직 보내지 않은 데이터를 버리기 때문입니다.
+Rejection reasons (`RejectReason`) are deliberately coarse: `IncompatibleVersion`, `AuthenticationFailed`, `Busy`,
+`TooManyAttempts`, `NotAccepting`. When rejecting, the host calls `finish()` on the stream and waits up to
+2 seconds for the viewer to close before closing the connection, because an immediate QUIC close discards data
+that hasn't been sent yet.
 
-## 제어 메시지
+## Control messages
 
-| 메시지 | 방향 | 의미 |
+| Message | Direction | Meaning |
 | --- | --- | --- |
-| `Ping { token }` / `Pong { token }` | 양방향 | 왕복 시간 측정 |
-| `Disconnect` | 양방향 | 정상 종료. 보낸 쪽은 상대가 닫기를 최대 1초 기다림 |
-| `Input(InputEvent)` | 뷰어 → 호스트 | 키보드·포인터 입력(아래 참조) |
-| `RequestKeyframe` | 뷰어 → 호스트 | 디코더 상태를 잃었으니 키프레임을 보내 달라 |
-| `HostStatus { screen, input }` | 호스트 → 뷰어 | 세션 시작 시와 변할 때마다 보내는 기능 상태 |
-| `AwaitingApproval` | 호스트 → 뷰어 | 호스트 사용자에게 승인을 묻는 중 |
-| `Declined` | 호스트 → 뷰어 | 호스트 사용자가 거부함. 곧 연결이 닫힘 |
-| `Displays { displays, active }` | 호스트 → 뷰어 | 보여 줄 수 있는 디스플레이(최대 16개)와 현재 디스플레이 |
-| `SelectDisplay(id)` | 뷰어 → 호스트 | 다른 디스플레이로 전환 |
-| `SetQuality(preset)` | 뷰어 → 호스트 | `Speed` / `Balanced` / `Quality` |
-| `Clipboard(text)` | 양방향 | 클립보드 텍스트 변경(최대 1 MiB, NUL 금지) |
+| `Ping { token }` / `Pong { token }` | Both | Round-trip measurement |
+| `Disconnect` | Both | Orderly end. The sender waits up to 1 second for the peer to close |
+| `Input(InputEvent)` | Viewer → host | Keyboard or pointer input (see below) |
+| `RequestKeyframe` | Viewer → host | The decoder lost its state; send a keyframe |
+| `HostStatus { screen, input }` | Host → viewer | Capability status, sent at session start and whenever it changes |
+| `AwaitingApproval` | Host → viewer | The host user is being asked to approve |
+| `Declined` | Host → viewer | The host user declined; the connection closes next |
+| `Displays { displays, active }` | Host → viewer | Displays that can be shown (at most 16) and the current one |
+| `SelectDisplay(id)` | Viewer → host | Switch to another display |
+| `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
+| `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
 
-`Availability`는 `Available`, `PermissionDenied`(macOS 권한 없음), `Unavailable`, `NotAllowed`(보기 전용
-세션의 입력) 중 하나입니다.
+`Availability` is one of `Available`, `PermissionDenied` (macOS permission missing), `Unavailable`, or
+`NotAllowed` (input in a view-only session).
 
-## 입력 이벤트
+## Input events
 
-| 이벤트 | 내용과 제한 |
+| Event | Contents and limits |
 | --- | --- |
-| `PointerMove(PointerPosition { x, y })` | 캡처한 디스플레이 기준 정규화 좌표. `0`이 왼쪽/위, `u16::MAX`가 오른쪽/아래. 양쪽의 해상도나 DPI와 무관 |
+| `PointerMove(PointerPosition { x, y })` | Coordinates normalized to the captured display: `0` is the left/top edge and `u16::MAX` the right/bottom. Independent of either side's resolution or DPI |
 | `PointerButton { button, pressed }` | `Left`, `Right`, `Middle`, `Back`, `Forward` |
-| `Scroll { dx, dy }` | 휠 줄 단위, 축마다 ±100. 양수 `dy`는 아래, 양수 `dx`는 오른쪽 |
-| `Key { key, pressed }` | `KeyCode::Character(c)` 또는 `KeyCode::Named(NamedKey)`. 제어 문자 금지, `Function(n)`은 1..=20 |
-| `Text(String)` | 키로 표현할 수 없는 텍스트, 1..=256자, 제어·보이지 않는 서식 문자 금지 |
+| `Scroll { dx, dy }` | Wheel lines, ±100 per axis. Positive `dy` scrolls down, positive `dx` right |
+| `Key { key, pressed }` | `KeyCode::Character(c)` or `KeyCode::Named(NamedKey)`. No control characters; `Function(n)` is 1..=20 |
+| `Text(String)` | Text that can't be expressed as keys, 1..=256 characters, no control or invisible formatting characters |
 
-`KeyCode::Character`는 "US 배열에서 수정자 없이 그 문자를 내는 키"입니다. 최종 문자는 호스트의 자판 배열과
-IME가 결정하므로 물리 키보드와 똑같이 동작하고, 원격 한글 조합도 그대로 됩니다. `NamedKey`에는 방향키,
-편집 키, F1–F20, 수정자(`Shift`, `Control`, `Alt`=Option, `Meta`=⌘/Windows 키), `CapsLock`, `PrintScreen`,
-`Pause`, `NumLock`, `HangulMode`(한/영), `HanjaMode`(한자)가 있습니다. `Insert`, `PrintScreen`, `Pause`,
-`NumLock`, 한/영, 한자 키는 enigo가 Windows에서만 제공하므로 macOS 호스트에서는 무시됩니다.
+`KeyCode::Character` is "the key that produces this character without modifiers on a US layout". The host's
+keyboard layout and IME decide the final character, so it behaves exactly like a physical keyboard, and remote
+Korean composition works as is. `NamedKey` covers arrows, editing keys, F1–F20, modifiers (`Shift`, `Control`,
+`Alt` = Option, `Meta` = ⌘/Windows key), `CapsLock`, `PrintScreen`, `Pause`, `NumLock`, `HangulMode`
+(Hangul/English), and `HanjaMode` (Hanja). enigo provides `Insert`, `PrintScreen`, `Pause`, `NumLock`, Hangul, and
+Hanja only on Windows, so macOS hosts ignore them.
 
-⌘↔Ctrl 매핑은 뷰어가 적용합니다(`ModifierMapping`). 양쪽의 단축키 수정자(macOS는 `Meta`, 그 밖에는
-`Control`)가 다르고 설정이 켜져 있으면 두 키를 서로 맞바꿉니다. 그래서 macOS 뷰어의 ⌘C는 Windows 호스트에
-Ctrl+C로, Windows 뷰어의 Ctrl+C는 macOS 호스트에 ⌘C로 도착합니다.
+The ⌘↔Ctrl mapping is applied by the viewer (`ModifierMapping`). When the two sides' shortcut modifiers differ
+(`Meta` on macOS, `Control` elsewhere) and the setting is on, the two keys are swapped. So ⌘C from a macOS viewer
+arrives on a Windows host as Ctrl+C, and Ctrl+C from a Windows viewer arrives on a macOS host as ⌘C.
 
-## 비디오
+## Video
 
 ```text
 VideoPacket { sequence: u64, timestamp_us: u64, keyframe: bool, width: u32, height: u32, data: Vec<u8> }
 ```
 
-`data`는 H.264 Annex-B 비트스트림입니다. 가로·세로는 1..=8192여야 하고 `data`는 비어 있으면 안 됩니다.
-디코더는 3840×2160을 넘는 출력 프레임을 거부합니다. 인코더는 세션 시작, 해상도 변경, 디스플레이·화질
-전환, `RequestKeyframe` 때 키프레임을 냅니다.
+`data` is an H.264 Annex-B bitstream. Width and height must be 1..=8192, and `data` must not be empty. The decoder
+rejects output frames larger than 3840×2160. The encoder emits a keyframe at session start, on resolution change,
+on display or quality switch, and on `RequestKeyframe`.
 
-## 문자열 검증
+## String validation
 
-이름 같은 표시용 문자열(`client_name`, `host_name`, 디스플레이 이름)은 64자 이하이고, 제어 문자와 보이지
-않는 서식 문자(U+200B–U+200F, U+202A–U+202E, U+2060–U+206F, U+FEFF)를 포함하면 거부합니다. 양방향 덮어쓰기
-문자로 이름을 다른 것처럼 보이게 하는 공격을 막기 위해서입니다. 자기 이름을 보낼 때는
-`sanitize_display_text`로 같은 규칙에 맞춰 정리합니다.
+Display strings such as names (`client_name`, `host_name`, display names) are at most 64 characters and are
+rejected if they contain control characters or invisible formatting characters (U+200B–U+200F, U+202A–U+202E,
+U+2060–U+206F, U+FEFF). This stops bidirectional-override tricks that make a name render as something else. When
+sending its own name, each side cleans it to the same rules with `sanitize_display_text`.
 
-## 릴레이
+## Relay
 
-릴레이 제어 연결은 별도 ALPN(`dari-relay/1`)의 QUIC 연결입니다. 기본 포트는 UDP 47822입니다.
+The relay control connection is a separate QUIC connection with ALPN `dari-relay/1`. The default port is UDP
+47822.
 
-| 메시지 | 방향 | 의미 |
+| Message | Direction | Meaning |
 | --- | --- | --- |
-| `RelayRequest::Register` | 호스트 → 릴레이 | 클라이언트 인증서 지문에 묶인 ID로 등록 |
-| `RelayRequest::Connect { id }` | 뷰어 → 릴레이 | 이 ID의 호스트에 접속 요청 |
-| `RelayResponse::Registered { id }` | 릴레이 → 호스트 | 등록된 9자리 ID |
-| `RelayResponse::Incoming(Allocation)` | 릴레이 → 호스트 | 뷰어가 왔으니 이 할당에 바인딩하고 QUIC을 받아라 |
-| `RelayResponse::Allocated(Allocation)` | 릴레이 → 뷰어 | 이 할당을 통해 접속하라 |
-| `RelayResponse::Refused(RelayError)` | 릴레이 → 기기 | `NotFound`, `TooManyRequests`, `CertificateRequired`, `Unavailable` |
+| `RelayRequest::Register` | Host → relay | Register under the ID bound to the client certificate's fingerprint |
+| `RelayRequest::Connect { id }` | Viewer → relay | Ask to reach the host with this ID |
+| `RelayResponse::Registered { id }` | Relay → host | The registered nine-digit ID |
+| `RelayResponse::Incoming(Allocation)` | Relay → host | A viewer is coming; bind to this allocation and accept QUIC on it |
+| `RelayResponse::Allocated(Allocation)` | Relay → viewer | Connect through this allocation |
+| `RelayResponse::Refused(RelayError)` | Relay → device | `NotFound`, `TooManyRequests`, `CertificateRequired`, `Unavailable` |
 
-`Allocation { port, token }`은 한쪽이 보낼 릴레이 UDP 포트와 16바이트 토큰입니다. 각 쪽은 자기 소켓에서
-`"DRRB" ‖ token` 데이터그램을 그 포트로 보내 주소를 바인딩하고, 릴레이는 `"DRRA" ‖ token`으로 확인합니다.
-클라이언트는 확인이 올 때까지 400ms 간격으로 최대 6번 다시 보냅니다. 두 쪽이 모두 바인딩되면 릴레이는 두
-주소 사이의 데이터그램(최대 65,535바이트)을 내용을 보지 않고 전달하며, 그 위에서 위의 QUIC 세션이 그대로
-진행됩니다. `DeviceId`는 100000000..=999999999 범위이며 `123 456 789`로 표시하고, 입력할 때는 공백과 `-`를
-무시합니다.
+`Allocation { port, token }` is the relay UDP port one side sends to and its 16-byte token. Each side binds its
+address by sending a `"DRRB" ‖ token` datagram from its socket to that port, and the relay confirms with
+`"DRRA" ‖ token`. The client resends every 400 ms, up to 6 times, until it's confirmed. Once both sides are bound,
+the relay forwards datagrams (up to 65,535 bytes) between the two addresses without looking at them, and the QUIC
+session above runs over them unchanged. A `DeviceId` is in the range 100000000..=999999999, displayed as
+`123 456 789`; input ignores spaces and `-`.
 
-## 주요 상수
+## Key constants
 
-| 상수 | 값 | 위치 |
+| Constant | Value | Location |
 | --- | --- | --- |
-| 기본 호스트 포트 | UDP 47821 | `crates/app/src/config.rs` |
-| 기본 릴레이 포트 | UDP 47822 | `crates/proto/src/relay.rs` |
-| QUIC idle timeout / keep-alive | 30초 / 5초 | `crates/net/src/tls.rs` |
-| 핸드셰이크 제한 시간, 동시 핸드셰이크 | 10초, 8개 | `crates/net/src/endpoint.rs` |
-| 승인 대기 | 30초 | `crates/session/src/host_session.rs` |
-| 클립보드 폴링 간격 | 250ms | `crates/session/src/clipboard.rs` |
-| 뷰어 입력 큐 / 키용 예약분 | 512 / 128 | `crates/session/src/viewer.rs` |
-| mDNS 서비스 | `_dari._udp.local.` | `crates/net/src/discovery.rs` |
+| Default host port | UDP 47821 | `crates/app/src/config.rs` |
+| Default relay port | UDP 47822 | `crates/proto/src/relay.rs` |
+| QUIC idle timeout / keep-alive | 30 s / 5 s | `crates/net/src/tls.rs` |
+| Handshake timeout, concurrent handshakes | 10 s, 8 | `crates/net/src/endpoint.rs` |
+| Approval wait | 30 s | `crates/session/src/host_session.rs` |
+| Clipboard polling interval | 250 ms | `crates/session/src/clipboard.rs` |
+| Viewer input queue / reserved for keys | 512 / 128 | `crates/session/src/viewer.rs` |
+| mDNS service | `_dari._udp.local.` | `crates/net/src/discovery.rs` |
