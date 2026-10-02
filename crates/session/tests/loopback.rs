@@ -18,7 +18,8 @@ use open_desk_net::{AccessPassword, DeviceIdentity};
 use open_desk_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
 use open_desk_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
-    SessionEndReason, ViewerConfig, ViewerEvent, connect_viewer, start_host,
+    RelayStatus, SessionEndReason, ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer,
+    start_host,
 };
 use tokio::sync::mpsc;
 
@@ -159,8 +160,9 @@ async fn start_with(platform: TestPlatform, require_approval: bool) -> Host {
             },
             require_approval,
             clipboard: true,
+            relay: None,
         },
-        &DeviceIdentity::generate().unwrap(),
+        Arc::new(DeviceIdentity::generate().unwrap()),
         Arc::new(platform),
     )
     .unwrap();
@@ -177,7 +179,7 @@ async fn start_with(platform: TestPlatform, require_approval: bool) -> Host {
 
 fn viewer_config(host: &Host) -> ViewerConfig {
     ViewerConfig {
-        address: host.handle.local_address(),
+        target: ViewerTarget::Direct(host.handle.local_address()),
         client_name: "test-viewer".into(),
         map_shortcut_modifier: false,
         clipboard: None,
@@ -552,4 +554,62 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("condition never became true");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn viewer_reaches_the_host_service_by_relay_id() {
+    let data = tempfile::tempdir().unwrap();
+    let relay = open_desk_relay::RelayServer::start(&open_desk_relay::RelayConfig {
+        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        data_directory: data.path().to_owned(),
+        max_allocations: 4,
+    })
+    .unwrap();
+    let relay_address = relay.local_address().unwrap().to_string();
+    let (_handle, mut events) = start_host(
+        HostConfig {
+            bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            host_name: "relayed".into(),
+            stream: StreamSettings::default(),
+            require_approval: false,
+            clipboard: false,
+            relay: Some(relay_address.clone()),
+        },
+        Arc::new(DeviceIdentity::generate().unwrap()),
+        Arc::new(TestPlatform::default()),
+    )
+    .unwrap();
+    let mut password = None;
+    let mut id = None;
+    while password.is_none() || id.is_none() {
+        match next_event(&mut events).await {
+            HostEvent::PasswordChanged(Some(fresh)) => password = Some(fresh),
+            HostEvent::Relay(RelayStatus::Registered(registered)) => id = Some(registered),
+            HostEvent::Relay(RelayStatus::Unavailable(error)) => {
+                panic!("relay unavailable: {error}")
+            }
+            _ => {}
+        }
+    }
+
+    let (viewer, _viewer_events) = connect_viewer(
+        ViewerConfig {
+            target: ViewerTarget::Relay {
+                relay: relay_address,
+                id: id.unwrap(),
+            },
+            client_name: "remote".into(),
+            map_shortcut_modifier: false,
+            clipboard: None,
+        },
+        &password.unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(viewer.peer().name, "relayed");
+    let mut frames = viewer.frames();
+    tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
+        .await
+        .unwrap()
+        .unwrap();
 }

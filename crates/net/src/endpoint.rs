@@ -48,6 +48,10 @@ pub enum ConnectError {
     Handshake(#[from] HandshakeError),
     #[error("the remote device did not answer in time")]
     TimedOut,
+    #[error("the relay refused: {0}")]
+    Relay(open_desk_proto::RelayError),
+    #[error("the relay is unavailable: {0}")]
+    RelayUnavailable(String),
 }
 
 /// Host-side settings that do not change while listening.
@@ -114,8 +118,65 @@ impl HostShared {
 pub struct HostEndpoint {
     endpoint: quinn::Endpoint,
     shared: Arc<HostShared>,
+    server_config: quinn::ServerConfig,
+    session_sender: mpsc::Sender<AuthenticatedConnection>,
     sessions: mpsc::Receiver<AuthenticatedConnection>,
     accept_task: JoinHandle<()>,
+}
+
+/// How long a relayed socket waits for the viewer's QUIC handshake to begin.
+const RELAYED_ACCEPT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Accepts viewers that arrive through a relay allocation, through the same authentication,
+/// throttling, and single-session rules as direct connections. Cheap to clone.
+#[derive(Clone)]
+pub struct RelayedAcceptor {
+    shared: Arc<HostShared>,
+    server_config: quinn::ServerConfig,
+    sessions: mpsc::Sender<AuthenticatedConnection>,
+}
+
+impl std::fmt::Debug for RelayedAcceptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayedAcceptor").finish_non_exhaustive()
+    }
+}
+
+impl RelayedAcceptor {
+    /// Accepts one viewer on `socket`, already bound to a relay allocation. Must be called
+    /// within a Tokio runtime.
+    pub fn accept_on(&self, socket: std::net::UdpSocket) -> Result<(), EndpointError> {
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(self.server_config.clone()),
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )?;
+        let shared = self.shared.clone();
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let Ok(Some(incoming)) =
+                tokio::time::timeout(RELAYED_ACCEPT_TIMEOUT, endpoint.accept()).await
+            else {
+                debug!("no viewer arrived on the relay allocation");
+                endpoint.close(0u32.into(), b"unused");
+                return;
+            };
+            match handle_incoming(incoming, &shared).await {
+                Ok(mut connection) => {
+                    info!(peer = %connection.peer().name, "viewer authenticated through the relay");
+                    // The endpoint drives this connection's socket; keep it with the session.
+                    connection.link.endpoint = Some(endpoint);
+                    let _delivered = sessions.send(connection).await;
+                }
+                Err(error) => {
+                    debug!(%error, "relayed connection failed");
+                    endpoint.close(0u32.into(), b"handshake failed");
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for HostEndpoint {
@@ -129,7 +190,8 @@ impl std::fmt::Debug for HostEndpoint {
 impl HostEndpoint {
     /// Starts listening. Must be called within a Tokio runtime.
     pub fn bind(settings: HostSettings, identity: &DeviceIdentity) -> Result<Self, EndpointError> {
-        let endpoint = quinn::Endpoint::server(server_config(identity)?, settings.bind_address)?;
+        let server_config = server_config(identity)?;
+        let endpoint = quinn::Endpoint::server(server_config.clone(), settings.bind_address)?;
         let shared = Arc::new(HostShared {
             server_hello: ServerHello {
                 version: PROTOCOL_VERSION,
@@ -144,15 +206,26 @@ impl HostEndpoint {
         let accept_task = tokio::spawn(accept_loop(
             endpoint.clone(),
             shared.clone(),
-            session_sender,
+            session_sender.clone(),
         ));
         info!(address = ?endpoint.local_addr().ok(), "host endpoint listening");
         Ok(Self {
             endpoint,
             shared,
+            server_config,
+            session_sender,
             sessions,
             accept_task,
         })
+    }
+
+    /// A handle for accepting viewers that arrive through a relay.
+    pub fn relayed_acceptor(&self) -> RelayedAcceptor {
+        RelayedAcceptor {
+            shared: self.shared.clone(),
+            server_config: self.server_config.clone(),
+            sessions: self.session_sender.clone(),
+        }
     }
 
     pub fn local_address(&self) -> std::io::Result<SocketAddr> {
@@ -333,8 +406,18 @@ pub async fn connect(
         SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
         SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
     };
-    let mut endpoint =
+    let endpoint =
         quinn::Endpoint::client(SocketAddr::new(unspecified, 0)).map_err(EndpointError::from)?;
+    connect_with(endpoint, address, password, client_name).await
+}
+
+/// Authenticates to the host at `address` through `endpoint` (direct or relay-bound socket).
+pub(crate) async fn connect_with(
+    mut endpoint: quinn::Endpoint,
+    address: SocketAddr,
+    password: &AccessPassword,
+    client_name: String,
+) -> Result<AuthenticatedConnection, ConnectError> {
     endpoint.set_default_client_config(client_config().map_err(EndpointError::from)?);
 
     let hello = ClientHello {

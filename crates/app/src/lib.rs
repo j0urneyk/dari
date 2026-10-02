@@ -38,11 +38,17 @@ enum Command {
         /// UDP port to listen on.
         #[arg(long, default_value_t = config::DEFAULT_PORT)]
         port: u16,
+        /// Relay server to register with, so viewers elsewhere can connect by ID.
+        #[arg(long)]
+        relay: Option<String>,
     },
     /// Connect to a host without the GUI and report stream statistics.
     Connect {
-        /// The host's address: IP, IP:port, or hostname.
+        /// The host's address (IP, IP:port, hostname) or, with --relay, its nine-digit ID.
         address: String,
+        /// Relay server for connecting by ID.
+        #[arg(long, default_value = "")]
+        relay: String,
     },
 }
 
@@ -62,8 +68,8 @@ pub fn run() -> anyhow::Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
                 match command {
-                    Command::Host { port } => cli::host(port).await,
-                    Command::Connect { address } => cli::connect(&address).await,
+                    Command::Host { port, relay } => cli::host(port, relay).await,
+                    Command::Connect { address, relay } => cli::connect(&address, &relay).await,
                 }
             })
         }

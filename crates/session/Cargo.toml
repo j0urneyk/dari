@@ -19,5 +19,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+open-desk-relay.workspace = true
+tempfile = "3"
+
 [lints]
 workspace = true

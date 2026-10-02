@@ -53,6 +53,11 @@ pub(crate) struct Text {
     pub(crate) quality_speed: &'static str,
     pub(crate) quality_balanced: &'static str,
     pub(crate) quality_quality: &'static str,
+    pub(crate) my_id: &'static str,
+    pub(crate) relay_server: &'static str,
+    pub(crate) relay_placeholder: &'static str,
+    pub(crate) relay_connecting: &'static str,
+    pub(crate) relay_required: &'static str,
     korean: bool,
 }
 
@@ -72,6 +77,14 @@ impl Text {
             )
         } else {
             format!("{name} wants to connect to this device. It is declined after 30 seconds.")
+        }
+    }
+
+    pub(crate) fn relay_unavailable(&self, detail: &str) -> String {
+        if self.korean {
+            format!("릴레이에 연결할 수 없습니다 ({detail}). 다시 시도하는 중…")
+        } else {
+            format!("Cannot reach the relay ({detail}). Retrying…")
         }
     }
 
@@ -163,7 +176,7 @@ static KOREAN: Text = Text {
     open_settings: "시스템 설정 열기",
     control_remote_device: "원격 기기 제어",
     address: "주소",
-    address_placeholder: "IP 주소 또는 IP:포트",
+    address_placeholder: "IP 주소, IP:포트 또는 9자리 ID",
     password_placeholder: "상대 기기에 표시된 비밀번호",
     connect: "접속",
     connecting: "접속 중…",
@@ -190,6 +203,11 @@ static KOREAN: Text = Text {
     quality_speed: "속도",
     quality_balanced: "균형",
     quality_quality: "화질",
+    my_id: "내 ID",
+    relay_server: "릴레이 서버",
+    relay_placeholder: "다른 네트워크에서 접속하려면 릴레이 주소 입력 (선택)",
+    relay_connecting: "릴레이에 연결하는 중…",
+    relay_required: "ID로 접속하려면 먼저 릴레이 서버를 설정하세요",
     korean: true,
 };
 
@@ -213,7 +231,7 @@ static ENGLISH: Text = Text {
     open_settings: "Open System Settings",
     control_remote_device: "Control a remote device",
     address: "Address",
-    address_placeholder: "IP address or IP:port",
+    address_placeholder: "IP address, IP:port, or 9-digit ID",
     password_placeholder: "Password shown on the remote device",
     connect: "Connect",
     connecting: "Connecting…",
@@ -240,6 +258,11 @@ static ENGLISH: Text = Text {
     quality_speed: "Speed",
     quality_balanced: "Balanced",
     quality_quality: "Quality",
+    my_id: "My ID",
+    relay_server: "Relay server",
+    relay_placeholder: "Relay address for connecting across networks (optional)",
+    relay_connecting: "Connecting to the relay…",
+    relay_required: "Set a relay server to connect by ID",
     korean: false,
 };
 

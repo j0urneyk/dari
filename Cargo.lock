@@ -5344,6 +5344,7 @@ dependencies = [
  "open-desk-media",
  "open-desk-net",
  "open-desk-proto",
+ "open-desk-relay",
  "open-desk-session",
  "rpassword",
  "serde",
@@ -5417,6 +5418,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-desk-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "getrandom 0.3.4",
+ "open-desk-net",
+ "open-desk-proto",
+ "quinn",
+ "rustls",
+ "serde",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "open-desk-session"
 version = "0.1.0"
 dependencies = [
@@ -5426,6 +5450,8 @@ dependencies = [
  "open-desk-media",
  "open-desk-net",
  "open-desk-proto",
+ "open-desk-relay",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

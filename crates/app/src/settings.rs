@@ -26,6 +26,9 @@ pub struct Settings {
     pub clipboard_sync: bool,
     /// Announce this device to viewers on the local network.
     pub lan_discovery: bool,
+    /// Relay server (`host` or `host:port`) for reaching devices outside the local network;
+    /// empty when not used.
+    pub relay_address: String,
 }
 
 impl Default for Settings {
@@ -38,6 +41,7 @@ impl Default for Settings {
             require_approval: true,
             clipboard_sync: true,
             lan_discovery: true,
+            relay_address: String::new(),
         }
     }
 }

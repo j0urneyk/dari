@@ -2,13 +2,14 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use open_desk_media::StreamSettings;
 use open_desk_net::{
     AccessPassword, DeviceIdentity, EndpointError, HostEndpoint, HostSettings, PasswordError,
-    PeerInfo,
+    PeerInfo, RelayRegistration, RelayedAcceptor, bind_to_allocation,
 };
-use open_desk_proto::HostStatus;
+use open_desk_proto::{DEFAULT_RELAY_PORT, DeviceId, HostStatus};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -27,6 +28,18 @@ pub struct HostConfig {
     pub require_approval: bool,
     /// Share clipboard text with viewers allowed to control this device.
     pub clipboard: bool,
+    /// Relay to register with (`host` or `host:port`) so viewers can reach this device by ID.
+    pub relay: Option<String>,
+}
+
+/// This host's standing with its relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayStatus {
+    Connecting,
+    /// Reachable under this ID.
+    Registered(DeviceId),
+    /// Not reachable through the relay right now; retrying.
+    Unavailable(String),
 }
 
 /// The host user's answer to a viewer waiting for approval.
@@ -89,6 +102,7 @@ pub enum HostEvent {
         peer: PeerInfo,
         reason: SessionEndReason,
     },
+    Relay(RelayStatus),
 }
 
 enum HostCommand {
@@ -158,7 +172,7 @@ impl std::fmt::Debug for HostCommand {
 /// Starts the host service on the current Tokio runtime.
 pub fn start_host(
     config: HostConfig,
-    identity: &DeviceIdentity,
+    identity: Arc<DeviceIdentity>,
     platform: Arc<dyn HostPlatform>,
 ) -> Result<(HostHandle, mpsc::UnboundedReceiver<HostEvent>), HostError> {
     let endpoint = HostEndpoint::bind(
@@ -166,13 +180,22 @@ pub fn start_host(
             bind_address: config.bind_address,
             host_name: config.host_name,
         },
-        identity,
+        &identity,
     )?;
     let local_address = endpoint.local_address().map_err(EndpointError::from)?;
     let (commands, command_receiver) = mpsc::unbounded_channel();
     let (events, event_receiver) = mpsc::unbounded_channel();
+    let relay = config.relay.map(|relay| {
+        AbortOnDrop(tokio::spawn(stay_registered(
+            relay,
+            identity,
+            endpoint.relayed_acceptor(),
+            events.clone(),
+        )))
+    });
     let service = HostService {
         endpoint,
+        _relay: relay,
         events,
         platform,
         options: SessionOptions {
@@ -202,6 +225,8 @@ struct RunningSession {
 
 struct HostService {
     endpoint: HostEndpoint,
+    /// Keeps this host registered with its relay while the service runs.
+    _relay: Option<AbortOnDrop>,
     events: mpsc::UnboundedSender<HostEvent>,
     platform: Arc<dyn HostPlatform>,
     options: SessionOptions,
@@ -287,4 +312,93 @@ impl HostService {
             running.task.abort();
         }
     }
+}
+
+/// Aborts a task when dropped, tying it to its owner's lifetime.
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+const RELAY_RETRY_MIN: Duration = Duration::from_secs(2);
+const RELAY_RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Keeps the host registered with its relay, re-registering with backoff after failures, and
+/// hands every viewer the relay routes here to the normal authentication path.
+async fn stay_registered(
+    relay: String,
+    identity: Arc<DeviceIdentity>,
+    acceptor: RelayedAcceptor,
+    events: mpsc::UnboundedSender<HostEvent>,
+) {
+    let mut retry = RELAY_RETRY_MIN;
+    loop {
+        let _sent = events.send(HostEvent::Relay(RelayStatus::Connecting));
+        let failure = match resolve_relay(&relay).await {
+            Err(error) => error,
+            Ok(address) => match RelayRegistration::register(address, &identity).await {
+                Err(error) => error.to_string(),
+                Ok(mut registration) => {
+                    retry = RELAY_RETRY_MIN;
+                    let _sent =
+                        events.send(HostEvent::Relay(RelayStatus::Registered(registration.id())));
+                    serve_allocations(&mut registration, address, &acceptor).await
+                }
+            },
+        };
+        warn!(%failure, "relay unavailable");
+        let _sent = events.send(HostEvent::Relay(RelayStatus::Unavailable(failure)));
+        tokio::time::sleep(retry).await;
+        retry = (retry * 2).min(RELAY_RETRY_MAX);
+    }
+}
+
+/// Binds each allocation the relay offers and accepts the viewer on it, until the
+/// registration fails; returns why.
+async fn serve_allocations(
+    registration: &mut RelayRegistration,
+    relay: SocketAddr,
+    acceptor: &RelayedAcceptor,
+) -> String {
+    loop {
+        let allocation = match registration.next_allocation().await {
+            Ok(allocation) => allocation,
+            Err(error) => return error.to_string(),
+        };
+        let relay_ip = relay.ip();
+        match tokio::task::spawn_blocking(move || bind_to_allocation(relay_ip, &allocation)).await {
+            Ok(Ok(socket)) => {
+                if let Err(error) = acceptor.accept_on(socket) {
+                    warn!(%error, "cannot accept a relayed viewer");
+                }
+            }
+            Ok(Err(error)) => warn!(%error, "cannot bind a relay allocation"),
+            Err(error) => warn!(%error, "relay binding task failed"),
+        }
+    }
+}
+
+/// Resolves `host` or `host:port`, defaulting to the standard relay port.
+pub(crate) async fn resolve_relay(relay: &str) -> Result<SocketAddr, String> {
+    let relay = relay.trim();
+    if let Ok(address) = relay.parse::<SocketAddr>() {
+        return Ok(address);
+    }
+    let bare = relay.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, DEFAULT_RELAY_PORT));
+    }
+    let with_port = if relay.contains(':') {
+        relay.to_owned()
+    } else {
+        format!("{relay}:{DEFAULT_RELAY_PORT}")
+    };
+    tokio::net::lookup_host(&with_port)
+        .await
+        .map_err(|error| format!("cannot resolve {relay}: {error}"))?
+        .next()
+        .ok_or_else(|| format!("{relay} has no address"))
 }

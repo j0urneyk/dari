@@ -15,6 +15,7 @@ open-desk-input = { path = "crates/input" }
 open-desk-media = { path = "crates/media" }
 open-desk-net = { path = "crates/net" }
 open-desk-proto = { path = "crates/proto" }
+open-desk-relay = { path = "crates/relay" }
 open-desk-session = { path = "crates/session" }
 
 anyhow = "1"
@@ -26,7 +27,7 @@ enigo = "0.6"
 fast_image_resize = "5"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 gethostname = "1"
-getrandom = "0.3"
+getrandom = { version = "0.3", features = ["std"] }
 gpui-kit = "0.7"
 hmac = "0.12"
 if-addrs = "0.15"

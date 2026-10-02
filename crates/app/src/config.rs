@@ -4,7 +4,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{Context as _, bail};
-use open_desk_proto::{MAX_DEVICE_NAME_CHARS, sanitize_display_text};
+use open_desk_proto::{DeviceId, MAX_DEVICE_NAME_CHARS, sanitize_display_text};
+use open_desk_session::ViewerTarget;
 
 /// UDP port hosts listen on unless configured otherwise.
 pub(crate) const DEFAULT_PORT: u16 = 47821;
@@ -54,6 +55,20 @@ pub(crate) async fn resolve_address(input: &str) -> anyhow::Result<SocketAddr> {
         .with_context(|| format!("cannot resolve {input}"))?
         .next()
         .with_context(|| format!("{input} has no address"))
+}
+
+/// What the connect form's input names: a relay ID (with a relay configured) or an address.
+pub(crate) async fn resolve_target(input: &str, relay: &str) -> anyhow::Result<ViewerTarget> {
+    if let Some(id) = DeviceId::parse(input) {
+        if relay.trim().is_empty() {
+            bail!("{}", crate::text::text().relay_required);
+        }
+        return Ok(ViewerTarget::Relay {
+            relay: relay.trim().to_owned(),
+            id,
+        });
+    }
+    Ok(ViewerTarget::Direct(resolve_address(input).await?))
 }
 
 /// Addresses on this machine that other devices on the network can reach, best first.

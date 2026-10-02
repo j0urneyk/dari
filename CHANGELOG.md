@@ -25,3 +25,5 @@ All notable changes to this project are documented here. The format follows
 - Connection approval (allow control, view only, or decline) before anything is shared;
   text clipboard sharing; nearby devices on the local network (mDNS); display switching and
   speed/balanced/quality stream presets.
+- `open-desk-relay`: a self-hosted rendezvous and UDP relay so devices behind different NATs
+  connect by a nine-digit ID; sessions stay end-to-end encrypted and authenticated.

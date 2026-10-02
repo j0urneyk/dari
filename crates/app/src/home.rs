@@ -18,11 +18,11 @@ use open_desk_net::{
 };
 use open_desk_proto::{Availability, HostStatus};
 use open_desk_session::{
-    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, SystemClipboard,
-    SystemPlatform, ViewerConfig, connect_viewer, start_host,
+    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
+    SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
 };
 
-use crate::config::{device_name, local_addresses, resolve_address};
+use crate::config::{device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::state::AppState;
@@ -46,7 +46,7 @@ impl std::fmt::Debug for Home {
 impl Home {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
-            host: cx.new(HostPanel::new),
+            host: cx.new(|cx| HostPanel::new(window, cx)),
             connect: cx.new(|cx| ConnectPanel::new(window, cx)),
         }
     }
@@ -68,6 +68,13 @@ impl Home {
         match &self.host.read(cx).hosting {
             Hosting::Running(handle) => Some(handle.local_address().port()),
             Hosting::Off | Hosting::Failed(_) => None,
+        }
+    }
+
+    pub fn relay_id(&self, cx: &App) -> Option<String> {
+        match &self.host.read(cx).relay {
+            Some(RelayStatus::Registered(id)) => Some(id.to_string()),
+            _ => None,
         }
     }
 
@@ -150,13 +157,28 @@ pub(crate) struct HostPanel {
     permissions: LocalPermissions,
     /// A viewer waiting for the host user's decision.
     approval: Option<(PeerInfo, ApprovalRequest)>,
+    relay: Option<RelayStatus>,
+    relay_input: Entity<InputState>,
     advertisement: Option<Advertisement>,
+    _relay_subscription: Subscription,
     host_events: Option<Task<()>>,
     _refresh: Task<()>,
 }
 
 impl HostPanel {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let relay_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(text().relay_placeholder)
+                .default_value(AppState::settings(cx).relay_address.clone())
+        });
+        let relay_subscription =
+            cx.subscribe_in(&relay_input, window, |this, input, event, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let value = input.read(cx).value().trim().to_owned();
+                    this.set_relay(value, cx);
+                }
+            });
         let refresh = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
@@ -174,6 +196,9 @@ impl HostPanel {
             addresses: local_addresses(),
             permissions: LocalPermissions::check(),
             approval: None,
+            relay: None,
+            relay_input,
+            _relay_subscription: relay_subscription,
             advertisement: None,
             host_events: None,
             _refresh: refresh,
@@ -215,9 +240,11 @@ impl HostPanel {
             stream: StreamSettings::default(),
             require_approval: AppState::settings(cx).require_approval,
             clipboard: AppState::settings(cx).clipboard_sync,
+            relay: Some(AppState::settings(cx).relay_address.clone())
+                .filter(|relay| !relay.is_empty()),
         };
         let started = TokioRuntime::enter(cx, || {
-            start_host(config, &identity, Arc::new(SystemPlatform))
+            start_host(config, identity, Arc::new(SystemPlatform))
         });
         match started {
             Ok((handle, mut events)) => {
@@ -245,6 +272,7 @@ impl HostPanel {
         self.host_events = None;
         self.advertisement = None;
         self.approval = None;
+        self.relay = None;
         self.password = None;
         self.viewer = None;
         self.session_status = None;
@@ -275,6 +303,7 @@ impl HostPanel {
                 self.approval = None;
                 self.session_status = Some(status);
             }
+            HostEvent::Relay(status) => self.relay = Some(status),
             HostEvent::SessionEnded { .. } => {
                 self.approval = None;
                 self.viewer = None;
@@ -297,6 +326,63 @@ impl HostPanel {
             Ok(advertisement) => self.advertisement = Some(advertisement),
             Err(error) => tracing::warn!(%error, "cannot announce this device on the network"),
         }
+    }
+
+    /// Saves the relay address and re-registers by restarting hosting.
+    fn set_relay(&mut self, relay: String, cx: &mut Context<Self>) {
+        if AppState::settings(cx).relay_address == relay {
+            return;
+        }
+        AppState::update_settings(cx, |settings| settings.relay_address = relay);
+        if matches!(self.hosting, Hosting::Running(_)) {
+            self.stop();
+            self.start(cx);
+        }
+        cx.notify();
+    }
+
+    fn render_relay(&self, cx: &App) -> Div {
+        let mut section = div()
+            .v_flex()
+            .gap_1()
+            .child(label(text().relay_server, cx))
+            .child(Input::new(&self.relay_input).id("relay-address"));
+        match &self.relay {
+            Some(RelayStatus::Registered(id)) => {
+                section = section.child(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(label(text().my_id, cx))
+                        .child(
+                            div()
+                                .font_family("monospace")
+                                .text_lg()
+                                .font_semibold()
+                                .child(id.to_string()),
+                        )
+                        .child(Clipboard::new("relay-id-copy").value(id.to_string())),
+                );
+            }
+            Some(RelayStatus::Connecting) => {
+                section = section.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text().relay_connecting),
+                );
+            }
+            Some(RelayStatus::Unavailable(error)) => {
+                section = section.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(text().relay_unavailable(error)),
+                );
+            }
+            None => {}
+        }
+        section
     }
 
     fn answer(&mut self, decision: ApprovalDecision, cx: &mut Context<Self>) {
@@ -624,7 +710,8 @@ impl Render for HostPanel {
                 )
                 .children(self.render_approval(cx))
                 .child(self.render_session(cx))
-                .child(Self::render_policy(cx)),
+                .child(Self::render_policy(cx))
+                .child(self.render_relay(cx)),
         };
         panel.children(self.render_permissions(cx))
     }
@@ -738,13 +825,14 @@ impl ConnectPanel {
 
         let map_shortcut_modifier = AppState::settings(cx).map_shortcut_modifier;
         let clipboard_sync = AppState::settings(cx).clipboard_sync;
+        let relay = AppState::settings(cx).relay_address.clone();
         let target = address_text.clone();
         let attempt = TokioRuntime::spawn(cx, async move {
-            let address = resolve_address(&target)
+            let target = resolve_target(&target, &relay)
                 .await
                 .map_err(|error| error.to_string())?;
             let config = ViewerConfig {
-                address,
+                target,
                 client_name: device_name(),
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),

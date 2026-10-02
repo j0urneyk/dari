@@ -40,7 +40,7 @@ mod macos {
     use open_desk_net::{AccessPassword, DeviceIdentity};
     use open_desk_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
     use open_desk_session::{
-        HostConfig, HostEvent, HostPlatform, ViewerConfig, connect_viewer, start_host,
+        HostConfig, HostEvent, HostPlatform, ViewerConfig, ViewerTarget, connect_viewer, start_host,
     };
 
     use open_desk::test_support::{
@@ -205,16 +205,19 @@ mod macos {
             stream: StreamSettings::default(),
             require_approval: false,
             clipboard: false,
+            relay: None,
         };
         let (host, mut host_events) = cx
-            .update(|cx| TokioRuntime::enter(cx, || start_host(config, &identity, platform)))
+            .update(|cx| {
+                TokioRuntime::enter(cx, || start_host(config, Arc::new(identity), platform))
+            })
             .unwrap();
         let password: AccessPassword = match host_events.blocking_recv() {
             Some(HostEvent::PasswordChanged(Some(password))) => password,
             other => panic!("expected a password, got {other:?}"),
         };
         let viewer_config = ViewerConfig {
-            address: host.local_address(),
+            target: ViewerTarget::Direct(host.local_address()),
             client_name: "gui-test".into(),
             map_shortcut_modifier: false,
             clipboard: None,
@@ -394,9 +397,22 @@ mod macos {
     /// The whole user flow in one app: fill in the connect form with this device's own address
     /// and password, connect, see the approval request on the host side, allow it.
     pub(super) fn connecting_through_the_form_asks_the_host_user_first() {
+        // A local relay, so the form can reach this device by its relay ID.
+        let relay_data = tempfile::tempdir().unwrap();
+        let relay_runtime = tokio::runtime::Runtime::new().unwrap();
+        let relay = {
+            let _entered = relay_runtime.enter();
+            open_desk_relay::RelayServer::start(&open_desk_relay::RelayConfig {
+                listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                data_directory: relay_data.path().to_owned(),
+                max_allocations: 4,
+            })
+            .unwrap()
+        };
         let data = tempfile::tempdir().unwrap();
         Settings {
             port: 0,
+            relay_address: relay.local_address().unwrap().to_string(),
             ..Settings::default()
         }
         .save(data.path())
@@ -409,17 +425,19 @@ mod macos {
                 })
             })
             .unwrap();
-        pump(&mut cx, Duration::from_secs(5), |cx| {
-            cx.update(|cx| home.read(cx).has_password(cx))
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| home.read(cx).has_password(cx) && home.read(cx).relay_id(cx).is_some())
         });
-        let (password, port) = cx.update(|cx| {
+        let (password, relay_id) = cx.update(|cx| {
             let home = home.read(cx);
-            (home.password_text(cx).unwrap(), home.host_port(cx).unwrap())
+            (home.password_text(cx).unwrap(), home.relay_id(cx).unwrap())
         });
+        save(&mut cx, window, "home-relay");
 
+        // Connect by the nine-digit relay ID, not by address.
         cx.update_window(window, |_, window, cx| {
             window.click("connect-address", cx);
-            window.input(&format!("127.0.0.1:{port}"), cx);
+            window.input(&relay_id, cx);
             window.click("connect-password", cx);
             window.input(&password, cx);
             window.click("connect", cx);
@@ -444,6 +462,7 @@ mod macos {
         });
         // A viewer window opened next to the home window.
         assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+        drop(relay);
     }
 
     pub(super) fn run() {

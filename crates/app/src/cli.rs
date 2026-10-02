@@ -15,13 +15,14 @@ use anyhow::Context as _;
 use open_desk_media::StreamSettings;
 use open_desk_net::{AccessPassword, DeviceIdentity};
 use open_desk_session::{
-    HostConfig, HostEvent, SystemPlatform, ViewerConfig, ViewerEvent, connect_viewer, start_host,
+    HostConfig, HostEvent, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent, connect_viewer,
+    start_host,
 };
 
-use crate::config::{data_directory, device_name, local_addresses, resolve_address};
+use crate::config::{data_directory, device_name, local_addresses, resolve_target};
 
-pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
-    let identity = DeviceIdentity::load_or_generate(&data_directory()?)?;
+pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()> {
+    let identity = Arc::new(DeviceIdentity::load_or_generate(&data_directory()?)?);
     let (handle, mut events) = start_host(
         HostConfig {
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
@@ -30,8 +31,9 @@ pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
             // The headless host has no one to ask; anyone with the password gets control.
             require_approval: false,
             clipboard: false,
+            relay,
         },
-        &identity,
+        identity.clone(),
         Arc::new(SystemPlatform),
     )
     .context("cannot start hosting")?;
@@ -60,6 +62,11 @@ pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
                 Some(HostEvent::SessionStarted(peer)) => {
                     println!("{} ({:?}) connected from {}", peer.name, peer.os, peer.address);
                 }
+                Some(HostEvent::Relay(status)) => match status {
+                    RelayStatus::Registered(id) => println!("Relay ID: {id}"),
+                    RelayStatus::Connecting => println!("Connecting to the relay…"),
+                    RelayStatus::Unavailable(error) => println!("Relay unavailable: {error}"),
+                },
                 Some(HostEvent::ApprovalRequested { request, .. }) => {
                     request.respond(open_desk_session::ApprovalDecision::AllowControl);
                 }
@@ -76,8 +83,8 @@ pub(crate) async fn host(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn connect(address: &str) -> anyhow::Result<()> {
-    let address = resolve_address(address).await?;
+pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
+    let target = resolve_target(address, relay).await?;
     let typed = tokio::task::spawn_blocking(|| {
         if std::io::stdin().is_terminal() {
             rpassword::prompt_password("Access password: ")
@@ -92,7 +99,7 @@ pub(crate) async fn connect(address: &str) -> anyhow::Result<()> {
     let password = AccessPassword::parse(&typed)?;
     let (viewer, mut events) = connect_viewer(
         ViewerConfig {
-            address,
+            target,
             client_name: device_name(),
             map_shortcut_modifier: true,
             clipboard: None,

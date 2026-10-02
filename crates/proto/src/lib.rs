@@ -7,6 +7,7 @@ mod codec;
 mod control;
 mod handshake;
 mod input;
+mod relay;
 mod validate;
 mod version;
 mod video;
@@ -24,6 +25,10 @@ pub use handshake::{
 pub use input::{
     InputEvent, KeyCode, MAX_FUNCTION_KEY, MAX_INPUT_TEXT_CHARS, MAX_SCROLL_LINES, MouseButton,
     NamedKey, PointerPosition,
+};
+pub use relay::{
+    Allocation, DEFAULT_RELAY_PORT, DeviceId, RELAY_ACK_MAGIC, RELAY_ALPN, RELAY_BIND_MAGIC,
+    RELAY_TOKEN_LEN, RelayError, RelayRequest, RelayResponse,
 };
 pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, sanitize_display_text};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};

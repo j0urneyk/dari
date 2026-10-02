@@ -8,10 +8,12 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use open_desk_input::ModifierMapping;
 use open_desk_media::{DecodedFrame, VideoDecoder};
-use open_desk_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect};
+use open_desk_net::{
+    AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay,
+};
 use open_desk_proto::{
-    Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent, Os, QualityPreset,
-    VideoPacket,
+    Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
+    QualityPreset, VideoPacket,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -32,7 +34,7 @@ const DECODE_QUEUE: usize = 4;
 
 #[derive(Clone)]
 pub struct ViewerConfig {
-    pub address: SocketAddr,
+    pub target: ViewerTarget,
     pub client_name: String,
     /// Translate the shortcut modifier between macOS (⌘) and Windows (Ctrl).
     pub map_shortcut_modifier: bool,
@@ -54,10 +56,21 @@ pub enum ViewerEvent {
     Ended(SessionEndReason),
 }
 
+/// Where the host is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerTarget {
+    Direct(SocketAddr),
+    /// Through a relay (`host` or `host:port`), by the host's relay ID.
+    Relay {
+        relay: String,
+        id: DeviceId,
+    },
+}
+
 impl std::fmt::Debug for ViewerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ViewerConfig")
-            .field("address", &self.address)
+            .field("target", &self.target)
             .field("client_name", &self.client_name)
             .field("map_shortcut_modifier", &self.map_shortcut_modifier)
             .field("clipboard", &self.clipboard.is_some())
@@ -166,7 +179,15 @@ pub async fn connect_viewer(
     config: ViewerConfig,
     password: &AccessPassword,
 ) -> Result<(ViewerHandle, mpsc::UnboundedReceiver<ViewerEvent>), ConnectError> {
-    let connection = connect(config.address, password, config.client_name).await?;
+    let connection = match &config.target {
+        ViewerTarget::Direct(address) => connect(*address, password, config.client_name).await?,
+        ViewerTarget::Relay { relay, id } => {
+            let relay = crate::host::resolve_relay(relay)
+                .await
+                .map_err(ConnectError::RelayUnavailable)?;
+            connect_via_relay(relay, *id, password, config.client_name).await?
+        }
+    };
     let peer = connection.peer().clone();
     let mapping = config
         .map_shortcut_modifier

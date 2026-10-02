@@ -13,10 +13,13 @@ mod viewer;
 
 pub use clipboard::{ClipboardAccess, ClipboardFactory, SystemClipboard};
 pub use host::{
-    ApprovalDecision, ApprovalRequest, HostConfig, HostError, HostEvent, HostHandle, start_host,
+    ApprovalDecision, ApprovalRequest, HostConfig, HostError, HostEvent, HostHandle, RelayStatus,
+    start_host,
 };
 pub use platform::{HostPlatform, SystemPlatform};
-pub use viewer::{ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, connect_viewer};
+pub use viewer::{
+    ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, ViewerTarget, connect_viewer,
+};
 
 /// Why a session ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
