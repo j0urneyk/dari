@@ -102,6 +102,34 @@ GPUI's macOS platform can only be created on the main thread, so the standard te
 - Filling the connect form with an address (or relay ID) and password brings up the approval card, and clicking
   "Allow control" establishes the session.
 
+### Real screen and input
+
+`crates/session/tests/real_platform.rs` runs a session on this machine's real display and input devices: it checks
+the host reports both as available, that the decoded frame has real content shaped like the display (saved to
+`target/real-platform/frame.png`), and that remote pointer moves land on the requested coordinates. It's ignored by
+default because it needs Screen Recording and Accessibility on macOS and moves the real pointer:
+
+```bash
+cargo test -p dari-session --test real_platform -- --ignored --nocapture
+```
+
+The **Platform checks** workflow (`.github/workflows/platform.yml`, manual or on changes to it) runs that test on
+Windows and macOS runners, and installs the published Windows installer silently to host and connect a session
+with the installed `dari.exe`.
+
+### Cross-device checklist
+
+Hosted runners can't reach each other, so a session between two physical machines is still a manual check. Before a
+release, on a Mac and a Windows 11 PC with the release builds installed:
+
+1. Each side hosts while the other connects, by address and by relay ID.
+2. Approve with **Allow control**: pointer, clicks, wheel, typing (including Korean IME on the host), and ⌘C/Ctrl+C
+   shortcuts work in both directions.
+3. Copy text on each side and paste it on the other.
+4. With two monitors on the host, switch displays in the viewer toolbar; the pointer lands on the selected display.
+5. On a scaled display (Retina, or Windows at 150%), the pointer lands where it's clicked.
+6. **View only** blocks input and clipboard; **Disconnect** on either side ends the session.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests and on pushes to `main`.
