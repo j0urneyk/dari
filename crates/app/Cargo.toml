@@ -42,3 +42,28 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.packager]
+product-name = "open-desk"
+identifier = "dev.open-desk.app"
+description = "Remote desktop for macOS and Windows"
+authors = ["open-desk contributors"]
+category = "Utility"
+icons = [
+    "assets/icons/icon.icns",
+    "assets/icons/icon-32.png",
+    "assets/icons/icon-128.png",
+    "assets/icons/icon-256.png",
+    "assets/icons/icon-512.png",
+    "assets/icons/icon-1024.png",
+]
+before-packaging-command = "cargo build --release --locked -p open-desk"
+out-dir = "../../target/release"
+binaries = [{ path = "open-desk", main = true }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "12.0"
+info-plist-path = "assets/Info.plist"
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"

@@ -19,3 +19,15 @@
 
 - 릴리스 워크플로가 두 OS 산출물을 만든다
 - 설치한 앱으로 macOS↔Windows 접속을 수동 확인
+
+## 구현 노트
+
+- `cargo-packager`로 macOS `.app`과 Windows NSIS 설치 파일을 만든다. macOS DMG는 cargo-packager의
+  `create-dmg`가 Finder AppleScript로 창 배치를 하느라 자동화 권한이 없는 환경에서 실패하므로 `hdiutil`로 만든다.
+- 아이콘은 `crates/app/assets/icon.svg`를 원본으로 PNG와 `.icns`(`iconutil`)를 만든다.
+- macOS `Info.plist`에 로컬 네트워크 사용 설명과 Bonjour 서비스(`_open-desk._udp`)를 넣었다. macOS 15부터
+  이것이 없으면 LAN 접속과 mDNS 검색이 차단된다. 화면 기록/손쉬운 사용은 별도의 사용 설명 키가 없다.
+- Windows Per-Monitor V2 DPI 인식은 매니페스트 대신 시작 시 `SetProcessDpiAwarenessContext`로 켠다(phase 3).
+- 릴리스 워크플로: `v*` 태그에서 macOS dmg, Windows 설치 파일, Linux 릴레이를 빌드하고 CHANGELOG의 해당
+  버전 섹션을 본문으로 초안 릴리스를 만든다. `workflow_dispatch`로 게시 없이 패키징만 검증할 수 있다.
+  Apple 서명·공증은 시크릿이 있을 때만 수행한다.

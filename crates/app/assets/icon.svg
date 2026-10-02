@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#background)"/>
+  <!-- Monitor -->
+  <rect x="232" y="292" width="560" height="360" rx="44" fill="none" stroke="#FFFFFF" stroke-width="44"/>
+  <rect x="452" y="652" width="120" height="70" fill="#FFFFFF"/>
+  <rect x="352" y="716" width="320" height="44" rx="22" fill="#FFFFFF"/>
+  <!-- Remote pointer on the screen -->
+  <path d="M470 392 L470 568 L512 528 L544 596 L576 582 L544 514 L600 510 Z" fill="#FFFFFF"/>
+</svg>

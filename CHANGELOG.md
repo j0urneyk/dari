@@ -27,3 +27,5 @@ All notable changes to this project are documented here. The format follows
   speed/balanced/quality stream presets.
 - `open-desk-relay`: a self-hosted rendezvous and UDP relay so devices behind different NATs
   connect by a nine-digit ID; sessions stay end-to-end encrypted and authenticated.
+- Packaging: macOS app/dmg and Windows installer via cargo-packager, app icon, macOS local
+  network declarations, and a tag-triggered release workflow that also ships the Linux relay.
