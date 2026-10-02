@@ -9,8 +9,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use dari_proto::{
-    Allocation, CONTROL_FRAME_LIMIT, CodecError, DeviceId, MessageCodec, RelayError, RelayRequest,
-    RelayResponse,
+    Allocation, CONTROL_FRAME_LIMIT, CodecError, DeviceId, MessageCodec, RELAY_BIND_MAGIC,
+    RELAY_TOKEN_LEN, RelayError, RelayRequest, RelayResponse,
 };
 use futures_util::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
@@ -28,6 +28,9 @@ const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Binding attempts before giving up, and how long each waits for the relay's ack.
 const BIND_ATTEMPTS: u32 = 6;
 const BIND_ACK_TIMEOUT: Duration = Duration::from_millis(400);
+/// How often a bound side repeats its binding datagram. If a NAT moves the device to a new
+/// public address, the relay follows within this interval, well inside the QUIC idle timeout.
+const REBIND_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum RelayClientError {
@@ -120,7 +123,7 @@ impl RelayRegistration {
             match next_response(&mut receiver).await? {
                 RelayResponse::Registered { id } => Ok((connection, sender, receiver, id)),
                 RelayResponse::Refused(error) => Err(RelayClientError::Refused(error)),
-                RelayResponse::Incoming(_) | RelayResponse::Allocated(_) => {
+                RelayResponse::Incoming { .. } | RelayResponse::Allocated(_) => {
                     Err(RelayClientError::Protocol)
                 }
             }
@@ -148,9 +151,11 @@ impl RelayRegistration {
     }
 
     /// Waits for the next viewer the relay routes to this host.
-    pub async fn next_allocation(&mut self) -> Result<Allocation, RelayClientError> {
+    pub async fn next_allocation(&mut self) -> Result<RelayIncoming, RelayClientError> {
         match next_response(&mut self.receiver).await? {
-            RelayResponse::Incoming(allocation) => Ok(allocation),
+            RelayResponse::Incoming { allocation, viewer } => {
+                Ok(RelayIncoming { allocation, viewer })
+            }
             RelayResponse::Registered { .. }
             | RelayResponse::Allocated(_)
             | RelayResponse::Refused(_) => Err(RelayClientError::Protocol),
@@ -164,12 +169,68 @@ impl Drop for RelayRegistration {
     }
 }
 
+/// A viewer the relay is routing to this host.
+#[derive(Debug, Clone)]
+pub struct RelayIncoming {
+    /// The host's side of the allocation.
+    pub allocation: Allocation,
+    /// The viewer's address as the relay reports it; used to throttle failed attempts per
+    /// viewer. Unauthenticated: a lying relay can only spread or merge throttling buckets.
+    pub viewer: IpAddr,
+}
+
+/// A UDP socket whose address is bound to one side of a relay allocation.
+#[derive(Debug)]
+pub struct RelayBinding {
+    socket: UdpSocket,
+    relay_port: SocketAddr,
+    datagram: [u8; RELAY_BIND_MAGIC.len() + RELAY_TOKEN_LEN],
+}
+
+impl RelayBinding {
+    /// Hands the socket to QUIC and keeps the binding fresh until the returned guard drops, so
+    /// the relay follows this side if its NAT mapping changes. Must be called within a Tokio
+    /// runtime.
+    pub(crate) fn activate(self) -> Result<(UdpSocket, BindingKeepalive), std::io::Error> {
+        self.activate_every(REBIND_INTERVAL)
+    }
+
+    fn activate_every(
+        self,
+        interval: Duration,
+    ) -> Result<(UdpSocket, BindingKeepalive), std::io::Error> {
+        let refresher = self.socket.try_clone()?;
+        let (relay_port, datagram) = (self.relay_port, self.datagram);
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                // The socket is non-blocking once QUIC owns it; a dropped refresh is retried.
+                let _sent = refresher.send_to(&datagram, relay_port);
+            }
+        });
+        Ok((self.socket, BindingKeepalive(task)))
+    }
+}
+
+/// Stops refreshing a relay binding when dropped.
+#[derive(Debug)]
+pub(crate) struct BindingKeepalive(tokio::task::JoinHandle<()>);
+
+impl Drop for BindingKeepalive {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Opens a UDP socket and binds its address to `allocation` on the relay, retrying until the
 /// relay confirms. Blocking; run it off the async workers.
 pub fn bind_to_allocation(
     relay_ip: IpAddr,
     allocation: &Allocation,
-) -> Result<UdpSocket, RelayClientError> {
+) -> Result<RelayBinding, RelayClientError> {
     let unspecified: IpAddr = match relay_ip {
         IpAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
         IpAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
@@ -190,7 +251,11 @@ pub fn bind_to_allocation(
                         && bool::from(buffer[..length].ct_eq(&expected_ack));
                     if acked {
                         socket.set_read_timeout(None)?;
-                        return Ok(socket);
+                        return Ok(RelayBinding {
+                            socket,
+                            relay_port,
+                            datagram: allocation.binding_datagram(),
+                        });
                     }
                 }
                 Err(error)
@@ -228,7 +293,7 @@ pub async fn connect_via_relay(
         match response {
             RelayResponse::Allocated(allocation) => Ok(allocation),
             RelayResponse::Refused(error) => Err(RelayClientError::Refused(error)),
-            RelayResponse::Registered { .. } | RelayResponse::Incoming(_) => {
+            RelayResponse::Registered { .. } | RelayResponse::Incoming { .. } => {
                 Err(RelayClientError::Protocol)
             }
         }
@@ -240,10 +305,11 @@ pub async fn connect_via_relay(
     drop(endpoint);
 
     let bound = allocation.clone();
-    let socket = tokio::task::spawn_blocking(move || bind_to_allocation(relay.ip(), &bound))
+    let binding = tokio::task::spawn_blocking(move || bind_to_allocation(relay.ip(), &bound))
         .await
         .map_err(|error| ConnectError::RelayUnavailable(error.to_string()))?
         .map_err(to_connect_error)?;
+    let (socket, keepalive) = binding.activate().map_err(EndpointError::from)?;
     let session_endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         None,
@@ -251,11 +317,62 @@ pub async fn connect_via_relay(
         std::sync::Arc::new(quinn::TokioRuntime),
     )
     .map_err(EndpointError::from)?;
-    connect_with(
+    let mut connection = connect_with(
         session_endpoint,
         SocketAddr::new(relay.ip(), allocation.port),
         password,
         client_name,
     )
-    .await
+    .await?;
+    connection.link.relay_keepalive = Some(keepalive);
+    Ok(connection)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_bound_side_refreshes_its_binding_until_the_session_ends() {
+        let relay = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let allocation = Allocation {
+            port: relay.local_addr().unwrap().port(),
+            token: [5; RELAY_TOKEN_LEN],
+        };
+        let relay_ip = IpAddr::from(Ipv4Addr::LOCALHOST);
+        let bound = allocation.clone();
+        let binding = tokio::task::spawn_blocking(move || bind_to_allocation(relay_ip, &bound));
+        let mut buffer = [0u8; 64];
+        let (length, client) = relay.recv_from(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..length], allocation.binding_datagram());
+        relay
+            .send_to(&allocation.ack_datagram(), client)
+            .await
+            .unwrap();
+        let binding = binding.await.unwrap().unwrap();
+
+        let (socket, keepalive) = binding.activate_every(Duration::from_millis(50)).unwrap();
+        for _ in 0..2 {
+            let (length, from) =
+                tokio::time::timeout(Duration::from_secs(2), relay.recv_from(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(from, client, "refreshes come from the session's own socket");
+            assert_eq!(&buffer[..length], allocation.binding_datagram());
+        }
+
+        drop(keepalive);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while tokio::time::timeout(Duration::from_millis(10), relay.recv_from(&mut buffer))
+            .await
+            .is_ok()
+        {}
+        let quiet =
+            tokio::time::timeout(Duration::from_millis(200), relay.recv_from(&mut buffer)).await;
+        assert!(quiet.is_err(), "refreshes stop with the session");
+        drop(socket);
+    }
 }

@@ -70,6 +70,10 @@ Host (`crates/net/src/limiter.rs`, `endpoint.rs`):
 - Throttled sources are refused with `refuse()` before the TLS handshake. Every failure and timeout after the
   ServerHello (the point where a password guess becomes possible) counts as a failure.
 - At most 8 concurrent handshakes, 10 seconds each. One session at a time; others get `Busy`.
+- Relayed viewers are throttled by the viewer IP the relay reports with each allocation, not by the relay's own
+  address, so one viewer guessing through a relay doesn't lock out others behind the same relay. That IP is the
+  relay's claim: a malicious relay could misreport it to spread guesses across buckets, but the global limit still
+  caps the overall rate, and such a relay could already disrupt every relayed connection.
 
 Relay (`crates/relay/src/server.rs`, `forward.rs`): 30 requests per minute per source IP, 4 pending connects per
 host, a cap on total allocations (`--max-allocations`, default 256), and allocations freed if not bound within
@@ -114,16 +118,15 @@ fake relay can do is disrupt connections.
 Hosts present their device certificate as a TLS client certificate when registering. The TLS signature proves key
 possession, so one device can't take over another's ID. Binding tokens are 16 random bytes, different for every
 allocation and every side, and datagrams from anywhere other than the two bound addresses are dropped (tested:
-stranger injection and forged bindings are ignored).
+stranger injection and forged bindings are ignored). A binding datagram carrying a side's token moves that side to
+the sender's address, which is how sessions survive NAT rebinding; only a holder of the token can do it, and the
+session itself stays protected end to end.
 
 What the relay can learn: which devices are online, when connections happen, how much traffic flows, and both
 sides' public IPs.
 
 ## Known limitations
 
-- From the host's point of view, every relayed attempt comes from the relay's IP. If someone repeatedly guesses
-  wrong through the relay, all relayed connections to that host are briefly blocked (the global limit still bounds
-  the guessing rate).
 - There's no TOFU (pinning the host certificate fingerprint on first sight). The one-time password authenticates
   every session, so it wasn't considered necessary, but it should be revisited if unattended access (permanent
   passwords) is ever added.

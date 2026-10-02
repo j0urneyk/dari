@@ -134,7 +134,6 @@ input, wherever it sits on the network.
   regular app.
 - Video uses software H.264 encoding only. There's no audio, file transfer, or unattended access.
 - Builds exist only for Apple silicon Macs and x64 Windows.
-- If a relayed client's public address changes mid-session (NAT rebinding), you have to reconnect.
 
 ## Building from source
 

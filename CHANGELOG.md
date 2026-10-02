@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
+  follows a side to its new public address.
+- Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead
+  of per relay, so one viewer's guesses no longer lock out everyone else using the same relay.
+- The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
+  the new versions.
+
 ## [0.0.1] - 2026-10-03
 
 The first release of Dari.

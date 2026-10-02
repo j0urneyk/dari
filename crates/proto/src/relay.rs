@@ -3,6 +3,8 @@
 //! The relay never sees session contents: after rendezvous, host and viewer run their normal
 //! QUIC + SPAKE2 session end to end through UDP ports the relay forwards blindly.
 
+use std::net::IpAddr;
+
 use serde::{Deserialize, Serialize};
 
 use crate::validate::{Validate, ValidationError};
@@ -10,8 +12,9 @@ use crate::validate::{Validate, ValidationError};
 /// UDP port relays listen on unless configured otherwise.
 pub const DEFAULT_RELAY_PORT: u16 = 47822;
 /// ALPN of the relay control protocol.
-pub const RELAY_ALPN: &[u8] = b"dari-relay/1";
-/// Prefix of the datagram each side sends to bind its address to an allocation.
+pub const RELAY_ALPN: &[u8] = b"dari-relay/2";
+/// Prefix of the datagram each side sends to bind its address to an allocation. Clients repeat it
+/// periodically so the relay follows them when a NAT gives them a new public address.
 pub const RELAY_BIND_MAGIC: &[u8; 4] = b"DRRB";
 /// Prefix of the relay's reply confirming a binding datagram.
 pub const RELAY_ACK_MAGIC: &[u8; 4] = b"DRRA";
@@ -139,7 +142,13 @@ pub enum RelayResponse {
         id: DeviceId,
     },
     /// Host: a viewer wants to connect; bind to this allocation and accept QUIC on it.
-    Incoming(Allocation),
+    ///
+    /// `viewer` is the viewer's address as the relay sees it, so the host can throttle failed
+    /// attempts per viewer rather than per relay. It is the relay's claim, not proven to the host.
+    Incoming {
+        allocation: Allocation,
+        viewer: IpAddr,
+    },
     /// Viewer: connect through this allocation.
     Allocated(Allocation),
     Refused(RelayError),
@@ -154,7 +163,7 @@ impl Validate for RelayRequest {
 impl Validate for RelayResponse {
     fn validate(&self) -> Result<(), ValidationError> {
         match self {
-            RelayResponse::Incoming(allocation) | RelayResponse::Allocated(allocation)
+            RelayResponse::Incoming { allocation, .. } | RelayResponse::Allocated(allocation)
                 if allocation.port == 0 =>
             {
                 Err(ValidationError::InvalidValue { field: "port" })

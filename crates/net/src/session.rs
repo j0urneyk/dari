@@ -98,6 +98,8 @@ pub struct SessionLink {
     pub(crate) slot: Option<SessionSlot>,
     /// Viewers own a private client endpoint that must outlive the connection.
     pub(crate) endpoint: Option<quinn::Endpoint>,
+    /// Keeps a relayed session's binding fresh for as long as the session lives.
+    pub(crate) relay_keepalive: Option<crate::relay_client::BindingKeepalive>,
 }
 
 impl SessionLink {

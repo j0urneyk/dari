@@ -71,3 +71,9 @@ Forwarding ports are ephemeral, so running with `--network host` is the simplest
 - Each source IP may make at most 30 registration or connect requests per minute (prevents ID scanning).
 - An allocation is freed if both sides haven't bound within 30 seconds, or after 120 seconds without traffic.
 - A host can have at most 4 pending connect requests, and `--max-allocations` caps the total.
+- With each allocation the relay tells the host the viewer's IP, so the host throttles failed password attempts per
+  viewer instead of blocking everyone who connects through the relay.
+
+Clients refresh their port binding every 10 seconds, so a session survives a NAT that assigns a new public address
+or port mid-session. Relays and devices must run the same relay protocol (`dari-relay/2`); update the relay together
+with the apps.

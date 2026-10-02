@@ -159,7 +159,9 @@ The relay knows nothing about session contents. The host registers by presenting
 client certificate and receives a nine-digit ID. When a viewer asks to connect by ID, the relay allocates a pair of
 UDP ports, and the two sides run the same QUIC + SPAKE2 session as a direct connection through them. On the host,
 relayed connections go through `RelayedAcceptor` into `HostEndpoint`'s authentication path unchanged, so the
-password, throttling, single-session slot, and approval apply exactly as for direct connections. If registration
+password, single-session slot, and approval apply exactly as for direct connections; failed attempts are throttled
+by the viewer IP the relay reports. Both sides refresh their binding every 10 seconds, so the relay follows a device
+whose NAT mapping changes mid-session. If registration
 drops, the host service re-registers with exponential backoff from 2 to 60 seconds.
 
 Operations are covered in [relay operations](relay.md) and the message format in the [protocol](protocol.md#relay).
