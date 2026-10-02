@@ -23,23 +23,25 @@ The UI follows the system language: Korean or English.
 
 ## Status
 
-v0.1.0 is the first release. Automated tests run real QUIC sessions against synthetic screens, and GUI tests
-render the app on macOS. Some things haven't been checked on real hardware yet:
+Dari is early. It was first released as open-desk 0.1.0 and has since been renamed, and Dari itself has no
+release yet, so for now build it from source (see [Building from source](#building-from-source)).
+
+Automated tests run real QUIC sessions against synthetic screens, and GUI tests render the app on macOS. Some
+things haven't been checked on real hardware yet:
 
 - A session between a physical Mac and a physical Windows 11 PC.
 - Screen sharing and input injection with the macOS permissions actually granted.
-- The Windows installer. The release workflow builds it, but that workflow hasn't run for v0.1.0, so the release
-  doesn't include it. For now, build from source on Windows (see [Building from source](#building-from-source)).
+- The Windows installer produced by the release workflow.
 
 ## Install
 
-Download a build from [Releases](https://github.com/j0urneyk/open-desk/releases).
+Releases will be published on [Releases](https://github.com/j0urneyk/dari/releases) with these files:
 
-| Platform | File | v0.1.0 |
-| --- | --- | --- |
-| macOS (Apple silicon, 12 or later) | `dari_<version>_macos_aarch64.dmg` | Available |
-| Windows 11 (x64) | `Dari_<version>_x64-setup.exe` | Not yet published |
-| Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` | Available |
+| Platform | File |
+| --- | --- |
+| macOS (Apple silicon, 12 or later) | `dari_<version>_macos_aarch64.dmg` |
+| Windows 11 (x64) | `Dari_<version>_x64-setup.exe` |
+| Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` |
 
 Release builds aren't code-signed unless signing secrets are configured. The first time you run the app on
 macOS, right-click it in Finder and choose **Open**. On Windows, choose **More info → Run anyway** when
@@ -200,3 +202,9 @@ The deeper docs are written in Korean:
 - [Relay operations](docs/relay.md): running and securing the relay.
 
 Changes are listed in the [CHANGELOG](CHANGELOG.md).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your
+option. Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Dari
+shall be dual licensed as above, without any additional terms or conditions.
