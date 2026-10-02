@@ -7,6 +7,9 @@ macOS와 Windows 11이 서로 접속(양방향 호스트/뷰어)할 수 있어�
 이 디렉터리의 phase 문서가 구현의 기준이다. 각 phase는 독립적으로 리뷰·머지 가능한
 PR 하나로 끝나며, 다음 phase는 이전 phase가 `main`에 머지된 뒤 시작한다.
 
+> **상태**: phase 0–7 모두 완료(v0.1.0, 2026-10-03). 각 phase 문서의 "구현 노트"가 계획과 달라진 점을
+> 기록한다. 완성된 시스템의 설명은 [문서 목록](../README.md), PR·리뷰·검증 기록은 [개발 기록](../history.md)에 있다.
+
 ## 목표와 비목표
 
 목표:
@@ -78,16 +81,16 @@ UI가 막혀도 세션이 멈추지 않고, 세션 로직은 UI 없이 테스트
 
 ## Phase 목록
 
-| Phase | 문서 | 결과물 |
-| --- | --- | --- |
-| 0 | [phase-00-bootstrap.md](phase-00-bootstrap.md) | 워크스페이스, 툴체인 고정, fmt/clippy/deny, CI, 앱 골격 |
-| 1 | [phase-01-secure-transport.md](phase-01-secure-transport.md) | 프로토콜, QUIC 전송, SPAKE2 인증, 시도 제한 |
-| 2 | [phase-02-media-pipeline.md](phase-02-media-pipeline.md) | 화면 캡처, 스케일링, H.264 인코드/디코드 |
-| 3 | [phase-03-input-and-host-session.md](phase-03-input-and-host-session.md) | 입력 주입, 호스트/뷰어 세션, 헤드리스 CLI |
-| 4 | [phase-04-desktop-ui.md](phase-04-desktop-ui.md) | gpui-kit 홈/접속/뷰어 화면, 권한 안내 |
-| 5 | [phase-05-collaboration-features.md](phase-05-collaboration-features.md) | 접속 승인, 클립보드, LAN 검색, 모니터·품질 선택 |
-| 6 | [phase-06-relay.md](phase-06-relay.md) | 인터넷 접속용 ID 랑데부 + UDP 릴레이 서버 |
-| 7 | [phase-07-packaging.md](phase-07-packaging.md) | macOS .app/.dmg, Windows 설치 파일, 릴리스 문서 |
+| Phase | 문서 | 결과물 | PR |
+| --- | --- | --- | --- |
+| 0 | [phase-00-bootstrap.md](phase-00-bootstrap.md) | 워크스페이스, 툴체인 고정, fmt/clippy/deny, CI, 앱 골격 | [#1](https://github.com/j0urneyk/open-desk/pull/1) |
+| 1 | [phase-01-secure-transport.md](phase-01-secure-transport.md) | 프로토콜, QUIC 전송, SPAKE2 인증, 시도 제한 | [#2](https://github.com/j0urneyk/open-desk/pull/2) |
+| 2 | [phase-02-media-pipeline.md](phase-02-media-pipeline.md) | 화면 캡처, 스케일링, H.264 인코드/디코드 | [#3](https://github.com/j0urneyk/open-desk/pull/3) |
+| 3 | [phase-03-input-and-host-session.md](phase-03-input-and-host-session.md) | 입력 주입, 호스트/뷰어 세션, 헤드리스 CLI | [#4](https://github.com/j0urneyk/open-desk/pull/4) |
+| 4 | [phase-04-desktop-ui.md](phase-04-desktop-ui.md) | gpui-kit 홈/접속/뷰어 화면, 권한 안내 | [#5](https://github.com/j0urneyk/open-desk/pull/5) |
+| 5 | [phase-05-collaboration-features.md](phase-05-collaboration-features.md) | 접속 승인, 클립보드, LAN 검색, 모니터·품질 선택 | [#6](https://github.com/j0urneyk/open-desk/pull/6) |
+| 6 | [phase-06-relay.md](phase-06-relay.md) | 인터넷 접속용 ID 랑데부 + UDP 릴레이 서버 | [#7](https://github.com/j0urneyk/open-desk/pull/7) |
+| 7 | [phase-07-packaging.md](phase-07-packaging.md) | macOS .app/.dmg, Windows 설치 파일, 릴리스 문서 | [#8](https://github.com/j0urneyk/open-desk/pull/8) |
 
 ## 작업 방식
 

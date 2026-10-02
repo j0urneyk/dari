@@ -59,6 +59,8 @@ open-desk connect <주소 또는 ID> [--relay 서버주소]
 
 ## 보안 모델
 
+자세한 위협 모델과 근거는 [보안 모델](docs/security.md)에 있습니다.
+
 - 연결은 QUIC(TLS 1.3)로 암호화되고, 인증은 일회용 비밀번호를 쓰는 **SPAKE2** PAKE로 합니다. 확인값이
   TLS 세션(exporter)에 묶여 있어 중간자는 세션을 가로챌 수 없고, 도청자는 비밀번호를 오프라인으로 대입해
   볼 수 없습니다. 비밀번호는 10자(약 50비트)이며 한 번 쓰면 폐기됩니다.
@@ -102,7 +104,9 @@ cargo deny check                           # 의존성 보안·라이선스 검�
 | `open-desk-relay` | 릴레이 서버 |
 | `open-desk` | gpui-kit 데스크톱 앱과 CLI |
 
-설계와 진행 기록은 [구현 계획](docs/plan/README.md)에, 변경 이력은 [CHANGELOG](CHANGELOG.md)에 있습니다.
+자세한 문서는 [docs](docs/README.md)에 있습니다: [사용 가이드](docs/user-guide.md), [아키텍처](docs/architecture.md),
+[프로토콜](docs/protocol.md), [보안 모델](docs/security.md), [개발 가이드](docs/development.md),
+[개발 기록](docs/history.md), [구현 계획](docs/plan/README.md). 변경 이력은 [CHANGELOG](CHANGELOG.md)에 있습니다.
 
 ### 릴리스
 

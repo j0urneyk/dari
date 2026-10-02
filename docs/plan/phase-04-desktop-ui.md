@@ -51,6 +51,8 @@
   비활성화되면 눌린 키·버튼·수정자를 모두 해제해 원격에 키가 눌린 채로 남지 않게 한다.
 - macOS 권한: 화면 기록은 `CGPreflightScreenCaptureAccess`, 손쉬운 사용은 `AXIsProcessTrusted`로
   확인(3초마다 갱신)하고, 권한 요청 버튼과 시스템 설정 바로가기를 제공한다.
+  `AXIsProcessTrusted` 호출은 phase 3의 Win32 호출 두 곳과 함께 `crates/input/src/backend.rs`에서
+  `unsafe`를 쓰는 세 번째이자 마지막 위치다.
 - Ctrl+Alt+Del 전송은 Windows 보안 주의 시퀀스(SAS)를 일반 프로세스의 SendInput으로 보낼 수 없어
   제외했다(알려진 한계).
 - UI 문자열은 시스템 로캘이 한국어면 한국어, 아니면 영어(`text.rs`).
