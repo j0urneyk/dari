@@ -118,4 +118,4 @@ Set the log level with the `RUST_LOG` environment variable (default `info`), for
 | The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
 | "Set a relay server to connect by ID" | Enter the same relay address as the other side in your "Relay server" field |
 | "Cannot reach the relay (…). Retrying…" | Check the relay address and firewall. The app keeps retrying every 2 to 60 seconds. See [relay operations](relay.md) |
-| A relayed session suddenly drops | If the router changes the public address or port (NAT rebinding), you have to reconnect |
+| A relayed session suddenly drops | Check that both devices and the relay run the same Dari version. A changed public address (NAT rebinding) is picked up within about 10 seconds; if the network was gone for 30 seconds or more, reconnect |

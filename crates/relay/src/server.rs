@@ -42,7 +42,8 @@ pub struct RelayConfig {
 
 struct RegisteredHost {
     generation: u64,
-    incoming: mpsc::Sender<Allocation>,
+    /// The host's side of each new allocation, with the viewer's address.
+    incoming: mpsc::Sender<(Allocation, IpAddr)>,
 }
 
 struct State {
@@ -218,9 +219,10 @@ async fn register(
 
     let result = loop {
         tokio::select! {
-            allocation = allocations.recv() => {
-                let Some(allocation) = allocation else { break Ok(()) };
-                if let Err(error) = sender.send(&RelayResponse::Incoming(allocation)).await {
+            incoming = allocations.recv() => {
+                let Some((allocation, viewer)) = incoming else { break Ok(()) };
+                let response = RelayResponse::Incoming { allocation, viewer };
+                if let Err(error) = sender.send(&response).await {
                     break Err(error.into());
                 }
             }
@@ -256,7 +258,8 @@ async fn connect(
             }
             Some(slot) => {
                 let (host_side, viewer_side) = allocate(state.bind_ip, slot).await?;
-                if host.try_send(host_side).is_ok() {
+                let viewer = connection.remote_address().ip();
+                if host.try_send((host_side, viewer)).is_ok() {
                     RelayResponse::Allocated(viewer_side)
                 } else {
                     // The host has too many viewers waiting; the unused allocation expires.

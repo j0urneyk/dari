@@ -18,6 +18,7 @@ use crate::handshake::{
 use crate::identity::{CERTIFICATE_SUBJECT, DeviceIdentity, Fingerprint};
 use crate::limiter::AttemptLimiter;
 use crate::password::AccessPassword;
+use crate::relay_client::RelayBinding;
 use crate::session::{AuthenticatedConnection, PeerInfo, SessionLink, SessionSlot};
 use crate::tls::{TlsConfigError, client_config, server_config};
 
@@ -143,9 +144,11 @@ impl std::fmt::Debug for RelayedAcceptor {
 }
 
 impl RelayedAcceptor {
-    /// Accepts one viewer on `socket`, already bound to a relay allocation. Must be called
-    /// within a Tokio runtime.
-    pub fn accept_on(&self, socket: std::net::UdpSocket) -> Result<(), EndpointError> {
+    /// Accepts one viewer on `binding`, a socket already bound to a relay allocation.
+    /// `viewer` is the viewer's address as the relay reported it; failed attempts are throttled
+    /// against it rather than against the relay. Must be called within a Tokio runtime.
+    pub fn accept_on(&self, binding: RelayBinding, viewer: IpAddr) -> Result<(), EndpointError> {
+        let (socket, keepalive) = binding.activate()?;
         let endpoint = quinn::Endpoint::new(
             quinn::EndpointConfig::default(),
             Some(self.server_config.clone()),
@@ -162,11 +165,13 @@ impl RelayedAcceptor {
                 endpoint.close(0u32.into(), b"unused");
                 return;
             };
-            match handle_incoming(incoming, &shared).await {
+            match handle_incoming(incoming, &shared, viewer).await {
                 Ok(mut connection) => {
                     info!(peer = %connection.peer().name, "viewer authenticated through the relay");
-                    // The endpoint drives this connection's socket; keep it with the session.
+                    // The endpoint drives this connection's socket; keep it, and the binding
+                    // refresh, with the session.
                     connection.link.endpoint = Some(endpoint);
+                    connection.link.relay_keepalive = Some(keepalive);
                     let _delivered = sessions.send(connection).await;
                 }
                 Err(error) => {
@@ -277,7 +282,7 @@ async fn accept_loop(
         let sessions = sessions.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            match handle_incoming(incoming, &shared).await {
+            match handle_incoming(incoming, &shared, address.ip()).await {
                 Ok(connection) => {
                     info!(peer = %connection.peer().name, %address, "viewer authenticated");
                     // If nobody is accepting, dropping the connection closes it.
@@ -289,9 +294,12 @@ async fn accept_loop(
     }
 }
 
+/// Authenticates one incoming viewer. `origin` is the address failed attempts count against:
+/// the connection's source for direct viewers, the viewer's reported address for relayed ones.
 async fn handle_incoming(
     incoming: quinn::Incoming,
     shared: &HostShared,
+    origin: IpAddr,
 ) -> Result<AuthenticatedConnection, ConnectError> {
     let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     let address = incoming.remote_address();
@@ -305,7 +313,7 @@ async fn handle_incoming(
     let exporter = exporter(&connection)?;
 
     let password = shared.password().current.clone();
-    let precheck = if !shared.limiter().allows(address.ip(), Instant::now()) {
+    let precheck = if !shared.limiter().allows(origin, Instant::now()) {
         Err(RejectReason::TooManyAttempts)
     } else if shared
         .session_active
@@ -348,21 +356,20 @@ async fn handle_incoming(
     };
     match outcome {
         Ok((hello, slot)) => {
-            shared.limiter().record_success(address.ip());
+            shared.limiter().record_success(origin);
             let link = SessionLink {
                 connection,
                 peer: peer_from_hello(hello, address),
                 slot: Some(slot),
                 endpoint: None,
+                relay_keepalive: None,
             };
             Ok(AuthenticatedConnection::new(link, channel))
         }
         Err(error) => {
             if password_attempted {
-                warn!(%address, %error, "failed authentication attempt");
-                shared
-                    .limiter()
-                    .record_failure(address.ip(), Instant::now());
+                warn!(%address, %origin, %error, "failed authentication attempt");
+                shared.limiter().record_failure(origin, Instant::now());
             }
             if let (Some(generation), Some(password)) = (consumed_generation, password) {
                 // The viewer proved the password but the session never got established; keep
@@ -459,6 +466,7 @@ pub(crate) async fn connect_with(
         },
         slot: None,
         endpoint: Some(endpoint),
+        relay_keepalive: None,
     };
     Ok(AuthenticatedConnection::new(link, channel))
 }

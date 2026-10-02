@@ -115,10 +115,15 @@ async fn forward(mut sides: [Side; 2]) {
         let datagram = &buffers[index][..length];
         let side = &mut sides[index];
 
-        // Binding: the first datagram with the right token claims this side's address.
+        // Binding: a datagram with this side's token claims its address. Clients repeat it, so
+        // a side whose NAT mapping changed mid-session moves to its new address. Only changes
+        // are acknowledged; a refresh from the same address needs no answer.
         let is_binding = length == side.binding.len() && bool::from(datagram.ct_eq(&side.binding));
         if is_binding {
-            if side.peer.is_none() || side.peer == Some(source) {
+            if side.peer != Some(source) {
+                if side.peer.is_some() {
+                    debug!(%source, "relay side rebound to a new address");
+                }
                 side.peer = Some(source);
                 let _acked = side.socket.send_to(&side.ack, source).await;
             }
@@ -207,6 +212,59 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(200), stranger.recv_from(&mut buffer)).await;
         assert!(no_ack.is_err(), "forged bindings are not acknowledged");
         assert_eq!(active.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn a_side_that_rebinds_from_a_new_address_keeps_its_session() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let slot = AllocationSlot::try_take(&active, 4).unwrap();
+        let (host, viewer) = allocate(Ipv4Addr::LOCALHOST.into(), slot).await.unwrap();
+        let host_socket = bind_side(&host).await;
+        let old_viewer = bind_side(&viewer).await;
+        let relay_viewer_port = (Ipv4Addr::LOCALHOST, viewer.port);
+        let mut buffer = [0u8; 64];
+
+        // A refresh from the bound address is accepted silently.
+        old_viewer
+            .send_to(&viewer.binding_datagram(), relay_viewer_port)
+            .await
+            .unwrap();
+        let no_ack = tokio::time::timeout(
+            Duration::from_millis(200),
+            old_viewer.recv_from(&mut buffer),
+        )
+        .await;
+        assert!(
+            no_ack.is_err(),
+            "unchanged bindings are not re-acknowledged"
+        );
+
+        // The viewer's NAT hands it a new address; its next refresh moves the binding there.
+        let new_viewer = bind_side(&viewer).await;
+        new_viewer
+            .send_to(b"after-rebind", relay_viewer_port)
+            .await
+            .unwrap();
+        let (length, _) = host_socket.recv_from(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..length], b"after-rebind");
+        host_socket
+            .send_to(b"to-new-address", (Ipv4Addr::LOCALHOST, host.port))
+            .await
+            .unwrap();
+        let (length, _) = new_viewer.recv_from(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..length], b"to-new-address");
+
+        // The abandoned address is no longer part of the session.
+        old_viewer
+            .send_to(b"stale", relay_viewer_port)
+            .await
+            .unwrap();
+        let nothing = tokio::time::timeout(
+            Duration::from_millis(200),
+            host_socket.recv_from(&mut buffer),
+        )
+        .await;
+        assert!(nothing.is_err(), "the old address is unbound");
     }
 
     #[tokio::test(start_paused = true)]

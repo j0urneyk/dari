@@ -28,7 +28,7 @@ message is handed to the caller only after it passes `Validate`.
 | Handshake | `HandshakeMessage` | 4 KiB | Bidirectional stream opened by the viewer |
 | Control | `ControlMessage` | 2 MiB | The handshake stream, reused once authenticated |
 | Video | `VideoPacket` | 16 MiB | Unidirectional stream opened by the host |
-| Relay control | `RelayRequest` / `RelayResponse` | 2 MiB | Bidirectional stream to the relay (ALPN `dari-relay/1`) |
+| Relay control | `RelayRequest` / `RelayResponse` | 2 MiB | Bidirectional stream to the relay (ALPN `dari-relay/2`) |
 
 The control channel's 2 MiB limit leaves room for clipboard text of up to 1 MiB, which travels on the same channel.
 After authentication only the codec of the handshake stream is swapped (`map_decoder`/`map_encoder`) to turn it
@@ -125,7 +125,7 @@ sending its own name, each side cleans it to the same rules with `sanitize_displ
 
 ## Relay
 
-The relay control connection is a separate QUIC connection with ALPN `dari-relay/1`. The default port is UDP
+The relay control connection is a separate QUIC connection with ALPN `dari-relay/2`. The default port is UDP
 47822.
 
 | Message | Direction | Meaning |
@@ -133,7 +133,7 @@ The relay control connection is a separate QUIC connection with ALPN `dari-relay
 | `RelayRequest::Register` | Host → relay | Register under the ID bound to the client certificate's fingerprint |
 | `RelayRequest::Connect { id }` | Viewer → relay | Ask to reach the host with this ID |
 | `RelayResponse::Registered { id }` | Relay → host | The registered nine-digit ID |
-| `RelayResponse::Incoming(Allocation)` | Relay → host | A viewer is coming; bind to this allocation and accept QUIC on it |
+| `RelayResponse::Incoming { allocation, viewer }` | Relay → host | A viewer is coming; bind to this allocation and accept QUIC on it. `viewer` is the viewer's IP as the relay sees it, used by the host to throttle failed attempts per viewer |
 | `RelayResponse::Allocated(Allocation)` | Relay → viewer | Connect through this allocation |
 | `RelayResponse::Refused(RelayError)` | Relay → device | `NotFound`, `TooManyRequests`, `CertificateRequired`, `Unavailable` |
 
@@ -141,7 +141,13 @@ The relay control connection is a separate QUIC connection with ALPN `dari-relay
 address by sending a `"DRRB" ‖ token` datagram from its socket to that port, and the relay confirms with
 `"DRRA" ‖ token`. The client resends every 400 ms, up to 6 times, until it's confirmed. Once both sides are bound,
 the relay forwards datagrams (up to 65,535 bytes) between the two addresses without looking at them, and the QUIC
-session above runs over them unchanged. A `DeviceId` is in the range 100000000..=999999999, displayed as
+session above runs over them unchanged.
+
+For the rest of the session, each side repeats its binding datagram every 10 seconds from the same socket. A binding
+datagram with a side's token always moves that side to the address it came from, so when a NAT gives a device a new
+public address or port mid-session, the relay follows it within one refresh, well inside QUIC's 30-second idle
+timeout. The relay acknowledges a binding only when the address changes; a refresh from the bound address gets no
+reply. A `DeviceId` is in the range 100000000..=999999999, displayed as
 `123 456 789`; input ignores spaces and `-`.
 
 ## Key constants

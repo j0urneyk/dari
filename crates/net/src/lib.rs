@@ -25,7 +25,8 @@ pub use handshake::HandshakeError;
 pub use identity::{DeviceIdentity, Fingerprint, IdentityError};
 pub use password::{AccessPassword, PASSWORD_LEN, PasswordError};
 pub use relay_client::{
-    RelayClientError, RelayRegistration, bind_to_allocation, connect_via_relay,
+    RelayBinding, RelayClientError, RelayIncoming, RelayRegistration, bind_to_allocation,
+    connect_via_relay,
 };
 pub use session::{AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink};
 pub use tls::TlsConfigError;

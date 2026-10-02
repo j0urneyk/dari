@@ -364,14 +364,15 @@ async fn serve_allocations(
     acceptor: &RelayedAcceptor,
 ) -> String {
     loop {
-        let allocation = match registration.next_allocation().await {
-            Ok(allocation) => allocation,
+        let incoming = match registration.next_allocation().await {
+            Ok(incoming) => incoming,
             Err(error) => return error.to_string(),
         };
         let relay_ip = relay.ip();
+        let allocation = incoming.allocation;
         match tokio::task::spawn_blocking(move || bind_to_allocation(relay_ip, &allocation)).await {
-            Ok(Ok(socket)) => {
-                if let Err(error) = acceptor.accept_on(socket) {
+            Ok(Ok(binding)) => {
+                if let Err(error) = acceptor.accept_on(binding, incoming.viewer) {
                     warn!(%error, "cannot accept a relayed viewer");
                 }
             }
