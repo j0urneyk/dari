@@ -1,0 +1,47 @@
+# cargo-deny: https://embarkstudios.github.io/cargo-deny/
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained notices for crates GPUI pulls in transitively are out of our control;
+# vulnerability advisories still apply to the whole tree.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    # File-level copyleft; acceptable because we ship these crates unmodified.
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

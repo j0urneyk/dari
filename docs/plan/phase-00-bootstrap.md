@@ -37,3 +37,12 @@ CI를 먼저 갖춘다. gpui-kit 창 하나를 띄우는 앱 골격으로 GUI �
 
 - GPUI는 큰 의존성 트리를 가져와 첫 빌드와 CI가 느리다 → rust-cache, 변경 없는 job 최소화
 - gpui-kit가 GPUI 스냅샷을 `=` 버전으로 고정하므로 gpui-kit 업그레이드는 별도 PR로만 한다
+
+## 구현 노트
+
+- gpui-kit는 `use gpui_kit::*` 프렐류드 사용을 전제로 설계되어 있어 `clippy::wildcard_imports`는
+  워크스페이스 전체에서 허용했다.
+- cargo-deny의 `unmaintained` 검사는 `workspace`(직접 의존성) 범위로 한정했다. GPUI가 전이적으로
+  가져오는 `instant`, `paste`, `rustls-pemfile`, `rustybuzz`, `ttf-parser`는 우리가 교체할 수 없다.
+  취약점(vulnerability) 권고는 전체 의존성 트리에 그대로 적용된다.
+- 의존성은 dev 프로필에서도 `opt-level = 2`로 빌드한다. GPUI와 코덱이 최적화 없이 너무 느리기 때문이다.

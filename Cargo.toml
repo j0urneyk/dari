@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+repository = "https://github.com/j0urneyk/open-desk"
+
+[workspace.dependencies]
+anyhow = "1"
+gpui-kit = "0.7"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that mostly add noise for an application codebase.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# gpui-kit is designed to be used through its `use gpui_kit::*` prelude.
+wildcard_imports = "allow"
+# Restriction lints we opt into.
+dbg_macro = "warn"
+expect_used = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+
+[profile.dev.package."*"]
+# Dependencies (GPUI, codecs) are unusably slow unoptimized; keep our own crates debuggable.
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
