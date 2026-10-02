@@ -1,0 +1,18 @@
+[package]
+name = "open-desk-proto"
+description = "Wire protocol for open-desk: message types, versioning, and bounded framing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

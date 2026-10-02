@@ -11,11 +11,29 @@ publish = false
 repository = "https://github.com/j0urneyk/open-desk"
 
 [workspace.dependencies]
+open-desk-net = { path = "crates/net" }
+open-desk-proto = { path = "crates/proto" }
+
 anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.3"
 gpui-kit = "0.7"
+hmac = "0.12"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+spake2 = "0.4"
+subtle = "2"
 thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
