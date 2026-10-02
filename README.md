@@ -192,7 +192,7 @@ The crates depend on each other in one direction, `app → session → {net, med
 
 ## Documentation
 
-The deeper docs are written in Korean:
+More detailed docs:
 
 - [User guide](docs/user-guide.md): every setting, where files live, and troubleshooting.
 - [Architecture](docs/architecture.md): threads, the session lifecycle, and capture backpressure.

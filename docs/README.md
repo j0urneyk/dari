@@ -1,24 +1,25 @@
-# Dari 문서
+# Dari documentation
 
-Dari는 macOS와 Windows 11이 서로 접속할 수 있는 원격 데스크톱 프로그램입니다. 설치와 기본 사용법은
-저장소 [README](../README.md)에 있고, 이 디렉터리에는 그보다 깊은 내용을 모았습니다.
+Dari is a remote desktop app that lets macOS and Windows 11 connect to each other. Installation and basic use are
+in the repository [README](../README.md); this directory goes deeper.
 
-| 문서 | 내용 |
+| Document | Contents |
 | --- | --- |
-| [사용 가이드](user-guide.md) | 화면 구성, 설정 항목, 저장 위치, 문제 해결 |
-| [릴레이 서버 운영](relay.md) | 다른 네트워크의 기기를 ID로 연결하는 릴레이 실행과 남용 방지 |
-| [아키텍처](architecture.md) | 크레이트 구성, 스레드 모델, 세션 생명주기, 데이터 흐름 |
-| [와이어 프로토콜](protocol.md) | 프레이밍, 핸드셰이크·제어·비디오·입력·릴레이 메시지, 상수 |
-| [보안 모델](security.md) | 위협 모델, 인증과 암호화, 남용 방지, 알려진 한계 |
-| [개발 가이드](development.md) | 툴체인, 품질 게이트, 테스트 종류, CI, 릴리스 절차 |
+| [User guide](user-guide.md) | Screens, settings, where files are stored, troubleshooting |
+| [Relay operations](relay.md) | Running the relay that connects devices on different networks by ID, and its abuse limits |
+| [Architecture](architecture.md) | Crates, threading model, session lifecycle, data flow |
+| [Wire protocol](protocol.md) | Framing; handshake, control, video, input, and relay messages; constants |
+| [Security model](security.md) | Threat model, authentication and encryption, abuse limits, known limitations |
+| [Development](development.md) | Toolchain, quality gates, test suites, CI, release process |
 
-## 목표와 범위
+## Goals and scope
 
-- 앱 하나가 호스트(내 화면 공유)와 뷰어(원격 화면 제어)를 모두 맡습니다.
-- macOS ↔ Windows 11, macOS ↔ macOS, Windows ↔ Windows 조합을 모두 지원합니다.
-- 연결은 종단 간 암호화되고, 일회용 비밀번호를 모르는 상대는 화면을 볼 수도 입력을 보낼 수도 없습니다.
-- 같은 네트워크(직접 IP 접속, LAN 자동 검색)와 다른 네트워크(직접 운영하는 릴레이 경유) 모두 지원합니다.
+- One app is both the host (shares its screen) and the viewer (controls a remote screen).
+- macOS ↔ Windows 11, macOS ↔ macOS, and Windows ↔ Windows all work.
+- Connections are end-to-end encrypted, and a peer that doesn't know the one-time password can neither see the
+  screen nor send input.
+- Both the local network (direct IP, LAN discovery) and other networks (through a self-hosted relay) are supported.
 
-현재 범위 밖인 것: 하드웨어 비디오 인코더(VideoToolbox, Media Foundation), 오디오와 파일 전송, Windows 보안
-데스크톱(UAC 확인 창, 잠금 화면) 캡처(시스템 서비스 필요), 무인 접속(영구 비밀번호), 여러 세션 동시 접속,
-모바일 클라이언트.
+Out of scope for now: hardware video encoders (VideoToolbox, Media Foundation), audio and file transfer, capturing
+the Windows secure desktop (UAC prompts, the lock screen; this needs a system service), unattended access
+(permanent passwords), multiple simultaneous sessions, and mobile clients.

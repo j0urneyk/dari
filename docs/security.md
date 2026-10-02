@@ -1,132 +1,142 @@
-# 보안 모델
+# Security model
 
-원격 데스크톱은 화면을 보여 주고 키보드와 마우스를 넘겨주는 프로그램이라 인증이 뚫리면 곧바로 기기 전체가
-넘어갑니다. Dari의 보안 목표는 하나입니다. **호스트 화면에 표시된 일회용 비밀번호를 모르는 상대는,
-네트워크 어디에 있든 화면을 볼 수도 입력을 보낼 수도 없어야 합니다.** 이 문서는 그 목표를 어떤 공격자에
-맞서 어떻게 지키는지, 그리고 무엇을 지키지 않는지 설명합니다.
+A remote desktop shows the screen and hands over the keyboard and mouse, so a broken authentication step gives
+away the whole machine. Dari has one security goal: **a peer that doesn't know the one-time password shown on the
+host can neither see the screen nor send input, wherever it sits on the network.** This document explains which
+attackers that goal holds against, how, and what it doesn't cover.
 
-## 위협 모델
+## Threat model
 
-| 공격자 | 할 수 있는 일 | 막는 방법 |
+| Attacker | Capability | Defense |
 | --- | --- | --- |
-| 같은 네트워크의 도청자 | 모든 패킷 관찰 | QUIC(TLS 1.3) 암호화. PAKE라서 관찰한 핸드셰이크로 비밀번호를 오프라인 대입할 수 없음 |
-| 능동적 중간자(가짜 호스트, 가짜 뷰어, 중계) | 패킷 변조, 양쪽 사칭 | SPAKE2 확인값이 TLS exporter와 hello transcript에 묶임. 두 TLS 세션을 이어 붙이면 exporter가 달라 실패 |
-| 온라인 비밀번호 추측자 | 반복 접속 시도 | 50비트 일회용 비밀번호, 출발지별·전역 시도 제한, 성공 시 비밀번호 폐기 |
-| 악의적인 뷰어(비밀번호를 앎) | 비정상 메시지 전송 | 메시지 길이 상한과 검증, 호스트 사용자 승인, 보기 전용 모드 |
-| 악의적인 호스트 | 뷰어에게 비정상 데이터 전송 | 프레임·디코딩 크기 상한, 표시 문자열 검증, 클립보드 상한 |
-| 릴레이 운영자 또는 가짜 릴레이 | 릴레이 경유 트래픽 관찰·변조 | 세션이 종단 간 QUIC + SPAKE2. 릴레이는 암호문만 봄 |
-| 같은 LAN의 mDNS 위조자 | 가짜 "근처 기기" 광고 | 광고는 표시용 힌트일 뿐이며 접속은 항상 PAKE 인증 |
+| Eavesdropper on the same network | Observes every packet | QUIC (TLS 1.3) encryption. Because authentication is a PAKE, an observed handshake doesn't allow offline password guessing |
+| Active man in the middle (fake host, fake viewer, relaying) | Tampers with packets, impersonates either side | SPAKE2 confirmations are bound to the TLS exporter and the hello transcript. Splicing two TLS sessions yields different exporters and fails |
+| Online password guesser | Repeated connection attempts | 50-bit one-time password, per-source and global attempt throttling, password discarded after success |
+| Malicious viewer (knows the password) | Sends malformed messages | Message length limits and validation, host-user approval, view-only mode |
+| Malicious host | Sends malformed data to the viewer | Frame and decode size limits, display-string validation, clipboard limit |
+| Relay operator or fake relay | Observes or tampers with relayed traffic | The session is end-to-end QUIC + SPAKE2; the relay only sees ciphertext |
+| mDNS spoofer on the same LAN | Advertises fake "nearby devices" | Advertisements are display hints only; connecting always uses PAKE authentication |
 
-범위 밖: 호스트나 뷰어 기기 자체가 이미 장악된 경우, 비밀번호를 사용자가 직접 공격자에게 알려 준 경우
-(사회공학), 서비스 거부.
+Out of scope: a host or viewer machine that is already compromised, a user who tells the attacker the password
+(social engineering), and denial of service.
 
-## 기기 신원
+## Device identity
 
-처음 실행할 때 rcgen으로 자체 서명 인증서를 만들어 데이터 디렉터리에 `identity-cert.der`와
-`identity-key.der`로 저장합니다. 키 파일은 Unix에서 0600으로 만듭니다. 파일이 손상되면 경고를 남기고 새
-신원을 만듭니다. 인증서의 SHA-256 지문이 기기 식별자이며 릴레이 ID와 mDNS 자기 광고 필터에 쓰입니다.
+On first launch, rcgen creates a self-signed certificate that is stored in the data directory as
+`identity-cert.der` and `identity-key.der`. On Unix the key file is created with mode 0600. If the files are
+corrupt, a warning is logged and a new identity is created. The certificate's SHA-256 fingerprint is the device
+identifier, used for the relay ID and for filtering a device's own mDNS advertisement.
 
-CA가 없으므로 뷰어는 호스트 인증서의 체인을 검증하지 않습니다. 대신 TLS 1.3 서명 검증은 rustls 암호
-provider(ring)로 반드시 수행해, 상대가 인증서 키를 실제로 가지고 있음을 확인합니다. **누구와 이야기하는지에
-대한 인증은 전적으로 아래 PAKE가 담당합니다.**
+There's no CA, so the viewer doesn't validate a chain for the host certificate. TLS 1.3 signature verification is
+still always performed with the rustls crypto provider (ring), which proves the peer actually holds the
+certificate's key. **Authenticating who you're talking to is entirely the job of the PAKE below.**
 
-## 일회용 비밀번호
+## One-time passwords
 
-- 혼동하기 쉬운 문자(`I`, `O`, `0`, `1`)를 뺀 32자 알파벳에서 10자를 뽑습니다(50비트). 256이 32의 배수라
-  하위 5비트 마스킹은 편향이 없습니다. 난수는 OS 난수 생성기(`getrandom`)에서 얻습니다.
-- 메모리에서는 `zeroize`로 지우고, 비교는 상수 시간으로 하며, `Debug` 출력에는 나타나지 않습니다.
-- 인증에 성공하면 그 즉시 소모됩니다. 새 비밀번호가 생길 때까지 호스트는 새 뷰어를 `NotAccepting`으로
-  거절합니다. 세션 중에는 화면에서 비밀번호를 지우고, 세션이 끝나면 새로 만듭니다.
-  사용자는 언제든 새로 만들 수 있습니다.
-- 인증은 성공했지만 세션 시작 전에 실패하면(확인값 전송 실패 등) 비밀번호를 되돌립니다. 단 그사이 비밀번호가
-  바뀌지 않았을 때만 되돌리도록 세대 번호(generation)로 확인합니다. 이 장치가 없을 때는 호스트가 비밀번호
-  없이 모든 뷰어를 조용히 거절하는 상태에 빠졌습니다(phase 1 리뷰에서 발견).
+- Ten characters are drawn from a 32-symbol alphabet that leaves out easily confused characters (`I`, `O`, `0`,
+  `1`), for 50 bits. 256 is a multiple of 32, so masking the low five bits is unbiased. Randomness comes from the
+  OS random number generator (`getrandom`).
+- Passwords are wiped from memory with `zeroize`, compared in constant time, and never appear in `Debug` output.
+- A password is consumed the moment authentication succeeds. Until a new one exists, the host refuses new viewers
+  with `NotAccepting`. During a session the password is cleared from the screen, and a new one is created when the
+  session ends. The user can make a new one at any time.
+- If authentication succeeds but the session fails before it starts (for example, the confirmation can't be sent),
+  the password is restored, but only if it hasn't changed in the meantime, which is checked with a generation
+  counter. Without this, the host could end up silently refusing every viewer with no password at all.
 
-## SPAKE2 핸드셰이크
+## SPAKE2 handshake
 
-[프로토콜 문서](protocol.md#핸드셰이크)에 순서가 있습니다. 보안상 중요한 성질은 다음과 같습니다.
+The sequence is in the [protocol document](protocol.md#handshake). The properties that matter for security are:
 
-- **오프라인 대입 불가**: SPAKE2 메시지를 관찰하거나, 중간자로서 한 번 대화해 보아도 비밀번호 후보를
-  오프라인으로 검사할 정보를 얻지 못합니다. 공격자는 시도 한 번에 후보 하나만 검사할 수 있습니다.
-- **채널 바인딩**: 확인값에 TLS exporter가 들어가므로, 공격자가 뷰어와 TLS 세션 하나, 호스트와 또 하나를
-  맺고 메시지를 중계하면 양쪽 exporter가 달라 확인이 실패합니다(테스트: exporter 불일치 MITM).
-- **transcript 바인딩**: 두 hello의 해시가 확인값에 들어가므로 버전·이름·OS를 바꿔치기할 수 없습니다.
-- **호스트가 먼저 드러내지 않음**: 호스트는 뷰어의 확인값을 상수 시간으로 검증한 뒤에만 자기 확인값을
-  보냅니다. 세션 슬롯 점유와 비밀번호 소모도 이 시점에 원자적으로 일어납니다.
-- **일반화된 거절 이유**: 거절 이유는 다섯 가지로만 나뉘어 공격자에게 쓸모 있는 정보를 주지 않습니다.
+- **No offline guessing**: observing SPAKE2 messages, or talking to a party once as a man in the middle, gives no
+  information to test password candidates offline. An attacker can test one candidate per attempt.
+- **Channel binding**: the confirmation includes the TLS exporter, so an attacker that runs one TLS session with
+  the viewer and another with the host and relays messages gets different exporters on each side, and confirmation
+  fails (tested: MITM with mismatched exporters).
+- **Transcript binding**: the hash of both hellos goes into the confirmation, so the version, names, and OS can't
+  be swapped.
+- **The host doesn't reveal first**: the host sends its confirmation only after verifying the viewer's in constant
+  time. Claiming the session slot and consuming the password also happen atomically at this point.
+- **Coarse rejection reasons**: there are only five rejection reasons, which tell an attacker nothing useful.
 
-## 남용 방지
+## Abuse limits
 
-호스트(`crates/net/src/limiter.rs`, `endpoint.rs`):
+Host (`crates/net/src/limiter.rs`, `endpoint.rs`):
 
-- 출발지별 실패 기록. IPv6는 /64 단위로 묶습니다. 처음 3번의 실패는 오타로 보고 넘어가고, 그 뒤로는
-  지수 백오프(최대 5분)를 적용합니다. 1시간 동안 조용하면 기록을 잊습니다.
-- 전역 제한: 모든 출발지를 합쳐 1분에 20번 실패하면 잠시 모두를 막습니다. 추적하는 출발지는 최대 4,096개이고,
-  넘치면 가장 오래 조용했던 출발지를 버립니다(전역 제한이 전체 추측 속도를 계속 묶습니다).
-- 제한에 걸린 출발지는 TLS 핸드셰이크 전에 `refuse()`로 거절합니다. ServerHello를 보낸 뒤(비밀번호 추측이
-  가능해진 시점)의 모든 실패와 시간 초과를 실패로 셉니다.
-- 동시 핸드셰이크는 8개, 각각 10초 제한입니다. 세션은 한 번에 하나만 허용하고 나머지는 `Busy`입니다.
+- Failures are recorded per source, with IPv6 grouped by /64. The first 3 failures are treated as typos; after that,
+  exponential backoff applies (up to 5 minutes). A source's history is forgotten after an hour of quiet.
+- Global limit: 20 failures per minute across all sources briefly locks out everyone. At most 4,096 sources are
+  tracked; beyond that the quietest source is evicted (the global limit still bounds the overall guessing rate).
+- Throttled sources are refused with `refuse()` before the TLS handshake. Every failure and timeout after the
+  ServerHello (the point where a password guess becomes possible) counts as a failure.
+- At most 8 concurrent handshakes, 10 seconds each. One session at a time; others get `Busy`.
 
-릴레이(`crates/relay/src/server.rs`, `forward.rs`): 출발지 IP당 1분에 30건, 호스트당 대기 접속 4건, 전체 할당
-수 상한(`--max-allocations`, 기본 256), 30초 안에 바인딩되지 않거나 120초 동안 트래픽이 없는 할당은 해제합니다.
-ID는 9자리(약 9억 개)라 무작위 대입으로 온라인 기기를 찾기 어렵고, 찾아도 비밀번호 인증이 남아 있습니다.
+Relay (`crates/relay/src/server.rs`, `forward.rs`): 30 requests per minute per source IP, 4 pending connects per
+host, a cap on total allocations (`--max-allocations`, default 256), and allocations freed if not bound within
+30 seconds or idle for 120 seconds. IDs have nine digits (about 900 million), so finding online devices by brute
+force is hard, and a found device still requires the password.
 
-## 승인과 권한 범위
+## Approval and scope of access
 
-접속 승인(기본 켜짐)이 켜져 있으면 비밀번호를 증명한 뷰어도 호스트 사용자가 결정하기 전에는 아무것도 받지
-못합니다. 캡처, 입력 스레드, 클립보드, 디스플레이 목록 모두 결정 이후에 만들어지고, 대기 중 들어온 입력은
-버립니다. 30초 안에 응답이 없으면 거부입니다.
+With connection approval on (the default), even a viewer that proved the password receives nothing until the host
+user decides. Capture, the input thread, the clipboard, and the display list are all created after the decision,
+and input that arrives while waiting is dropped. No answer within 30 seconds means decline.
 
-**보기 전용** 세션은 입력 스레드와 클립보드 동기화를 아예 만들지 않고 `HostStatus.input = NotAllowed`를
-알립니다. 뷰어는 이를 받으면 자기 쪽 클립보드 공유도 멈춥니다.
+A **view-only** session never creates the input thread or clipboard sync, and reports
+`HostStatus.input = NotAllowed`. When the viewer receives this, it stops its own clipboard sharing too.
 
-헤드리스 CLI 호스트(`dari host`)는 승인할 사람이 없으므로 비밀번호를 아는 뷰어에게 제어를 허용하고
-클립보드는 끕니다. 서버나 테스트용으로만 쓰는 것이 좋습니다.
+The headless CLI host (`dari host`) has nobody to approve requests, so it gives control to any viewer that knows the
+password and turns off the clipboard. Use it only on servers or for testing.
 
-## 입력과 클립보드 안전
+## Input and clipboard safety
 
-- 세션이 끝나면 입력 큐에 남은 이벤트는 주입하지 않고 버립니다. 눌린 채로 남은 키와 버튼은 모두 뗍니다.
-- 뷰어 창이 포커스를 잃으면 눌린 키·버튼·수정자를 뗀 이벤트를 보냅니다.
-- 클립보드는 세션 시작 시점에 이미 클립보드에 있던 내용을 보내지 않습니다. 세션 중 새로 복사한 텍스트만
-  공유합니다. 받은 값은 기억해 되돌려 보내지 않고, 1 MiB 상한과 NUL 금지를 적용합니다.
+- When a session ends, events left in the input queue are dropped instead of injected, and every held key and
+  button is released.
+- When the viewer window loses focus, it sends releases for every held key, button, and modifier.
+- The clipboard never sends what was already on it when the session started; only text copied during the session
+  is shared. Received values are remembered so they aren't echoed back, and a 1 MiB limit and a NUL ban apply.
 
-## 메시지 검증
+## Message validation
 
-모든 메시지는 길이 상한 프레이밍을 거쳐 읽고(인증 전 핸드셰이크는 4 KiB), 디코딩 뒤 `Validate`를 통과해야
-합니다. 상대가 보낸 이름 등 표시용 문자열은 64자 이하이고 제어 문자, 양방향 덮어쓰기, 폭 없는 문자를
-거부합니다. 상대 이름이 승인 카드나 창 제목에 다른 이름처럼 보이게 만드는 공격을 막기 위해서입니다.
-비디오는 프레임 크기 8192 이하, 디코딩 출력 3840×2160 이하만 받고, 임의 바이트를 디코더에 넣어도 패닉하지
-않음을 테스트합니다.
+Every message is read through length-bounded framing (4 KiB for the pre-authentication handshake) and must pass
+`Validate` after decoding. Display strings from the peer, such as names, are at most 64 characters and reject
+control characters, bidirectional overrides, and zero-width characters. This prevents a peer's name from rendering
+as a different name on the approval card or in a window title. Video accepts only frames up to 8192 per side and
+decoded output up to 3840×2160, and tests check that feeding arbitrary bytes to the decoder doesn't panic.
 
-## 릴레이
+## Relay
 
-릴레이는 신뢰하지 않는 구성 요소입니다. 호스트와 뷰어는 릴레이가 전달하는 UDP 위에서 직접 접속과 똑같은
-QUIC + SPAKE2 세션을 맺으므로 릴레이는 화면, 입력, 클립보드, 비밀번호를 볼 수 없고 호스트를 사칭할 수도
-없습니다(exporter 바인딩). 그래서 클라이언트는 릴레이 자신의 인증서를 검증하지 않습니다. 가짜 릴레이가 할
-수 있는 일은 연결을 방해하는 것뿐입니다.
+The relay is an untrusted component. Host and viewer run the same QUIC + SPAKE2 session over the relay's UDP
+forwarding as a direct connection, so the relay can't see the screen, input, clipboard, or password, and can't
+impersonate the host (exporter binding). That's why clients don't verify the relay's own certificate: the most a
+fake relay can do is disrupt connections.
 
-호스트는 등록할 때 기기 인증서를 TLS 클라이언트 인증서로 제시합니다. TLS 서명이 키 소유를 증명하므로
-다른 기기의 ID를 가로챌 수 없습니다. 바인딩 토큰은 할당마다, 양쪽마다 다른 16바이트 난수이고, 바인딩된 두
-주소 외에서 온 데이터그램은 버립니다(테스트: 제3자 주입과 위조 바인딩 무시).
+Hosts present their device certificate as a TLS client certificate when registering. The TLS signature proves key
+possession, so one device can't take over another's ID. Binding tokens are 16 random bytes, different for every
+allocation and every side, and datagrams from anywhere other than the two bound addresses are dropped (tested:
+stranger injection and forged bindings are ignored).
 
-릴레이가 알 수 있는 것은 어떤 기기가 온라인인지, 접속 시각, 트래픽 양, 양쪽의 공인 IP입니다.
+What the relay can learn: which devices are online, when connections happen, how much traffic flows, and both
+sides' public IPs.
 
-## 알려진 한계
+## Known limitations
 
-- 릴레이 경유 시도는 호스트 입장에서 모두 릴레이 IP에서 온 것으로 보입니다. 누군가 릴레이를 통해 비밀번호를
-  반복해서 틀리면 그 호스트의 릴레이 경유 접속 전체가 잠시 막힙니다(전역 제한은 그대로 추측 속도를 묶습니다).
-- 호스트 인증서 지문을 기억하는 TOFU(처음 본 신원 고정)는 없습니다. 일회용 비밀번호가 매 세션 인증을
-  담당하므로 필요하지 않다고 판단했지만, 향후 무인 접속(영구 비밀번호)을 도입한다면 다시 검토해야 합니다.
-- Windows 보안 데스크톱(UAC, 잠금 화면)과 Ctrl+Alt+Del은 일반 사용자 프로세스에서 캡처·주입할 수 없습니다.
-- 개인 키와 설정은 사용자 데이터 디렉터리에 평문으로 저장됩니다(OS 키체인 미사용).
+- From the host's point of view, every relayed attempt comes from the relay's IP. If someone repeatedly guesses
+  wrong through the relay, all relayed connections to that host are briefly blocked (the global limit still bounds
+  the guessing rate).
+- There's no TOFU (pinning the host certificate fingerprint on first sight). The one-time password authenticates
+  every session, so it wasn't considered necessary, but it should be revisited if unattended access (permanent
+  passwords) is ever added.
+- The Windows secure desktop (UAC, the lock screen) and Ctrl+Alt+Del can't be captured or injected from a regular
+  user process.
+- The private key and settings are stored in plain files in the user data directory (no OS keychain).
 
-## 리뷰 이력
+## Hardening found in review
 
-각 phase PR마다 `/code-reviewer`와 `/security-review`를 발견 사항이 없을 때까지 반복했습니다. 보안 리뷰에서
-기준 이상의 취약점은 나오지 않았고, 기준에 못 미치지만 고친 강화 사항은 다음과 같습니다. 자세한 내용은 각
-phase PR(#4–#7) 설명에 있습니다.
+Every change went through code and security review until no findings remained. No vulnerability at or above the
+reporting threshold was found. These below-threshold hardening items were fixed anyway:
 
-- 세션 종료 후 큐에 남은 원격 입력이 주입되던 문제(phase 3)
-- 상대 이름의 양방향 덮어쓰기·폭 없는 문자(phase 4)
-- 호스트가 나중에 보기 전용을 알려도 뷰어가 클립보드를 계속 보내던 문제(phase 5)
-- 1500바이트보다 큰 릴레이 데이터그램이 잘리던 문제(phase 6, 기능 결함)
+- Remote input still queued when a session ended used to be injected.
+- Bidirectional overrides and zero-width characters in peer names.
+- The viewer kept sending clipboard text after the host later reported view-only.
+- Relay datagrams larger than 1500 bytes were truncated (a functional defect).

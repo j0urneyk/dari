@@ -1,28 +1,28 @@
-# 개발 가이드
+# Development
 
-## 준비
+## Setup
 
-| 항목 | 내용 |
+| Item | Details |
 | --- | --- |
-| Rust | 1.99.0. `rust-toolchain.toml`이 버전과 `rustfmt`/`clippy` 컴포넌트를 고정하므로 rustup이 알아서 설치합니다 |
-| macOS | Xcode Command Line Tools. GUI 테스트에는 Metal이 필요합니다 |
-| Windows 11 | Visual Studio Build Tools(MSVC) |
-| 도구 | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny), 패키징에는 [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) 0.11.8 |
+| Rust | 1.99.0. `rust-toolchain.toml` pins the version and the `rustfmt`/`clippy` components, so rustup installs them automatically |
+| macOS | Xcode Command Line Tools. The GUI tests need Metal |
+| Windows 11 | Visual Studio Build Tools (MSVC) |
+| Tools | [cargo-deny](https://github.com/EmbarkStudios/cargo-deny), and [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) 0.11.8 for packaging |
 
-asdf 등 다른 버전 관리자가 PATH 앞쪽에 오래된 `cargo`를 두면 `rust-toolchain.toml`이 무시될 수 있습니다.
-`cargo --version`이 1.99.0인지 먼저 확인하세요.
+If another version manager such as asdf puts an older `cargo` earlier on `PATH`, `rust-toolchain.toml` can be
+ignored. Check that `cargo --version` reports 1.99.0 first.
 
-gpui-kit는 GPUI 스냅샷을 `=` 버전으로 고정해 다시 내보냅니다. gpui-kit 업그레이드는 GPUI 전체를 바꾸므로 다른
-변경과 섞지 말고 별도 PR로만 합니다.
+gpui-kit re-exports a GPUI snapshot pinned with an `=` version. Upgrading gpui-kit changes all of GPUI, so do it
+in its own PR, never mixed with other changes.
 
-워크스페이스는 resolver 3, edition 2024, `rust-version = "1.99"`이며 공용 의존성 버전은 루트
-`Cargo.toml`의 `[workspace.dependencies]`에서 관리합니다. 의존성은 dev 프로필에서도 `opt-level = 2`로
-빌드합니다. GPUI와 코덱은 최적화 없이 쓸 수 없을 만큼 느리기 때문이고, 우리 크레이트는 디버깅할 수 있게
-최적화하지 않습니다. release 프로필은 thin LTO에 `codegen-units = 1`입니다.
+The workspace uses resolver 3, edition 2024, and `rust-version = "1.99"`, and shared dependency versions are
+managed in `[workspace.dependencies]` in the root `Cargo.toml`. Dependencies are built with `opt-level = 2` even in
+the dev profile, because GPUI and the codecs are unusably slow without optimization; our own crates stay
+unoptimized so they remain debuggable. The release profile uses thin LTO and `codegen-units = 1`.
 
-## 품질 게이트
+## Quality gates
 
-PR마다 아래가 모두 통과해야 합니다. CI도 같은 명령을 돌립니다.
+Every PR must pass all of the following, and CI runs the same commands.
 
 ```bash
 cargo fmt --all --check
@@ -44,100 +44,101 @@ cargo test -p dari --test gui
 cargo deny check
 ```
 
-- **formatter**: `rustfmt.toml`(stable 옵션만).
-- **linter**: `cargo lint`는 `.cargo/config.toml`의 별칭으로
-  `clippy --workspace --all-targets --locked -- -D warnings`입니다. 규칙은 루트 `Cargo.toml`의
-  `[workspace.lints]`에 있습니다. `unsafe_code = "deny"`, clippy `all`과 `pedantic`, 그리고
-  `unwrap_used`, `expect_used`, `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented`를
-  경고로 켭니다. `wildcard_imports`(gpui-kit 프렐류드)와 `similar_names`, 문서 관련 소음 lint는 허용합니다.
-  테스트에서는 `clippy.toml`이 `unwrap`/`expect`를 허용합니다.
-- **cargo-deny**(`deny.toml`): 보안 권고는 전체 의존성 트리에, `unmaintained` 권고는 직접 의존성에만
-  적용합니다. GPUI가 전이적으로 가져오는 크레이트는 우리가 바꿀 수 없기 때문입니다. 허용 라이선스 목록,
-  yanked 금지, 와일드카드 버전 금지, 알 수 없는 레지스트리·깃 소스 금지를 검사합니다.
+- **Formatter**: `rustfmt.toml` (stable options only).
+- **Linter**: `cargo lint` is an alias in `.cargo/config.toml` for
+  `clippy --workspace --all-targets --locked -- -D warnings`. The rules live in `[workspace.lints]` in the root
+  `Cargo.toml`: `unsafe_code = "deny"`, clippy `all` and `pedantic`, and warnings for `unwrap_used`, `expect_used`,
+  `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, and `unimplemented`. `wildcard_imports` (for the gpui-kit
+  prelude), `similar_names`, and noisy documentation lints are allowed. In tests, `clippy.toml` allows
+  `unwrap`/`expect`.
+- **cargo-deny** (`deny.toml`): security advisories apply to the whole dependency tree, and `unmaintained`
+  advisories only to direct dependencies, because we can't replace the crates GPUI pulls in transitively. It also
+  checks the license allowlist and bans yanked crates, wildcard versions, and unknown registries or git sources.
 
-`unsafe`는 `crates/input/src/backend.rs`의 OS API 호출 세 곳에만 있고, 그 항목에서만 `allow(unsafe_code)`로
-lint를 풉니다. macOS의 `AXIsProcessTrusted`(손쉬운 사용 권한 확인), Windows의 `SetCursorPos`(보조 모니터를
-포함한 가상 데스크톱 좌표로 포인터 이동)와 `SetProcessDpiAwarenessContext`(Per-Monitor V2 DPI 인식)입니다.
-Windows 전용 코드는 macOS에서도 검사할 수 있습니다.
+`unsafe` appears only in three OS API calls in `crates/input/src/backend.rs`, each with its own
+`allow(unsafe_code)`: `AXIsProcessTrusted` on macOS (checks Accessibility permission), and on Windows
+`SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary monitors) and
+`SetProcessDpiAwarenessContext` (Per-Monitor V2 DPI awareness). Windows-only code can be checked from macOS too:
 
 ```bash
 cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
-## 테스트
+## Tests
 
-| 종류 | 위치 | 내용 |
+| Kind | Location | Coverage |
 | --- | --- | --- |
-| 단위 테스트 | 각 크레이트 `src/` | 코덱 상한, 메시지 검증, 비밀번호 생성·파싱, 시도 제한, 핸드셰이크(MITM, 버전 불일치), 축소, 인코드/디코드, 키 매핑, 레터박스 좌표, 릴레이 포워더 |
-| 전송 E2E | `crates/net/tests/loopback.rs` | 실제 QUIC 루프백: 성공, 틀린 비밀번호, 비밀번호 소모, Busy, 시도 제한, 인증 전 큰 프레임, 뷰어의 단방향 스트림 금지 |
-| 세션 E2E | `crates/session/tests/loopback.rs` | 합성 화면 + 기록 입력으로 호스트·뷰어 전체 경로: 프레임 수신, 입력 주입, 키 해제, 권한 상태 보고, 승인 허용·거부·보기 전용, 디스플레이 전환, 양방향 클립보드, 릴레이 경유 접속 |
-| 릴레이 E2E | `crates/relay/tests/relay.rs` | ID로 접속, 틀린 비밀번호는 호스트가 거부, 없는 ID, 재시작 후 같은 ID |
-| GUI | `crates/app/tests/gui.rs` | 헤드리스 Metal 렌더러로 실제 창을 그리고 입력을 주입(아래) |
-| mDNS | `crates/net/src/discovery.rs` | 로컬 네트워크 멀티캐스트가 필요해 기본으로 건너뜀. `cargo test -p dari-net -- --ignored`로 실행 |
+| Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode, key mapping, letterbox coordinates, relay forwarder |
+| Transport E2E | `crates/net/tests/loopback.rs` | Real QUIC loopback: success, wrong password, consumed password, busy, throttling, oversized pre-auth frame, viewers barred from unidirectional streams |
+| Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, two-way clipboard, connecting through a relay |
+| Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
+| GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
+| mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
-실제 화면 캡처와 인코딩 성능은 예제로 잽니다. 주 디스플레이를 몇 초간 캡처·인코딩해 처리량을 출력합니다.
-macOS에서 화면 기록 권한이 없어도 바탕화면만 담긴 원본 크기 프레임이 나오므로 비용 측정에는 충분합니다.
+Real capture and encoding performance is measured with an example that captures and encodes the primary display
+for a few seconds and prints throughput. On macOS, even without Screen Recording permission, capture returns
+full-size frames (wallpaper only), which is enough to measure the cost.
 
 ```bash
 cargo run --release -p dari-media --example capture_bench -- 5 1920
 ```
 
-세션 계층은 `HostPlatform` 트레이트로 화면과 입력을 바꿔 끼울 수 있어서, CI 러너처럼 화면 권한이 없는
-환경에서도 QUIC과 H.264를 포함한 실제 경로를 검증합니다. 시간 의존 테스트(할당 만료 등)는 tokio의 일시정지
-시계를 씁니다.
+The session layer swaps screen and input through the `HostPlatform` trait, so even environments without screen
+permissions, like CI runners, verify the real path including QUIC and H.264. Time-dependent tests (allocation
+expiry and the like) use tokio's paused clock.
 
-### GUI 테스트
+### GUI tests
 
-GPUI의 macOS 플랫폼은 메인 스레드에서만 만들 수 있어 표준 테스트 하네스를 쓸 수 없습니다. 그래서
-`crates/app/tests/gui.rs`는 `harness = false`인 자체 `main`을 가진 테스트이고, 앱 크레이트는 라이브러리를
-노출합니다(`dari::test_support`). 각 테스트는 `HeadlessAppContext`로 창을 그리고 결과를
-`target/gui-snapshots/*.png`로 저장하므로 화면을 눈으로 검토할 수 있습니다.
+GPUI's macOS platform can only be created on the main thread, so the standard test harness can't be used.
+`crates/app/tests/gui.rs` is a test with its own `main` (`harness = false`), and the app crate exposes a library
+(`dari::test_support`). Each test renders windows with `HeadlessAppContext` and saves the result to
+`target/gui-snapshots/*.png` for visual review.
 
-- 홈 창에 주소와 비밀번호가 표시된다.
-- 뷰어 창이 합성 호스트에 실제 QUIC으로 접속해 화면을 그리고, GPUI 입력 이벤트(마우스, 키, Tab, ⌘C)가 호스트
-  입력 백엔드까지 도착한다. 같은 테스트가 스트리밍 중 메모리 증가를 잽니다. 한도는 표시한 프레임 수에
-  비례합니다(20 MB + 프레임당 0.4 MB, 최소 20프레임). 고정 프레임 수를 요구했더니 느린 CI 러너에서
-  48프레임만 그려져 실패했기 때문입니다.
-- 접속 폼에 주소(또는 릴레이 ID)와 비밀번호를 입력해 접속하면 승인 카드가 뜨고, "제어 허용"을 누르면 세션이
-  성립한다.
+- The home window shows addresses and the password.
+- The viewer window connects to a synthetic host over real QUIC and draws the screen, and GPUI input events
+  (mouse, keys, Tab, ⌘C) reach the host's input backend. The same test measures memory growth while streaming,
+  with a bound proportional to the frames shown (20 MB + 0.4 MB per frame, at least 20 frames). A fixed frame
+  count failed on a slow CI runner that only drew 48 frames.
+- Filling the connect form with an address (or relay ID) and password brings up the approval card, and clicking
+  "Allow control" establishes the session.
 
 ## CI
 
-`.github/workflows/ci.yml`은 PR과 `main` 푸시에서 돕니다.
+`.github/workflows/ci.yml` runs on pull requests and on pushes to `main`.
 
-| job | 러너 | 내용 |
+| Job | Runner | Steps |
 | --- | --- | --- |
 | `rustfmt` | ubuntu | `cargo fmt --all --check` |
 | `cargo-deny` | ubuntu | `cargo deny check` |
-| `clippy + test` | macos-latest, windows-latest | `cargo lint`, `cargo test --workspace --locked`, macOS에서는 GUI 테스트 |
+| `clippy + test` | macos-latest, windows-latest | `cargo lint`, `cargo test --workspace --locked`, plus the GUI tests on macOS |
 
-액션은 커밋 SHA로 고정하고 토큰은 읽기 전용입니다. 같은 브랜치의 이전 실행은 취소합니다. 디버그 정보
-(Windows PDB)가 콜드 빌드 시간을 크게 늘려 `CARGO_PROFILE_DEV_DEBUG=0`으로 끕니다. 캐시는 `main` 푸시에서만
-저장하므로 PR 브랜치의 첫 빌드는 대부분 콜드 빌드입니다. GPUI 때문에 Windows 러너에서 clippy 약 15분, 테스트
-약 20분이 걸리고, 비공개 저장소에서 macOS 러너 시간은 10배로 과금됩니다. CI를 여러 번 돌리게 되는 긴 PR
-체인은 피하는 편이 좋습니다.
+Actions are pinned to commit SHAs and the token is read-only. A newer run cancels older runs on the same branch.
+Debug info (Windows PDBs) greatly lengthens cold builds, so it's turned off with `CARGO_PROFILE_DEV_DEBUG=0`. The
+cache is saved only on pushes to `main`, so a PR branch's first build is mostly cold. Because of GPUI, the Windows
+runner takes about 15 minutes for clippy and about 20 minutes for tests.
 
-## 작업 흐름
+## Workflow
 
-1. `main`에서 작업 브랜치를 만듭니다.
-2. 구현하고 위 품질 게이트를 로컬에서 통과시킵니다.
-3. PR 템플릿(`.github/pull_request_template.md`)의 Summary, Verification, Release notes를 채워 PR을 엽니다.
-4. `/code-reviewer`와 `/security-review`를 발견 사항이 없을 때까지 반복합니다. 고친 결함에는 회귀 테스트를
-   붙입니다.
-5. 사용자에게 보이는 변경은 `CHANGELOG.md`의 `## [Unreleased]`에 적습니다. 설계가 바뀌면 이 디렉터리의 해당
-   문서(아키텍처, 프로토콜, 보안 모델 등)를 같은 PR에서 고칩니다.
+1. Create a work branch from `main`.
+2. Implement the change and pass the quality gates above locally.
+3. Open a PR, filling in Summary, Verification, and Release notes from the PR template
+   (`.github/pull_request_template.md`).
+4. Repeat code review and security review until there are no findings. Add a regression test for each fixed
+   defect.
+5. Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md`. If the design changes, update the
+   relevant document in this directory (architecture, protocol, security model, and so on) in the same PR.
 
-## 패키징과 릴리스
+## Packaging and releases
 
-패키징 설정은 `crates/app/Cargo.toml`의 `[package.metadata.packager]`에 있습니다(번들 ID
-`dev.dari.app`, macOS 최소 12.0, Windows NSIS 사용자 단위 설치). 아이콘은 `crates/app/assets/icon.svg`가
-원본이고 PNG와 `.icns`(`iconutil`)를 만들어 둡니다. `assets/Info.plist`에는 로컬 네트워크 사용 설명
-(`NSLocalNetworkUsageDescription`)과 Bonjour 서비스(`_dari._udp`)가 있습니다. macOS 15부터 이것이 없으면
-LAN 접속과 mDNS가 차단됩니다. macOS의 화면 기록·손쉬운 사용 권한은 번들 ID 단위로 부여되므로 번들 ID를 바꾸면
-사용자가 권한을 다시 줘야 합니다.
+Packaging is configured in `[package.metadata.packager]` in `crates/app/Cargo.toml` (bundle ID `dev.dari.app`,
+macOS 12.0 minimum, per-user Windows NSIS install). The icon's source is `crates/app/assets/icon.svg`, from which
+the PNGs and `.icns` (via `iconutil`) are generated. `assets/Info.plist` declares the local network usage
+description (`NSLocalNetworkUsageDescription`) and the Bonjour service (`_dari._udp`); since macOS 15, LAN
+connections and mDNS are blocked without them. macOS grants Screen Recording and Accessibility per bundle ID, so
+changing the bundle ID makes users grant them again.
 
-macOS에서 로컬로 패키징하려면 다음을 실행합니다. DMG는 `hdiutil`로 만듭니다. cargo-packager의 dmg 형식은
-Finder AppleScript로 창을 배치하느라 자동화 권한이 없는 환경에서 실패합니다.
+To package locally on macOS, run the following. The DMG is built with `hdiutil`, because cargo-packager's dmg
+format scripts Finder with AppleScript to lay out the window and fails without automation permission.
 
 ```bash
 cd crates/app && cargo packager --release --formats app
@@ -147,21 +148,22 @@ cd crates/app && cargo packager --release --formats app
 cd target/release && hdiutil create -volname Dari -srcfolder Dari.app -ov -format UDZO dari.dmg
 ```
 
-릴리스 절차:
+Release steps:
 
-1. `CHANGELOG.md`의 `## [Unreleased]` 항목을 `## [x.y.z] - YYYY-MM-DD` 섹션으로 옮기고, 빈 `## [Unreleased]`와
-   비교·태그 링크를 남깁니다(Keep a Changelog). 루트 `Cargo.toml`의 버전도 맞춥니다.
-2. PR로 머지한 뒤 `vx.y.z` 태그를 푸시합니다.
-3. `.github/workflows/release.yml`이 macOS dmg, Windows 설치 파일, Linux 릴레이 tar.gz를 빌드하고, CHANGELOG의
-   해당 버전 섹션을 본문으로 초안 릴리스를 만듭니다. 본문 추출은 다음 `## [` 제목이나 `[x]: ` 링크 정의 줄에서
-   멈춥니다. 같은 태그의 릴리스가 이미 있으면 산출물만 추가합니다(`--clobber`).
-4. 초안 본문이 CHANGELOG 섹션과 일치하는지 확인하고 게시합니다.
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` into a `## [x.y.z] - YYYY-MM-DD` section, leaving an empty
+   `## [Unreleased]` and the compare/tag links (Keep a Changelog). Update the version in the root `Cargo.toml` too.
+2. Merge that through a PR, then push a `vx.y.z` tag.
+3. `.github/workflows/release.yml` builds the macOS dmg, the Windows installer, and the Linux relay tar.gz, and
+   creates a draft release whose notes are the matching CHANGELOG section. Extraction stops at the next `## [`
+   heading or a `[x]: ` link-definition line. If a release for the tag already exists, only the assets are added
+   (`--clobber`).
+4. Check that the draft notes match the CHANGELOG section, then publish.
 
-저장소 시크릿에 Apple 인증서(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`)와
-공증 정보(`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`)가 있을 때만 서명·공증합니다. 없으면 서명되지 않은
-앱이 나옵니다. 브랜치를 기준으로 `workflow_dispatch`를 돌리면 게시 단계 없이 패키징만 검증합니다. 이미 게시된
-태그에 빠진 산출물을 붙이려면 태그를 기준으로 워크플로를 다시 실행합니다. 이때는 게시 단계가 기존 릴리스에
-산출물을 추가합니다.
+The macOS app is signed and notarized only when the repository secrets include an Apple certificate
+(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`) and notarization credentials
+(`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); otherwise the app is unsigned. Running `workflow_dispatch` on a
+branch only checks packaging, without the publish step. To attach missing assets to an already published tag,
+re-run the workflow on the tag; the publish step then adds the assets to the existing release.
 
 ```bash
 gh workflow run release.yml --ref vX.Y.Z
