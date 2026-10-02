@@ -1,0 +1,96 @@
+name: Platform checks
+
+# Exercises the real screen, input devices, and the published Windows installer on hosted
+# runners. These steps move the pointer and capture the desktop, so they stay out of the
+# regular CI run. Trigger manually, or by changing this workflow in a pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag whose Windows installer to smoke-test
+        required: false
+        default: v0.0.1
+  pull_request:
+    paths:
+      - .github/workflows/platform.yml
+      - crates/session/tests/real_platform.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RELEASE_TAG: ${{ inputs.release || 'v0.0.1' }}
+
+jobs:
+  real-platform:
+    name: Real screen and input (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Session on the real screen and pointer
+        run: cargo test -p dari-session --test real_platform --locked -- --ignored --nocapture
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: real-platform-frame-${{ matrix.os }}
+          path: target/real-platform/frame.png
+          if-no-files-found: ignore
+
+  windows-installer:
+    name: Windows installer smoke test
+    runs-on: windows-latest
+    steps:
+      - name: Download the released installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern "*-setup.exe" --dir installer
+      - name: Install silently and host a session from the installed app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter dari.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'dari.exe was not installed' }
+          Write-Host "installed: $($exe.FullName)"
+          & $exe.FullName --version
+
+          $hostProcess = Start-Process -FilePath $exe.FullName -ArgumentList 'host', '--port', '47821' -RedirectStandardOutput host.log -RedirectStandardError host.err -PassThru -NoNewWindow
+          $password = $null
+          for ($i = 0; $i -lt 60 -and -not $password; $i++) {
+            Start-Sleep -Milliseconds 500
+            $match = Select-String -Path host.log -Pattern 'Access password: (\S+)' -ErrorAction SilentlyContinue | Select-Object -Last 1
+            if ($match) { $password = $match.Matches[0].Groups[1].Value }
+          }
+          if (-not $password) { Get-Content host.log, host.err; throw 'the installed host never printed a password' }
+          Set-Content -Path password.txt -Value $password -NoNewline
+
+          $viewer = Start-Process -FilePath $exe.FullName -ArgumentList 'connect', '127.0.0.1:47821' -RedirectStandardInput password.txt -RedirectStandardOutput connect.log -RedirectStandardError connect.err -PassThru -NoNewWindow
+          Start-Sleep -Seconds 15
+          Stop-Process -Id $viewer.Id -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $hostProcess.Id -Force -ErrorAction SilentlyContinue
+
+          Write-Host '--- host'; Get-Content host.log
+          Write-Host '--- viewer'; Get-Content connect.log
+          $viewerLog = Get-Content connect.log -Raw
+          if ($viewerLog -notmatch 'Connected to') { Get-Content connect.err; throw 'the viewer did not connect' }
+          if ($viewerLog -notmatch 'host screen: Available, host input: Available') { throw 'the host did not report a working screen and input' }
+          if ($viewerLog -notmatch 'frame Some\(\(\d+, \d+\)\)') { throw 'no frames were decoded' }
