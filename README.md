@@ -1,115 +1,202 @@
 # open-desk
 
-macOS와 Windows 11이 서로 접속할 수 있는 원격 데스크톱 프로그램입니다. AnyDesk, RustDesk,
-Windows 원격 데스크톱과 같은 용도로, 하나의 앱이 **내 화면 공유(호스트)**와 **원격 기기 제어(뷰어)**를
-모두 합니다. Rust와 [gpui-kit](https://github.com/longbridge/gpui-kit)로 만들었습니다.
+open-desk is a remote desktop app for macOS and Windows 11, in the spirit of AnyDesk, RustDesk, and Windows
+Remote Desktop. The same app shares your screen (host) and controls another computer (viewer), so a Mac can
+control a Windows PC and the other way around.
 
-- 같은 네트워크: IP 주소 또는 "근처 기기" 목록으로 바로 접속
-- 다른 네트워크: 직접 운영하는 [릴레이 서버](docs/relay.md)를 거쳐 9자리 ID로 접속
-- 일회용 비밀번호 + 호스트 사용자의 접속 승인(제어 허용 / 보기만 허용 / 거부)
-- 화면 스트리밍(H.264), 키보드·마우스·휠 제어, 텍스트 클립보드 공유, 모니터 전환, 화질 프리셋
-- ⌘ ↔ Ctrl 단축키 자동 변환, 한국어/영어 UI
+Every session is end-to-end encrypted and authenticated with a one-time password shown on the host. By default,
+the person at the host also has to approve each connection before anything is shared. It's written in Rust with a
+[gpui-kit](https://github.com/longbridge/gpui-kit) UI.
 
-## 설치
+What you can do with it:
 
-[Releases](https://github.com/j0urneyk/open-desk/releases)에서 받습니다.
+- Connect on the same network by IP address, or pick the computer from a "Nearby devices" list (mDNS).
+- Connect across networks by a nine-digit ID through a relay server you run yourself. The relay only forwards
+  encrypted packets.
+- Let the host choose **Allow control**, **View only**, or **Decline** for each connection.
+- Stream the screen as H.264 and send keyboard, mouse, and wheel input. Text clipboard sharing, display
+  switching, and speed/balanced/quality presets are included.
+- Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
+  host.
 
-| 플랫폼 | 파일 |
-| --- | --- |
-| macOS (Apple silicon) | `open-desk_<버전>_macos_aarch64.dmg` |
-| Windows 11 (x64) | `open-desk_<버전>_x64-setup.exe` |
-| 릴레이 서버 (Linux x64) | `open-desk-relay_<버전>_linux_x86_64.tar.gz` |
+The UI follows the system language: Korean or English.
 
-코드 서명 인증서 없이 빌드된 경우 macOS에서는 처음 실행할 때 Finder에서 앱을 우클릭 → **열기**를,
-Windows에서는 SmartScreen 경고에서 **추가 정보 → 실행**을 선택해야 합니다.
+## Status
 
-### macOS 권한
+v0.1.0 is the first release. Automated tests run real QUIC sessions against synthetic screens, and GUI tests
+render the app on macOS. Some things haven't been checked on real hardware yet:
 
-내 화면을 공유하려면(호스트) 시스템 설정 → 개인정보 보호 및 보안에서 두 권한을 허용해야 합니다.
-앱의 "이 기기" 카드에 빠진 권한과 **권한 요청 / 시스템 설정 열기** 버튼이 표시됩니다.
+- A session between a physical Mac and a physical Windows 11 PC.
+- Screen sharing and input injection with the macOS permissions actually granted.
+- The Windows installer. The release workflow builds it, but that workflow hasn't run for v0.1.0, so the release
+  doesn't include it. For now, build from source on Windows (see [Building from source](#building-from-source)).
 
-- **화면 및 시스템 오디오 녹음**: 상대가 화면을 보려면 필요합니다. 허용 후 앱을 다시 시작하세요.
-- **손쉬운 사용**: 상대가 키보드와 마우스를 제어하려면 필요합니다.
-- **로컬 네트워크**: 처음 실행 시 묻는 창에서 허용해야 같은 네트워크의 기기와 연결됩니다.
+## Install
 
-Windows에서는 처음 실행할 때 방화벽 창에서 개인 네트워크 접근을 허용하세요.
+Download a build from [Releases](https://github.com/j0urneyk/open-desk/releases).
 
-## 사용법
+| Platform | File | v0.1.0 |
+| --- | --- | --- |
+| macOS (Apple silicon, 12 or later) | `open-desk_<version>_macos_aarch64.dmg` | Available |
+| Windows 11 (x64) | `open-desk_<version>_x64-setup.exe` | Not yet published |
+| Relay server (Linux x64) | `open-desk-relay_<version>_linux_x86_64.tar.gz` | Available |
 
-**내 화면 공유하기**: 앱을 켜면 "이 기기" 카드에 접속 주소와 일회용 비밀번호가 표시됩니다. 상대에게
-알려 주고, 접속 요청이 오면 **제어 허용**, **보기만 허용**, **거부** 중 하나를 고릅니다(30초 안에
-응답하지 않으면 거부). 세션 중에는 **연결 끊기**로 언제든 끝낼 수 있고, 세션이 끝나면 비밀번호가 새로
-바뀝니다.
+Release builds aren't code-signed unless signing secrets are configured. The first time you run the app on
+macOS, right-click it in Finder and choose **Open**. On Windows, choose **More info → Run anyway** when
+SmartScreen warns you.
 
-**원격 기기 제어하기**: "원격 기기 제어" 카드에 상대의 주소(IP, IP:포트, 또는 릴레이를 쓰면 9자리 ID)와
-비밀번호를 입력하고 **접속**합니다. 같은 네트워크의 기기는 "근처 기기"에서 고를 수 있습니다. 뷰어 창
-툴바에서 모니터 전환, 화질(속도/균형/화질), 연결 끊기를 할 수 있습니다.
+### macOS permissions
 
-**다른 네트워크의 기기**: 공인 IP가 있는 서버에서 `open-desk-relay`를 실행하고([운영 문서](docs/relay.md)),
-양쪽 앱의 **릴레이 서버** 칸에 그 주소를 입력합니다. 호스트에 표시되는 **내 ID**로 접속합니다.
+A Mac that shares its screen needs these permissions, granted in System Settings → Privacy & Security. The app's
+"This device" card shows which are missing and has **Request permission** and **Open System Settings** buttons.
 
-**명령줄(개발·서버용)**:
+- **Screen & System Audio Recording**: lets the viewer see the screen. Restart the app after granting it.
+- **Accessibility**: lets the viewer control the keyboard and mouse.
+- **Local Network**: macOS asks on first launch. If you deny it, LAN connections and discovery are blocked.
 
-```bash
-open-desk host [--port 47821] [--relay 서버주소]
-open-desk connect <주소 또는 ID> [--relay 서버주소]
-```
+On Windows, allow private network access when the firewall asks on first launch.
 
-헤드리스 호스트는 승인할 사람이 없으므로 비밀번호를 아는 뷰어에게 바로 제어를 허용합니다.
+## Quick start
 
-## 보안 모델
+To share a screen, open the app on the host. The "This device" card shows the host's addresses (UDP port 47821 by
+default) and a one-time password like `K7MXQ-3PTWA`. Give both to the person who will connect.
 
-자세한 위협 모델과 근거는 [보안 모델](docs/security.md)에 있습니다.
+To control that computer, open the app on the viewer. In "Control a remote device", enter the host's address and
+the password, then press **Connect**. Computers on the same network also appear under "Nearby devices".
 
-- 연결은 QUIC(TLS 1.3)로 암호화되고, 인증은 일회용 비밀번호를 쓰는 **SPAKE2** PAKE로 합니다. 확인값이
-  TLS 세션(exporter)에 묶여 있어 중간자는 세션을 가로챌 수 없고, 도청자는 비밀번호를 오프라인으로 대입해
-  볼 수 없습니다. 비밀번호는 10자(약 50비트)이며 한 번 쓰면 폐기됩니다.
-- 실패한 시도는 출발지별·전역으로 지수 백오프 제한되고, 한 번에 한 세션만 허용됩니다.
-- 접속 승인이 켜져 있으면(기본값) 호스트 사용자가 허용하기 전에는 화면·입력·클립보드 어느 것도 공유되지
-  않습니다. 보기 전용 세션은 입력과 클립보드를 아예 받지 않습니다.
-- 릴레이 서버는 암호화된 UDP 패킷만 전달하므로 화면, 입력, 비밀번호를 볼 수 없습니다.
-- LAN 검색 정보는 인증되지 않은 표시용 정보일 뿐이며, 접속 시 항상 비밀번호 인증을 거칩니다.
+The host user then sees a connection request and picks **Allow control**, **View only**, or **Decline**. If
+nobody answers within 30 seconds, the request is declined. Once allowed, the viewer window shows the remote
+screen and forwards your input. Its toolbar shows frames per second and round-trip latency, and lets you switch
+displays, change quality, or disconnect.
 
-## 알려진 한계
+The password is used up the moment a viewer authenticates. The host gets a new one after the session ends.
 
-- Windows의 보안 데스크톱(UAC 확인 창, 잠금 화면, Ctrl+Alt+Del)은 일반 앱에서 캡처·제어할 수 없습니다.
-- 소프트웨어 H.264 인코딩만 지원합니다(하드웨어 인코더 미사용). 오디오와 파일 전송은 없습니다.
-- macOS Apple silicon과 Windows x64 빌드만 제공합니다.
-- 릴레이 경유 세션 중 클라이언트의 공인 주소가 바뀌면(NAT 재바인딩) 다시 접속해야 합니다.
+### Connecting across networks
 
-## 개발
-
-- Rust 1.99.0 (`rust-toolchain.toml`이 버전과 rustfmt/clippy 컴포넌트를 고정)
-- macOS: Xcode Command Line Tools / Windows 11: Visual Studio Build Tools (MSVC)
-- [cargo-deny](https://github.com/EmbarkStudios/cargo-deny), 패키징에는 [cargo-packager](https://github.com/crabnebula-dev/cargo-packager)
+Computers behind different routers can't reach each other directly. For that case, run `open-desk-relay` on a
+server with a public IP:
 
 ```bash
-cargo run -p open-desk                     # 앱 실행
-cargo fmt --all --check                    # 포매터
-cargo lint                                 # clippy (-D warnings, 별칭)
-cargo test --workspace --locked            # 테스트
-cargo test -p open-desk --test gui         # macOS 헤드리스 GUI 테스트 (Metal)
-cargo deny check                           # 의존성 보안·라이선스 검사
+open-desk-relay --listen 0.0.0.0:47822 --data-dir /var/lib/open-desk-relay
 ```
 
-크레이트 구성:
+Enter the relay's address in the **Relay server** field on both computers. The host then shows **My ID**. On the
+viewer, type that nine-digit ID where you'd normally put an address.
 
-| 크레이트 | 역할 |
+The relay just forwards UDP between the ports it allocates. The session on top is the same end-to-end QUIC +
+SPAKE2 session as a direct connection, so the relay never sees the screen, input, clipboard, or password. The
+[relay guide](docs/relay.md) covers firewalls, Docker, and abuse limits.
+
+### Command line
+
+The `host` and `connect` subcommands run without the GUI, which is handy on servers and in testing. To host,
+optionally registering with a relay:
+
+```bash
+open-desk host --port 47821 --relay relay.example.com
+```
+
+`host` prints its addresses, the current password, and its relay ID. There's nobody to approve requests, so a
+headless host gives control to any viewer that knows the password, and it doesn't share the clipboard. Only run
+it where that's acceptable.
+
+To connect by address, or by ID when `--relay` is given:
+
+```bash
+open-desk connect 192.168.0.10
+```
+
+`connect` asks for the password, or reads it from stdin when piped, and then reports received frames and bitrate
+every second. Set `RUST_LOG` to change the log level (default `info`).
+
+## Security model
+
+The goal is simple: a viewer that doesn't know the host's current one-time password can't see the screen or send
+input, wherever it sits on the network.
+
+- **Encryption and authentication:** connections use QUIC with TLS 1.3, and authentication is SPAKE2, a
+  password-authenticated key exchange. Its key confirmations are bound to the TLS session and to both handshake
+  hellos. So a man in the middle can't splice two sessions together, and an eavesdropper can't test password
+  guesses offline.
+- **Passwords:** 10 characters (about 50 bits), generated per session and discarded after one successful
+  login.
+- **Throttling:** failed attempts are throttled per source address and globally. A host serves one session at a
+  time.
+- **Approval:** with approval on (the default), nothing is captured, injected, or shared until the host user
+  decides. View-only sessions never start input or clipboard handling.
+- **Discovery:** LAN discovery data is an unauthenticated hint. Connecting always goes through the password
+  check.
+
+[docs/security.md](docs/security.md) covers the threat model, abuse limits, and known gaps.
+
+## Known limitations
+
+- Windows' secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) can't be captured or controlled by a
+  regular app.
+- Video uses software H.264 encoding only. There's no audio, file transfer, or unattended access.
+- Builds exist only for Apple silicon Macs and x64 Windows.
+- If a relayed client's public address changes mid-session (NAT rebinding), you have to reconnect.
+
+## Building from source
+
+You need Rust 1.99.0; `rust-toolchain.toml` pins it along with rustfmt and clippy. macOS also needs the Xcode
+Command Line Tools, and Windows needs the Visual Studio Build Tools (MSVC). The first build is slow because GPUI
+and OpenH264 are large.
+
+To run the app:
+
+```bash
+cargo run -p open-desk
+```
+
+To build the relay:
+
+```bash
+cargo build --release -p open-desk-relay
+```
+
+Before opening a pull request, run the checks CI runs. `cargo lint` is an alias for clippy with `-D warnings`:
+
+```bash
+cargo fmt --all --check
+```
+
+```bash
+cargo lint
+```
+
+```bash
+cargo test --workspace --locked
+```
+
+```bash
+cargo deny check
+```
+
+On macOS, `cargo test -p open-desk --test gui` also runs the headless Metal GUI tests and saves PNG snapshots to
+`target/gui-snapshots/`.
+
+The crates depend on each other in one direction, `app → session → {net, media, input} → proto`:
+
+| Crate | Role |
 | --- | --- |
-| `open-desk-proto` | 메시지, 버전, 길이 제한 프레이밍 |
-| `open-desk-net` | QUIC, 기기 인증서, SPAKE2 인증, 시도 제한, LAN 검색, 릴레이 클라이언트 |
-| `open-desk-media` | 화면 캡처, 스케일링, H.264 인코드/디코드 |
-| `open-desk-input` | 원격 입력 주입, 키 매핑 |
-| `open-desk-session` | 호스트/뷰어 세션, 승인, 클립보드 |
-| `open-desk-relay` | 릴레이 서버 |
-| `open-desk` | gpui-kit 데스크톱 앱과 CLI |
+| `open-desk-proto` | Messages, protocol version, length-bounded framing |
+| `open-desk-net` | QUIC, device certificates, SPAKE2 authentication, throttling, LAN discovery, relay client |
+| `open-desk-media` | Screen capture, scaling, H.264 encode/decode |
+| `open-desk-input` | Input injection, held-key tracking, shortcut mapping |
+| `open-desk-session` | Host and viewer sessions, approval, clipboard |
+| `open-desk-relay` | Relay server |
+| `open-desk` | gpui-kit desktop app and CLI |
 
-자세한 문서는 [docs](docs/README.md)에 있습니다: [사용 가이드](docs/user-guide.md), [아키텍처](docs/architecture.md),
-[프로토콜](docs/protocol.md), [보안 모델](docs/security.md), [개발 가이드](docs/development.md). 변경 이력은 [CHANGELOG](CHANGELOG.md)에 있습니다.
+## Documentation
 
-### 릴리스
+The deeper docs are written in Korean:
 
-`CHANGELOG.md`의 `Unreleased` 항목을 새 버전 섹션으로 옮기고 `v<버전>` 태그를 푸시하면, Release 워크플로가
-macOS dmg, Windows 설치 파일, 릴레이 바이너리를 빌드해 초안 릴리스에 첨부합니다. 저장소 시크릿에 Apple
-인증서(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`)와 공증 정보
-(`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`)가 있으면 macOS 앱에 서명·공증합니다.
+- [User guide](docs/user-guide.md): every setting, where files live, and troubleshooting.
+- [Architecture](docs/architecture.md): threads, the session lifecycle, and capture backpressure.
+- [Wire protocol](docs/protocol.md): framing, the handshake, and a message reference.
+- [Security model](docs/security.md): threats, defenses, and abuse limits.
+- [Development](docs/development.md): quality gates, tests, CI, and the release process.
+- [Relay operations](docs/relay.md): running and securing the relay.
+
+Changes are listed in the [CHANGELOG](CHANGELOG.md).
