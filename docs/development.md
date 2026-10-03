@@ -55,10 +55,17 @@ cargo deny check
   advisories only to direct dependencies, because we can't replace the crates GPUI pulls in transitively. It also
   checks the license allowlist and bans yanked crates, wildcard versions, and unknown registries or git sources.
 
-`unsafe` appears only in three OS API calls in `crates/input/src/backend.rs`, each with its own
-`allow(unsafe_code)`: `AXIsProcessTrusted` on macOS (checks Accessibility permission), and on Windows
-`SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary monitors) and
-`SetProcessDpiAwarenessContext` (Per-Monitor V2 DPI awareness). Windows-only code can be checked from macOS too:
+`unsafe` appears in two places, each behind its own `allow(unsafe_code)`:
+
+- Three OS API calls in `crates/input/src/backend.rs`: `AXIsProcessTrusted` on macOS (checks Accessibility
+  permission), and on Windows `SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary
+  monitors) and `SetProcessDpiAwarenessContext` (Per-Monitor V2 DPI awareness).
+- The macOS capture and encoding module `crates/media/src/apple/`, which drives ScreenCaptureKit, CoreVideo,
+  CoreMedia, and VideoToolbox through the objc2 bindings. Every unsafe block there carries a `SAFETY` comment.
+
+`.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
+capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's
+C++ build doesn't cross-compile to MSVC, so Windows CI covers it):
 
 ```bash
 cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
@@ -68,20 +75,22 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 
 | Kind | Location | Coverage |
 | --- | --- | --- |
-| Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode, key mapping, letterbox coordinates, relay forwarder |
+| Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode with OpenH264 and (on macOS) VideoToolbox, AVCC to Annex-B conversion, still-screen keyframes, frame rate and bitrate selection, key mapping, letterbox coordinates, relay forwarder |
 | Transport E2E | `crates/net/tests/loopback.rs` | Real QUIC loopback: success, wrong password, consumed password, busy, throttling, oversized pre-auth frame, viewers barred from unidirectional streams |
-| Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay |
+| Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (including one sent before approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
 | GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
 | Cross-device | `crates/check`, `scripts/crosscheck/` | This Mac against a Windows VM or an x64 runner over SSH, in both directions; see [Cross-device checks](#cross-device-checks) |
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
 Real capture and encoding performance is measured with an example that captures and encodes the primary display
-for a few seconds and prints throughput. On macOS, even without Screen Recording permission, capture returns
-full-size frames (wallpaper only), which is enough to measure the cost.
+for a few seconds and prints the frame rate, bitrate, encoder (hardware or software), and the time spent encoding
+each frame. The arguments are seconds, the longest edge, the frame rate, and `hardware` or `software`. Capture only
+produces frames while the screen changes, so keep something moving on the primary display (a video, scrolling).
+On macOS the terminal needs Screen Recording permission.
 
 ```bash
-cargo run --release -p dari-media --example capture_bench -- 5 1920
+cargo run --release -p dari-media --example capture_bench -- 5 1920 120 hardware
 ```
 
 The session layer swaps screen and input through the `HostPlatform` trait, so even environments without screen
@@ -106,8 +115,9 @@ GPUI's macOS platform can only be created on the main thread, so the standard te
 ### Real screen and input
 
 `crates/session/tests/real_platform.rs` runs a session on this machine's real display and input devices: it checks
-the host reports both as available, that the decoded frame has real content shaped like the display (saved to
-`target/real-platform/frame.png`), and that remote pointer moves land on the requested coordinates. It's ignored by
+the host reports both as available, that it streams at the display's refresh rate when asked for 144 fps, that the
+decoded frame has real content shaped like the display (saved to `target/real-platform/frame.png`), and that remote
+pointer moves land on the requested coordinates. It's ignored by
 default because it needs Screen Recording and Accessibility on macOS and moves the real pointer:
 
 ```bash
@@ -287,7 +297,7 @@ runner takes about 15 minutes for clippy and about 20 minutes for tests.
 ## Packaging and releases
 
 Packaging is configured in `[package.metadata.packager]` in `crates/app/Cargo.toml` (bundle ID `dev.dari.app`,
-macOS 12.0 minimum, per-user Windows NSIS install). The icon's source is `crates/app/assets/icon.svg`, from which
+macOS 13.0 minimum, per-user Windows NSIS install). The icon's source is `crates/app/assets/icon.svg`, from which
 the PNGs and `.icns` (via `iconutil`) are generated. `assets/Info.plist` declares the local network usage
 description (`NSLocalNetworkUsageDescription`) and the Bonjour service (`_dari._udp`); since macOS 15, LAN
 connections and mDNS are blocked without them. macOS grants Screen Recording and Accessibility per bundle ID, so

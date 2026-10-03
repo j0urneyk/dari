@@ -19,7 +19,9 @@ use dari_session::{
     connect_viewer, start_host,
 };
 
-use crate::config::{data_directory, device_name, local_addresses, resolve_target};
+use crate::config::{
+    auto_frame_rate, data_directory, device_name, local_addresses, resolve_target,
+};
 
 pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()> {
     let identity = Arc::new(DeviceIdentity::load_or_generate(&data_directory()?)?);
@@ -90,7 +92,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
     Ok(())
 }
 
-pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
+pub(crate) async fn connect(address: &str, relay: &str, fps: Option<u16>) -> anyhow::Result<()> {
     let target = resolve_target(address, relay).await?;
     let typed = tokio::task::spawn_blocking(|| {
         if std::io::stdin().is_terminal() {
@@ -110,6 +112,7 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
             client_name: device_name(),
             map_shortcut_modifier: true,
             clipboard: None,
+            frame_rate: Some(fps.unwrap_or_else(auto_frame_rate)),
             downloads: None,
             audio: None,
             play_audio: false,
@@ -136,6 +139,7 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
                 Some(ViewerEvent::Displays { displays, active }) => {
                     println!("host displays: {} (showing {active})", displays.len());
                 }
+                Some(ViewerEvent::FrameRate(rate)) => println!("host streams at up to {rate} fps"),
                 Some(ViewerEvent::HostStatus(status)) => {
                     println!("host screen: {:?}, host input: {:?}", status.screen, status.input);
                 }

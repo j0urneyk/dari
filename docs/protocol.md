@@ -109,6 +109,8 @@ that hasn't been sent yet.
 | `FileAccept(id)` | Both | The receiver accepted; the sender opens the file's stream |
 | `FileDone(id)` | Both | The receiver saved the whole file |
 | `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
+| `SetFrameRate(fps)` | Viewer → host | The highest frame rate the viewer wants, 1..=240 |
+| `FrameRate(fps)` | Host → viewer | The frame rate the host now streams at (the request capped by its display's refresh rate), 1..=240. Sent once streaming starts and whenever it changes |
 
 `HostStatus` reports `screen`, `input`, `files`, and `audio`. `Availability` is one of `Available`, `PermissionDenied`
 (macOS permission missing), `Unavailable`, or `NotAllowed` (input and files in a view-only session).

@@ -13,7 +13,7 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Dari lets the person connected to this device hear its sound during remote desktop sessions.</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>12.0</string>
+	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

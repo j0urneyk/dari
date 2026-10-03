@@ -1,4 +1,8 @@
-//! H.264 encoding and decoding with OpenH264.
+//! H.264 encoding and decoding.
+//!
+//! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS) and
+//! OpenH264 otherwise. Decoding always uses OpenH264. Both encoders emit the same Annex-B
+//! Constrained Baseline stream with BT.601 limited-range color, so any viewer decodes any host.
 
 use openh264::OpenH264API;
 use openh264::decoder::Decoder;
@@ -9,10 +13,12 @@ use openh264::encoder::{
 use openh264::formats::{RgbaSliceU8, YUVBuffer, YUVSource};
 use thiserror::Error;
 
-use crate::frame::RgbaFrame;
+use crate::frame::CapturedFrame;
 
 /// Largest frame the decoder accepts, matching what any Dari host can produce.
 const MAX_DECODED_PIXELS: usize = 3840 * 2160;
+#[cfg(any(target_os = "macos", test))]
+const ANNEX_B_START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -20,6 +26,13 @@ pub enum CodecError {
     OpenH264(#[from] openh264::Error),
     #[error("frame dimensions {width}x{height} are not supported")]
     UnsupportedDimensions { width: u32, height: u32 },
+    #[error("VideoToolbox {operation} failed with status {status}")]
+    VideoToolbox {
+        operation: &'static str,
+        status: i32,
+    },
+    #[error("malformed encoder output: {0}")]
+    MalformedOutput(&'static str),
 }
 
 /// Encoder tuning.
@@ -27,6 +40,8 @@ pub enum CodecError {
 pub struct EncoderSettings {
     pub bitrate_bps: u32,
     pub max_fps: f32,
+    /// Use the platform's hardware encoder if it has one.
+    pub hardware: bool,
 }
 
 impl Default for EncoderSettings {
@@ -34,6 +49,7 @@ impl Default for EncoderSettings {
         Self {
             bitrate_bps: 4_000_000,
             max_fps: 30.0,
+            hardware: true,
         }
     }
 }
@@ -60,22 +76,92 @@ impl std::fmt::Debug for EncodedFrame {
     }
 }
 
-/// Encodes RGBA frames. Frames must have even dimensions (see [`crate::fit_within`]). A change
-/// of dimensions re-initializes the encoder, which starts again with a keyframe.
+/// Encodes captured frames. Frames must have even dimensions (see [`crate::fit_within`]). A
+/// change of dimensions re-initializes the encoder, which starts again with a keyframe.
+///
+/// If the hardware encoder fails, the encoder falls back to OpenH264 for the rest of its life
+/// and carries on with a keyframe, so a stream never ends over a hardware hiccup.
+#[derive(Debug)]
 pub struct VideoEncoder {
+    backend: Backend,
+}
+
+#[derive(Debug)]
+enum Backend {
+    OpenH264(Box<SoftwareEncoder>),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(crate::apple::HardwareEncoder),
+}
+
+impl VideoEncoder {
+    pub fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
+        #[cfg(target_os = "macos")]
+        if settings.hardware {
+            return Ok(Self {
+                backend: Backend::VideoToolbox(crate::apple::HardwareEncoder::new(settings)),
+            });
+        }
+        Ok(Self {
+            backend: Backend::OpenH264(Box::new(SoftwareEncoder::new(settings)?)),
+        })
+    }
+
+    /// Whether frames are encoded in hardware.
+    pub fn is_hardware(&self) -> bool {
+        match self.backend {
+            Backend::OpenH264(_) => false,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(_) => true,
+        }
+    }
+
+    /// Makes the next encoded frame a keyframe.
+    pub fn request_keyframe(&mut self) {
+        match &mut self.backend {
+            Backend::OpenH264(encoder) => encoder.keyframe_requested = true,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => encoder.request_keyframe(),
+        }
+    }
+
+    /// Encodes `frame`. Returns `None` when the encoder produced no output for it.
+    pub fn encode(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedFrame>, CodecError> {
+        let (width, height) = (frame.width(), frame.height());
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(CodecError::UnsupportedDimensions { width, height });
+        }
+        match &mut self.backend {
+            Backend::OpenH264(encoder) => encoder.encode(frame),
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => match encoder.encode(frame) {
+                Ok(encoded) => Ok(encoded),
+                Err(error) => {
+                    tracing::warn!(%error, "hardware encoding failed; falling back to OpenH264");
+                    let mut software = Box::new(SoftwareEncoder::new(encoder.settings())?);
+                    let encoded = software.encode(frame);
+                    self.backend = Backend::OpenH264(software);
+                    encoded
+                }
+            },
+        }
+    }
+}
+
+/// OpenH264 in its screen-content real-time mode.
+struct SoftwareEncoder {
     encoder: Encoder,
     yuv: Option<YUVBuffer>,
     keyframe_requested: bool,
 }
 
-impl std::fmt::Debug for VideoEncoder {
+impl std::fmt::Debug for SoftwareEncoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VideoEncoder").finish_non_exhaustive()
+        f.debug_struct("SoftwareEncoder").finish_non_exhaustive()
     }
 }
 
-impl VideoEncoder {
-    pub fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
+impl SoftwareEncoder {
+    fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
@@ -96,23 +182,25 @@ impl VideoEncoder {
         })
     }
 
-    /// Makes the next encoded frame a keyframe.
-    pub fn request_keyframe(&mut self) {
-        self.keyframe_requested = true;
-    }
-
-    /// Encodes `frame`. Returns `None` when the encoder produced no output for it.
-    pub fn encode(&mut self, frame: &RgbaFrame) -> Result<Option<EncodedFrame>, CodecError> {
+    fn encode(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedFrame>, CodecError> {
         let (width, height) = (frame.width(), frame.height());
-        if width % 2 != 0 || height % 2 != 0 {
-            return Err(CodecError::UnsupportedDimensions { width, height });
-        }
         let dimensions = (width as usize, height as usize);
-        let yuv = match &mut self.yuv {
-            Some(yuv) if yuv.dimensions() == dimensions => yuv,
-            slot => slot.insert(YUVBuffer::new(dimensions.0, dimensions.1)),
+        let yuv = match frame {
+            CapturedFrame::Rgba(frame) => {
+                let yuv = match &mut self.yuv {
+                    Some(yuv) if yuv.dimensions() == dimensions => yuv,
+                    slot => slot.insert(YUVBuffer::new(dimensions.0, dimensions.1)),
+                };
+                yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
+                yuv
+            }
+            #[cfg(target_os = "macos")]
+            CapturedFrame::Native(frame) => self.yuv.insert(YUVBuffer::from_vec(
+                frame.to_i420()?,
+                dimensions.0,
+                dimensions.1,
+            )),
         };
-        yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
         if std::mem::take(&mut self.keyframe_requested) {
             self.encoder.force_intra_frame();
         }
@@ -133,6 +221,59 @@ impl VideoEncoder {
             data,
         }))
     }
+}
+
+#[cfg(target_os = "macos")]
+/// Converts RGBA pixels to I420 planes the way OpenH264 does (BT.601, limited range), so both
+/// encoders produce the same colors.
+pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
+    let dimensions = (frame.width() as usize, frame.height() as usize);
+    let mut yuv = YUVBuffer::new(dimensions.0, dimensions.1);
+    yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
+    yuv
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Rewrites one AVCC access unit (NAL units with big-endian length prefixes, as VideoToolbox
+/// emits them) as Annex-B, prefixing `parameter_sets` (SPS and PPS, for a keyframe).
+pub(crate) fn avcc_to_annex_b(
+    avcc: &[u8],
+    length_size: usize,
+    parameter_sets: &[&[u8]],
+) -> Result<Vec<u8>, CodecError> {
+    if !(1..=4).contains(&length_size) {
+        return Err(CodecError::MalformedOutput("NAL length size"));
+    }
+    let mut annex_b = Vec::with_capacity(
+        avcc.len()
+            + parameter_sets
+                .iter()
+                .map(|set| set.len() + 4)
+                .sum::<usize>()
+            + 16,
+    );
+    for set in parameter_sets {
+        annex_b.extend_from_slice(&ANNEX_B_START_CODE);
+        annex_b.extend_from_slice(set);
+    }
+    let mut rest = avcc;
+    while !rest.is_empty() {
+        let (length, after) = rest
+            .split_at_checked(length_size)
+            .ok_or(CodecError::MalformedOutput("truncated NAL length"))?;
+        let length = length
+            .iter()
+            .fold(0usize, |total, byte| total << 8 | usize::from(*byte));
+        let (unit, after) = after
+            .split_at_checked(length)
+            .ok_or(CodecError::MalformedOutput("truncated NAL unit"))?;
+        if !unit.is_empty() {
+            annex_b.extend_from_slice(&ANNEX_B_START_CODE);
+            annex_b.extend_from_slice(unit);
+        }
+        rest = after;
+    }
+    Ok(annex_b)
 }
 
 /// A decoded frame in BGRA byte order, the layout GPUI's image textures expect.
@@ -198,8 +339,27 @@ impl VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::ScreenCapturer;
+    use crate::frame::RgbaFrame;
     use crate::synthetic::SyntheticCapturer;
+
+    /// One encoder per backend this platform has.
+    fn encoders() -> Vec<VideoEncoder> {
+        [false, true]
+            .into_iter()
+            .filter(|hardware| !hardware || cfg!(target_os = "macos"))
+            .map(|hardware| {
+                VideoEncoder::new(EncoderSettings {
+                    hardware,
+                    ..EncoderSettings::default()
+                })
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn frame(capturer: &mut SyntheticCapturer) -> CapturedFrame {
+        capturer.render().into()
+    }
 
     fn mean_abs_error(rgba: &[u8], bgra: &[u8]) -> f64 {
         let total: u64 = rgba
@@ -220,71 +380,101 @@ mod tests {
 
     #[test]
     fn frames_round_trip_through_the_codec() {
-        let mut capturer = SyntheticCapturer::new(320, 240);
-        let mut encoder = VideoEncoder::new(EncoderSettings::default()).unwrap();
-        let mut decoder = VideoDecoder::new().unwrap();
-        for index in 0..10 {
-            let frame = capturer.capture().unwrap();
-            let encoded = encoder.encode(&frame).unwrap().unwrap();
-            assert_eq!(
-                encoded.keyframe,
-                index == 0,
-                "only the first frame is a keyframe"
-            );
-            let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
-            assert_eq!((decoded.width, decoded.height), (320, 240));
-            let error = mean_abs_error(frame.pixels(), &decoded.bgra);
-            assert!(error < 12.0, "frame {index} mean error {error}");
+        for mut encoder in encoders() {
+            let hardware = encoder.is_hardware();
+            let mut capturer = SyntheticCapturer::new(320, 240);
+            let mut decoder = VideoDecoder::new().unwrap();
+            for index in 0..10 {
+                let source = capturer.render();
+                let encoded = encoder.encode(&source.clone().into()).unwrap().unwrap();
+                assert_eq!(encoder.is_hardware(), hardware, "no fallback to software");
+                assert_eq!(
+                    encoded.keyframe,
+                    index == 0,
+                    "only the first frame is a keyframe (hardware: {hardware})"
+                );
+                let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
+                assert_eq!((decoded.width, decoded.height), (320, 240));
+                let error = mean_abs_error(source.pixels(), &decoded.bgra);
+                assert!(
+                    error < 12.0,
+                    "frame {index} mean error {error} (hardware: {hardware})"
+                );
+            }
         }
     }
 
     #[test]
     fn keyframes_can_be_requested() {
-        let mut capturer = SyntheticCapturer::new(64, 64);
-        let mut encoder = VideoEncoder::new(EncoderSettings::default()).unwrap();
-        encoder.encode(&capturer.capture().unwrap()).unwrap();
-        assert!(
-            !encoder
-                .encode(&capturer.capture().unwrap())
-                .unwrap()
-                .unwrap()
-                .keyframe
-        );
-        encoder.request_keyframe();
-        assert!(
-            encoder
-                .encode(&capturer.capture().unwrap())
-                .unwrap()
-                .unwrap()
-                .keyframe
-        );
+        for mut encoder in encoders() {
+            let mut capturer = SyntheticCapturer::new(64, 64);
+            encoder.encode(&frame(&mut capturer)).unwrap();
+            assert!(
+                !encoder
+                    .encode(&frame(&mut capturer))
+                    .unwrap()
+                    .unwrap()
+                    .keyframe
+            );
+            encoder.request_keyframe();
+            assert!(
+                encoder
+                    .encode(&frame(&mut capturer))
+                    .unwrap()
+                    .unwrap()
+                    .keyframe
+            );
+        }
     }
 
     #[test]
     fn resolution_change_restarts_with_a_keyframe() {
-        let mut encoder = VideoEncoder::new(EncoderSettings::default()).unwrap();
-        let mut decoder = VideoDecoder::new().unwrap();
-        let mut small = SyntheticCapturer::new(64, 48);
-        let mut large = SyntheticCapturer::new(128, 96);
-        for frame in [small.capture(), small.capture()] {
-            let encoded = encoder.encode(&frame.unwrap()).unwrap().unwrap();
-            decoder.decode(&encoded.data).unwrap();
+        for mut encoder in encoders() {
+            let mut decoder = VideoDecoder::new().unwrap();
+            let mut small = SyntheticCapturer::new(64, 48);
+            let mut large = SyntheticCapturer::new(128, 96);
+            for _ in 0..2 {
+                let encoded = encoder.encode(&frame(&mut small)).unwrap().unwrap();
+                decoder.decode(&encoded.data).unwrap();
+            }
+            let encoded = encoder.encode(&frame(&mut large)).unwrap().unwrap();
+            assert!(encoded.keyframe);
+            assert_eq!((encoded.width, encoded.height), (128, 96));
+            let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
+            assert_eq!((decoded.width, decoded.height), (128, 96));
         }
-        let encoded = encoder.encode(&large.capture().unwrap()).unwrap().unwrap();
-        assert!(encoded.keyframe);
-        assert_eq!((encoded.width, encoded.height), (128, 96));
-        let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
-        assert_eq!((decoded.width, decoded.height), (128, 96));
     }
 
     #[test]
     fn odd_dimensions_are_rejected() {
-        let mut encoder = VideoEncoder::new(EncoderSettings::default()).unwrap();
-        let frame = RgbaFrame::new(3, 2, vec![0; 24]).unwrap();
-        assert!(matches!(
-            encoder.encode(&frame),
-            Err(CodecError::UnsupportedDimensions { .. })
-        ));
+        for mut encoder in encoders() {
+            let frame = RgbaFrame::new(3, 2, vec![0; 24]).unwrap();
+            assert!(matches!(
+                encoder.encode(&frame.into()),
+                Err(CodecError::UnsupportedDimensions { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn avcc_units_become_annex_b_with_parameter_sets_first() {
+        let avcc = [0, 0, 0, 2, 0x65, 0xAA, 0, 0, 0, 1, 0x06];
+        let annex_b = avcc_to_annex_b(&avcc, 4, &[&[0x67, 1], &[0x68, 2]]).unwrap();
+        assert_eq!(
+            annex_b,
+            [
+                0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 0xAA, 0, 0, 0, 1, 0x06
+            ]
+        );
+        let two_byte_lengths = avcc_to_annex_b(&[0, 1, 0x41], 2, &[]).unwrap();
+        assert_eq!(two_byte_lengths, [0, 0, 0, 1, 0x41]);
+    }
+
+    #[test]
+    fn malformed_avcc_is_rejected() {
+        assert!(avcc_to_annex_b(&[0, 0, 0, 9, 0x65], 4, &[]).is_err());
+        assert!(avcc_to_annex_b(&[0, 0], 4, &[]).is_err());
+        assert!(avcc_to_annex_b(&[1, 0x65], 0, &[]).is_err());
     }
 
     #[test]

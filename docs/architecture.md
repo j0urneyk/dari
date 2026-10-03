@@ -17,7 +17,7 @@ dari-relay ──► dari-net, dari-proto
 | --- | --- | --- | --- |
 | `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
-| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, paced capture thread, system audio capture, Opus, playback | xcap, fast_image_resize, openh264, cpal, opus-rs |
+| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), fast_image_resize, openh264, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
@@ -33,7 +33,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Async and networking | `tokio`, `tokio-util`, `quinn`, `rustls` (ring provider), `rcgen` |
 | Authentication and crypto | `spake2`, `hmac`, `sha2`, `subtle`, `zeroize`, `getrandom` |
 | Serialization | `serde`, `postcard` |
-| Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize` |
+| Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize`; on macOS the `objc2` bindings for ScreenCaptureKit, CoreVideo, CoreMedia, and VideoToolbox |
 | System audio | `cpal` (WASAPI loopback, Core Audio process tap, playback), `opus-rs` (pure-Rust Opus) |
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
@@ -49,8 +49,8 @@ primitives work no matter which executor awaits them, so no bridge between the t
 
 Work that is CPU-heavy or uses blocking APIs runs on dedicated OS threads.
 
-- **Capture thread** (host): capture → downscale → H.264 encode at the target frame rate. Platform capture handles
-  aren't `Send`, so they're opened inside the thread through a factory closure.
+- **Capture thread** (host): capture → downscale → H.264 encode at up to the target frame rate. Platform capture
+  handles aren't `Send`, so they're opened inside the thread through a factory closure.
 - **Input thread** (host): injects received input events with enigo. The enigo backend stays on this thread too.
 - **Decode thread** (viewer): decodes H.264 to BGRA and publishes only the latest frame on a `watch` channel.
 - **Audio capture thread** (host): reads the cpal loopback stream, maps it to 48 kHz stereo, and encodes 20 ms Opus
@@ -76,9 +76,10 @@ end session) and receives state on a `HostEvent` channel (`PasswordChanged`, `Ap
    task lives for the whole session and writes packets from the capture stream to the unidirectional video stream.
    If control is allowed, the input thread and clipboard sync start, and with file transfer on the host grants the
    viewer stream credit and starts accepting its file streams.
-4. **During the session**: control-stream messages are handled. `SelectDisplay` and `SetQuality` reopen only the
-   capture stream (the new encoder starts with a keyframe); the video pump carries on and the input coordinate
-   space follows the new display. `RequestKeyframe` asks the encoder for a keyframe.
+4. **During the session**: control-stream messages are handled. `SelectDisplay`, `SetQuality`, and `SetFrameRate`
+   reopen only the capture stream (the new encoder starts with a keyframe); the video pump carries on and the
+   input coordinate space follows the new display. A quality or frame rate request sent while approval is pending
+   is remembered and applies from the start. `RequestKeyframe` asks the encoder for a keyframe.
 5. **End**: the host sends `Disconnect` and waits up to 1 second for the peer to close the connection. Events left
    in the input queue are dropped, and keys and buttons still held are released. The service issues a new
    password.
@@ -92,25 +93,56 @@ are retried for up to 30 seconds, after which `HostStatus` reports `PermissionDe
 
 ### Capture and backpressure
 
-The capture thread captures and encodes only when the channel has room (`try_reserve`). When the network falls
-behind, frames are skipped **before encoding**, because dropping an encoded frame would break the reference chain
-for the next P-frame. Downscaling works on the long edge, rounds width and height to even numbers, and stays
-within OpenH264's limit (3840×2160).
+The capture thread captures and encodes only when the channel has room. When the network falls behind, frames are
+skipped **before encoding**, because dropping an encoded frame would break the reference chain for the next
+P-frame. Capture sits behind the `ScreenCapturer` trait, which comes in two kinds:
 
-The encoder uses OpenH264's `ScreenContentRealTime` mode. In this mode, frame skipping must be on for the encoder
-to hold its target bitrate; a skipped frame simply isn't output, so the reference chain is unaffected. Adaptive
-quantization and background detection, which screen content doesn't support, are turned off. When the capture
-resolution changes, the encoder is recreated and starts with a keyframe. Capture sits behind the `ScreenCapturer`
-trait; the real implementation is `XcapCapturer`, and tests use `SyntheticCapturer`, which draws a moving pattern.
+- **Polled** sources capture whenever asked. The thread paces them at the target frame rate and skips the capture
+  itself while the channel is full. xcap (Windows) and the test `SyntheticCapturer` are polled.
+- **Self-paced** sources deliver frames on their own clock (`paces_itself`). The thread waits for the newest frame
+  (up to 50 ms, so a stop request is noticed) and drops it if the channel is full. A still screen sends no frames,
+  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit is
+  self-paced.
 
-| Quality preset | Max long edge | Bitrate |
+| | macOS | Windows |
+| --- | --- | --- |
+| Capture | ScreenCaptureKit (`apple::ScreenCaptureKitCapturer`): frames arrive only when the screen changes, at most `max_fps`, already scaled and converted to NV12 on the GPU | xcap: a full RGBA screenshot per frame |
+| Scaling | Done by ScreenCaptureKit | `FrameScaler` on the CPU |
+| Encoding | VideoToolbox in hardware (`apple::HardwareEncoder`), reading the capture's IOSurface without a copy | OpenH264 |
+
+Downscaling works on the long edge, rounds width and height to even numbers, and stays within OpenH264's limit
+(3840×2160), which the decoder enforces too.
+
+Both encoders produce the same stream: H.264 Constrained Baseline, Annex-B, BT.601 limited-range color, keyframes
+only at the start, on a resolution change, and on request. OpenH264 runs in its `ScreenContentRealTime` mode. In
+this mode, frame skipping must be on for the encoder to hold its target bitrate; a skipped frame simply isn't
+output, so the reference chain is unaffected. Adaptive quantization and background detection, which screen content
+doesn't support, are turned off. VideoToolbox runs a real-time session without frame reordering. Its low-latency
+rate control is left off: it made each encode 15–20% slower on Apple silicon. Each frame is encoded synchronously (`CompleteFrames`), which keeps the
+one-frame-at-a-time backpressure above. Its output is AVCC with the SPS and PPS kept in the format description, so
+the encoder rewrites it as Annex-B and puts the parameter sets in front of each keyframe. If VideoToolbox fails, the
+encoder falls back to OpenH264 for the rest of the stream and carries on with a keyframe. When the capture resolution
+changes, the encoder is recreated and starts with a keyframe. The `objc2` calls behind all of this live in
+`crates/media/src/apple/`, the only place in the crate that needs `unsafe`.
+
+| Quality preset | Max long edge | Bitrate at 30 fps |
 | --- | --- | --- |
 | Speed | 1280px | 1.5 Mbps |
 | Balanced (default) | 1920px | 4 Mbps |
 | Quality | 2560px | 10 Mbps |
 
-The frame rate is capped at 30. The viewer requests a preset and the host maps it to its own limits
-(`host_session.rs`).
+The frame rate is a separate choice. The viewer asks for one with `SetFrameRate` (its "Auto" is the fastest refresh
+rate among its own displays, up to 144), and the host streams at that rate, capped by the refresh rate of the
+display it captures: the screen can't change faster than that. The host reports the result with `FrameRate`, and
+sends it again when switching displays changes it. A viewer that never asks gets the host's default, 30 fps. The bitrate
+grows with the frame rate as `bitrate × (fps / 30)^0.75`, up to 50 Mbps: a faster stream needs more bits, but less
+than proportionally more, because consecutive frames differ less. The host maps all of this in
+`host_session.rs` (`stream_settings`).
+
+On an M5 MacBook, encoding a 1920×1246 frame takes about 8 ms, enough for about 120 fps, and a 2560×1662 frame
+about 10 ms (about 100 fps). Before ScreenCaptureKit and VideoToolbox, the same Mac streamed 18 and 13.5 fps. Encoding one frame at a time is what limits it: the
+hardware itself encodes faster when frames overlap. Measure your own setup with `capture_bench`
+([development guide](development.md#tests)).
 
 ### Input coordinates and DPI
 
@@ -132,6 +164,8 @@ and returns a `ViewerHandle` and a `ViewerEvent` channel.
   network falls behind, pointer moves can't fill the queue and cause key releases to be dropped.
 - A cleanly ended video stream doesn't end the session; the control stream decides when the session is over.
 - Clipboard sharing turns on only when the host allows control, and turns off if the host later reports view-only.
+- `ViewerConfig::frame_rate` is sent as `SetFrameRate` right after authentication, and `set_frame_rate` changes it
+  later.
 - One task accepts every unidirectional stream the host opens for the whole session and routes it by its kind: the
   video stream to the decoder, file streams to the session's transfers.
 
@@ -139,7 +173,7 @@ and returns a `ViewerHandle` and a `ViewerEvent` channel.
 
 `dari-media`'s `audio.rs` holds the pipeline and `HostPlatform::open_audio` opens the capturer, so tests use a
 synthetic tone. cpal records system output with a Core Audio process tap on macOS, whose functions exist only from
-macOS 14.2. The app's `build.rs` therefore weak-links Core Audio, which keeps the app launching on macOS 12 and 13,
+macOS 14.2. The app's `build.rs` therefore weak-links Core Audio, which keeps the app launching on macOS 13,
 and `SystemAudioCapturer::open` refuses below macOS 14.6 without touching those functions (a unit test checks the
 binary's Core Audio link is weak). Devices nearly always run at 48 kHz; other rates are converted by linear
 interpolation.
@@ -163,7 +197,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | --- | --- |
 | `lib.rs` | Logging setup and argument parsing. GUI without a subcommand, CLI with one |
 | `home.rs` | Home window: the "This device" card (addresses, password, relay ID, approval card, permission notice, settings) and the "Control a remote device" card (address and password, recent addresses, nearby devices) |
-| `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frames per second and round-trip latency, disconnect) |
+| `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
 | `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |

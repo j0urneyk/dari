@@ -1,2 +1,6 @@
 [alias]
 lint = "clippy --workspace --all-targets --locked -- -D warnings"
+
+[env]
+# ScreenCaptureKit capture needs macOS 13; build every binary for it, not rustc's default.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

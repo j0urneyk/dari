@@ -17,18 +17,17 @@ All notable changes to this project are documented here. The format follows
   tap on macOS 14.6 and later) and sends 20 ms Opus packets as QUIC datagrams; the viewer plays them through a small
   jitter buffer and conceals lost packets. **Sound on / Sound off** in the viewer toolbar mutes it, which also stops
   recording on the host. Hosts turn it off with **Share sound**. View-only viewers hear the host too.
-
-### Fixed
-
-- A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
-  keyboard layout from the input thread, which macOS only allows on the main thread, so the app crashed; character
-  keys are now pressed by their key code.
-
-- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
-  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
+- Frame rate choice in the viewer toolbar: Auto, 30, 60, 90, 120, or 144 fps, separate from the quality preset.
+  Auto follows the viewer's fastest display, and the host caps the rate at its own display's refresh rate and
+  reports what it settled on. `dari connect --fps` does the same from the command line. Faster streams get a
+  higher bitrate.
 
 ### Changed
 
+- macOS hosts capture with ScreenCaptureKit and encode with VideoToolbox in hardware, instead of taking a full
+  screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
+  over 100 fps, and the host only sends frames when the screen changes. Windows hosts are unchanged.
+- Dari now requires macOS 13 or later (was 12).
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.
 - Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead
@@ -36,8 +35,16 @@ All notable changes to this project are documented here. The format follows
 - The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
   the new versions.
 - The session protocol is now version 2.0: every unidirectional stream starts with a byte naming its kind, so file
-  streams share the connection with video, and audio travels as datagrams. 0.0.1 apps are refused with a
-  clear "incompatible version" message; update both computers.
+  streams share the connection with video, audio travels as datagrams, and the viewer can ask for a frame rate.
+  0.0.1 apps are refused with a clear "incompatible version" message; update both computers.
+
+### Fixed
+
+- A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
+  keyboard layout from the input thread, which macOS only allows on the main thread, so the app crashed; character
+  keys are now pressed by their key code.
+- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
+  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
 
 ## [0.0.1] - 2026-10-03
 

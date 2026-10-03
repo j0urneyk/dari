@@ -21,7 +21,7 @@ pub use codec::{
 };
 pub use control::{
     Availability, ControlMessage, DisplayDescription, HostStatus, MAX_CLIPBOARD_BYTES,
-    MAX_DISPLAYS, QualityPreset,
+    MAX_DISPLAYS, MAX_FRAME_RATE, QualityPreset,
 };
 pub use handshake::{
     AuthOutcome, ClientHello, HandshakeMessage, KEY_CONFIRMATION_LEN, Os, RejectReason, ServerHello,

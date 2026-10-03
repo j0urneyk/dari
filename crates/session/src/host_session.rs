@@ -54,17 +54,51 @@ pub(crate) struct SessionOptions {
 /// File streams the viewer opened, or why accepting them failed.
 type IncomingFiles = mpsc::Receiver<Result<(TransferId, FileReceiver), SessionEndReason>>;
 
-/// Stream settings for a viewer's quality request, capped by what the host allows.
-fn stream_settings(preset: QualityPreset, base: StreamSettings) -> StreamSettings {
-    let (max_long_edge, bitrate_bps) = match preset {
-        QualityPreset::Speed => (1280, 1_500_000),
-        QualityPreset::Balanced => (1920, 4_000_000),
-        QualityPreset::Quality => (2560, 10_000_000),
+/// The frame rate the quality presets' bitrates are tuned for.
+const PRESET_FRAME_RATE: u32 = 30;
+/// The most bandwidth any stream may use.
+const MAX_BITRATE_BPS: u32 = 50_000_000;
+
+/// What the viewer has asked for so far; `None` until it asks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ViewerRequest {
+    quality: Option<QualityPreset>,
+    frame_rate: Option<u16>,
+}
+
+/// Stream settings for the viewer's requests on a display refreshing at `display_refresh` Hz
+/// (0 if unknown), starting from the host's `base` settings.
+///
+/// The frame rate never exceeds the display's refresh rate: the screen cannot change faster.
+/// The bitrate grows with the frame rate, though less than proportionally because consecutive
+/// frames of a faster stream differ less.
+fn stream_settings(
+    request: ViewerRequest,
+    display_refresh: u32,
+    base: StreamSettings,
+) -> StreamSettings {
+    // Each bitrate belongs to a frame rate: the host's own, or the one the presets are tuned for.
+    let (max_long_edge, bitrate_bps, bitrate_frame_rate) = match request.quality {
+        None => (base.max_long_edge, base.bitrate_bps, base.max_fps),
+        Some(QualityPreset::Speed) => (1280, 1_500_000, PRESET_FRAME_RATE),
+        Some(QualityPreset::Balanced) => (1920, 4_000_000, PRESET_FRAME_RATE),
+        Some(QualityPreset::Quality) => (2560, 10_000_000, PRESET_FRAME_RATE),
     };
+    let requested = request.frame_rate.map_or(base.max_fps, u32::from);
+    let max_fps = match display_refresh {
+        0 => requested,
+        refresh => requested.min(refresh),
+    }
+    .max(1);
+    let scale = (f64::from(max_fps) / f64::from(bitrate_frame_rate.max(1))).powf(0.75);
+    // In range: the result is clamped to `MAX_BITRATE_BPS` first.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bitrate_bps = (f64::from(bitrate_bps) * scale).min(f64::from(MAX_BITRATE_BPS)) as u32;
     StreamSettings {
         max_long_edge,
+        max_fps,
         bitrate_bps,
-        max_fps: base.max_fps,
+        hardware_encoder: base.hardware_encoder,
     }
 }
 
@@ -108,7 +142,9 @@ pub(crate) async fn serve_viewer(
         },
         displays: Vec::new(),
         active_display: None,
+        request: ViewerRequest::default(),
         stream,
+        reported_frame_rate: None,
         transfers,
         input: None,
         capture: None,
@@ -148,7 +184,10 @@ struct HostSession {
     status: HostStatus,
     displays: Vec<DisplayInfo>,
     active_display: Option<u32>,
+    request: ViewerRequest,
     stream: StreamSettings,
+    /// The frame rate last reported to the viewer.
+    reported_frame_rate: Option<u32>,
     transfers: Transfers,
     input: Option<InputQueue>,
     capture: Option<CaptureStream>,
@@ -205,6 +244,13 @@ impl HostSession {
                     Some(Ok(ControlMessage::Disconnect)) => return Err(SessionEndReason::ViewerLeft),
                     Some(Ok(ControlMessage::Ping { token })) => {
                         self.send(&ControlMessage::Pong { token }).await?;
+                    }
+                    // Stream preferences only take effect once the stream starts.
+                    Some(Ok(ControlMessage::SetQuality(preset))) => {
+                        self.request.quality = Some(preset);
+                    }
+                    Some(Ok(ControlMessage::SetFrameRate(rate))) => {
+                        self.request.frame_rate = Some(rate);
                     }
                     // Anything else (input, requests) is ignored until the host user decides.
                     Some(Ok(_)) => {}
@@ -358,6 +404,7 @@ impl HostSession {
                 video,
                 status_updates,
             )));
+            self.stream = self.requested_stream();
             self.restart_capture().await;
         } else {
             self.status.input = if control_allowed {
@@ -399,12 +446,43 @@ impl HostSession {
 
         self.publish_status().await?;
         self.publish_displays().await?;
+        self.publish_frame_rate().await?;
         Ok(incoming_files)
     }
 
     async fn publish_status(&mut self) -> Result<(), SessionEndReason> {
         let _sent = self.events.send(HostEvent::SessionStatus(self.status));
         self.send(&ControlMessage::HostStatus(self.status)).await
+    }
+
+    /// Tells the viewer the frame rate the stream now runs at.
+    async fn publish_frame_rate(&mut self) -> Result<(), SessionEndReason> {
+        if self.capture.is_none() || self.reported_frame_rate == Some(self.stream.max_fps) {
+            return Ok(());
+        }
+        self.reported_frame_rate = Some(self.stream.max_fps);
+        let rate = u16::try_from(self.stream.max_fps).unwrap_or(u16::MAX);
+        self.send(&ControlMessage::FrameRate(rate)).await
+    }
+
+    /// The stream the viewer's requests call for on the active display.
+    fn requested_stream(&self) -> StreamSettings {
+        let refresh = self
+            .displays
+            .iter()
+            .find(|display| Some(display.id) == self.active_display)
+            .map_or(0, |display| display.refresh_rate);
+        stream_settings(self.request, refresh, self.options.stream)
+    }
+
+    /// Restarts capture if the viewer's requests changed the stream, and reports the result.
+    async fn apply_request(&mut self) -> Result<(), SessionEndReason> {
+        let settings = self.requested_stream();
+        if settings != self.stream {
+            self.stream = settings;
+            self.restart_capture().await;
+        }
+        self.publish_frame_rate().await
     }
 
     async fn publish_displays(&mut self) -> Result<(), SessionEndReason> {
@@ -435,7 +513,12 @@ impl HostSession {
             return;
         };
         let platform = self.platform.clone();
-        match spawn_capture_stream(move || platform.open_capturer(display), self.stream, frames) {
+        let settings = self.stream;
+        match spawn_capture_stream(
+            move || platform.open_capturer(display, settings),
+            settings,
+            frames,
+        ) {
             Ok(capture) => {
                 self.capture = Some(capture);
                 self.status.screen = Availability::Available;
@@ -477,9 +560,12 @@ impl HostSession {
                     if let Some(input) = &self.input {
                         input.push(InputCommand::SetGeometry(geometry(&display)));
                     }
+                    // The new display may refresh at a different rate.
+                    self.stream = self.requested_stream();
                     self.restart_capture().await;
                     self.publish_status().await?;
                     self.publish_displays().await?;
+                    self.publish_frame_rate().await?;
                 }
             }
             ControlMessage::SetAudio(enabled) => {
@@ -490,11 +576,12 @@ impl HostSession {
                 }
             }
             ControlMessage::SetQuality(preset) => {
-                let settings = stream_settings(preset, self.options.stream);
-                if settings != self.stream {
-                    self.stream = settings;
-                    self.restart_capture().await;
-                }
+                self.request.quality = Some(preset);
+                self.apply_request().await?;
+            }
+            ControlMessage::SetFrameRate(rate) => {
+                self.request.frame_rate = Some(rate);
+                self.apply_request().await?;
             }
             ControlMessage::Clipboard(text) => {
                 if let Some(clipboard) = &self.clipboard {
@@ -518,7 +605,8 @@ impl HostSession {
             ControlMessage::HostStatus(_)
             | ControlMessage::AwaitingApproval
             | ControlMessage::Declined
-            | ControlMessage::Displays { .. } => {
+            | ControlMessage::Displays { .. }
+            | ControlMessage::FrameRate(_) => {
                 return Err(SessionEndReason::ProtocolError(
                     "viewer sent a host message".into(),
                 ));
@@ -763,13 +851,64 @@ fn spawn_input_thread(
 mod tests {
     use super::*;
 
+    fn request(quality: Option<QualityPreset>, frame_rate: Option<u16>) -> ViewerRequest {
+        ViewerRequest {
+            quality,
+            frame_rate,
+        }
+    }
+
     #[test]
     fn quality_presets_scale_resolution_and_bitrate() {
         let base = StreamSettings::default();
-        let speed = stream_settings(QualityPreset::Speed, base);
-        let quality = stream_settings(QualityPreset::Quality, base);
+        let speed = stream_settings(request(Some(QualityPreset::Speed), None), 0, base);
+        let quality = stream_settings(request(Some(QualityPreset::Quality), None), 0, base);
         assert!(speed.max_long_edge < quality.max_long_edge);
         assert!(speed.bitrate_bps < quality.bitrate_bps);
         assert_eq!(speed.max_fps, base.max_fps);
+    }
+
+    #[test]
+    fn without_requests_the_host_settings_apply() {
+        let base = StreamSettings {
+            max_long_edge: 1600,
+            max_fps: 50,
+            bitrate_bps: 3_000_000,
+            hardware_encoder: false,
+        };
+        assert_eq!(stream_settings(ViewerRequest::default(), 120, base), base);
+        // A faster request scales the host's bitrate from the host's own frame rate.
+        let faster = stream_settings(request(None, Some(100)), 120, base);
+        assert!(faster.bitrate_bps > base.bitrate_bps && faster.bitrate_bps < 2 * base.bitrate_bps);
+    }
+
+    #[test]
+    fn frame_rate_follows_the_viewer_up_to_the_display_refresh() {
+        let base = StreamSettings::default();
+        let at = |rate, refresh| stream_settings(request(None, Some(rate)), refresh, base).max_fps;
+        assert_eq!(at(144, 120), 120);
+        assert_eq!(at(90, 120), 90);
+        assert_eq!(at(144, 0), 144, "an unknown refresh rate does not limit");
+        assert_eq!(at(60, 60), 60);
+    }
+
+    #[test]
+    fn bitrate_grows_with_the_frame_rate_but_less_than_proportionally() {
+        let base = StreamSettings::default();
+        let bitrate = |rate| {
+            stream_settings(request(Some(QualityPreset::Balanced), Some(rate)), 0, base).bitrate_bps
+        };
+        assert_eq!(bitrate(30), 4_000_000);
+        assert!(bitrate(60) > bitrate(30) && bitrate(60) < 2 * bitrate(30));
+        assert!(bitrate(144) > bitrate(120));
+        let fastest = stream_settings(
+            request(
+                Some(QualityPreset::Quality),
+                Some(dari_proto::MAX_FRAME_RATE),
+            ),
+            0,
+            base,
+        );
+        assert!(fastest.bitrate_bps <= MAX_BITRATE_BPS);
     }
 }

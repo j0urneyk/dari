@@ -76,6 +76,7 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
             client_name: "real-viewer".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            frame_rate: Some(144),
             downloads: None,
             audio: None,
             play_audio: false,
@@ -85,18 +86,28 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
     .await
     .expect("the viewer connects");
 
-    // The host must report both capabilities as working, not missing permissions.
+    // The host must report both capabilities as working, not missing permissions, and stream
+    // as fast as asked, up to the display's refresh rate. Without approval the stream starts
+    // before the request arrives, so the host may report its default rate first.
+    let expected = match display.refresh_rate {
+        0 => 144,
+        refresh => u16::try_from(refresh.min(144)).unwrap(),
+    };
     let status = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
+        let (mut status, mut frame_rate) = (None, None);
+        while status.is_none() || frame_rate != Some(expected) {
             match viewer_events.recv().await {
-                Some(ViewerEvent::HostStatus(status)) => break status,
+                Some(ViewerEvent::HostStatus(reported)) => status = Some(reported),
+                Some(ViewerEvent::FrameRate(rate)) => frame_rate = Some(rate),
                 Some(_) => {}
                 None => panic!("the session ended before reporting its status"),
             }
         }
+        status.unwrap()
     })
     .await
-    .expect("the host reports its status");
+    .expect("the host reports its status and streams at the display's refresh rate");
+    println!("streaming at up to {expected} fps");
     assert_eq!(
         status,
         HostStatus {

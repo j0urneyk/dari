@@ -10,6 +10,11 @@ use dari_session::ViewerTarget;
 /// UDP port hosts listen on unless configured otherwise.
 pub(crate) const DEFAULT_PORT: u16 = 47821;
 
+/// The frame rates the viewer offers. "Auto" picks from this display's refresh rate instead.
+pub(crate) const FRAME_RATE_CHOICES: [u16; 5] = [30, 60, 90, 120, 144];
+/// What "Auto" asks for when no display reports its refresh rate.
+const FALLBACK_FRAME_RATE: u16 = 60;
+
 /// Per-user directory for the device identity and settings.
 pub(crate) fn data_directory() -> anyhow::Result<PathBuf> {
     directories::ProjectDirs::from("dev", "dari", "dari")
@@ -77,6 +82,28 @@ pub(crate) async fn resolve_target(input: &str, relay: &str) -> anyhow::Result<V
     Ok(ViewerTarget::Direct(resolve_address(input).await?))
 }
 
+/// The frame rate "Auto" asks the host for: the fastest refresh rate among this machine's
+/// displays, since the viewer window may move to any of them, up to the highest choice offered.
+/// The host lowers it further to its own display's refresh rate.
+pub(crate) fn auto_frame_rate() -> u16 {
+    let refresh = dari_media::list_displays()
+        .unwrap_or_default()
+        .iter()
+        .map(|display| display.refresh_rate)
+        .max()
+        .unwrap_or(0);
+    auto_frame_rate_for(refresh)
+}
+
+fn auto_frame_rate_for(refresh_rate: u32) -> u16 {
+    let highest = FRAME_RATE_CHOICES[FRAME_RATE_CHOICES.len() - 1];
+    match u16::try_from(refresh_rate) {
+        Ok(0) => FALLBACK_FRAME_RATE,
+        Ok(refresh) => refresh.min(highest),
+        Err(_) => highest,
+    }
+}
+
 /// Addresses on this machine that other devices on the network can reach, best first.
 pub(crate) fn local_addresses() -> Vec<IpAddr> {
     let mut addresses: Vec<IpAddr> = if_addrs::get_if_addrs()
@@ -115,6 +142,15 @@ mod tests {
         );
         assert_eq!(resolve_address("localhost:9").await.unwrap().port(), 9);
         assert!(resolve_address("").await.is_err());
+    }
+
+    #[test]
+    fn auto_frame_rate_follows_the_display_up_to_the_highest_choice() {
+        assert_eq!(auto_frame_rate_for(0), FALLBACK_FRAME_RATE);
+        assert_eq!(auto_frame_rate_for(60), 60);
+        assert_eq!(auto_frame_rate_for(120), 120);
+        assert_eq!(auto_frame_rate_for(240), 144);
+        assert_eq!(auto_frame_rate_for(u32::MAX), 144);
     }
 
     #[test]
