@@ -143,6 +143,33 @@ macroblock rate, and 2560×1662 at 144 fps comes out as level 6.0, whose paramet
 encoder lowers the SPS's `level_idc` to 5.2. The level only states a throughput, and frame size and reference
 frames stay within 5.2's limits.
 
+Turning real-time mode off costs little power. While streaming, the media engine (the `AVE` channel of IOReport's
+energy counters, the source `powermetrics` reads, which needs no sudo) draws 0.06–0.2 W with real-time mode off.
+Real-time mode saves 0.04–0.1 W of that, at most 0.1 Wh per hour of streaming, and it saves it by lowering the
+clock, which is where the latency comes from. Every frame gets slower, including isolated ones and frames of slow
+streams, so real-time mode can't be enabled only for low frame rates: a keystroke on a still screen would take more
+than twice as long to encode. `MaximizePowerEfficiency` behaves the same way (12 ms isolated frames, 99–122 fps from
+the 144 Hz source). Real-time mode with `ExpectedFrameRate` raised to 240 kept 30 fps frames at 4.9 ms, but isolated
+frames still took 12.5 ms and the 144 Hz source reached only 107 fps. GPU, DRAM, and CPU power differed by less
+than the noise, and the stream's own CPU energy stays under 10 mW. Measured on the same M5 with nothing else
+running, averaged over 10 s after a 4 s warm-up (test source) or from 6 s on (screen):
+
+| Workload | Real-time off | Real-time on |
+| --- | --- | --- |
+| 1920×1246, test source at 2 fps (isolated frames) | 5.5 ms, 0.064 W | 12.6 ms, 0.018 W |
+| 1920×1246, test source at 30 fps | 4.7 ms, 0.079 W | 9.8 ms, 0.040 W |
+| 1920×1246, test source at 60 fps | 4.5 ms, 0.094 W | 10.8 ms, 0.041 W |
+| 1920×1246, test source at 144 fps | 144 fps, 4.5 ms, 0.138 W | 106 fps, 14 ms, 0.068 W |
+| 2560×1662, test source at 2 fps (isolated frames) | 8.5 ms, 0.065 W | 19.8 ms, 0.020 W |
+| 2560×1662, test source at 30 fps | 7.6 ms, 0.091 W | 18.2 ms, 0.039 W |
+| 2560×1662, test source at 144 fps | 144 fps, 8.0 ms, 0.200 W | 95 fps, 18 ms, 0.121 W |
+| 1920×1246, screen at 30 fps (`capture_bench`) | 7.9 ms, 0.084 W | 11.5–13.3 ms, 0.033–0.049 W |
+| 1920×1246, screen at 144 fps | 118 fps, 7.7 ms, 0.135 W | 98 fps, 14.5 ms, 0.057 W |
+| 2560×1662, screen at 120 fps | 109 fps, 12.4 ms, 0.173 W | 66 fps, 24.7 ms, 0.057 W |
+
+The clock only drops when the rest of the Mac is quiet. With a virtual machine and compilers keeping the CPU near
+20 W, real-time mode kept full speed and both modes measured the same, so compare the modes on an idle machine.
+
 If VideoToolbox fails, the encoder falls back to OpenH264 for the rest of the stream and carries on with a keyframe.
 Frames still in flight are delivered first, and anything VideoToolbox outputs after a failed frame is dropped. On a
 still screen the thread re-encodes its last frame so the picture is not lost. When the capture resolution changes,
