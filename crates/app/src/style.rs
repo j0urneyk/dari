@@ -125,7 +125,20 @@ fn brand(dark: bool) -> Hsla {
     if dark { hex(0x3B82F6) } else { hex(0x2563EB) }
 }
 
+/// The opaque color Dari's surfaces are made of. The theme's own background is transparent, so
+/// gpui-kit's root leaves the window clear and what is behind it can show through.
+fn base(dark: bool) -> Hsla {
+    if dark { hex(0x1A1B1F) } else { hex(0xFFFFFF) }
+}
+
+/// An opaque surface, for cards and controls that float over translucent ones.
+pub(crate) fn surface(cx: &App) -> Hsla {
+    base(cx.theme().is_dark())
+}
+
 fn paint(theme: &mut Theme, dark: bool) {
+    // gpui-kit's root sets each window's rem from this on every frame.
+    theme.font_size = REM;
     theme.radius = px(7.);
     theme.radius_lg = px(12.);
     theme.shadow = false;
@@ -146,7 +159,7 @@ fn paint(theme: &mut Theme, dark: bool) {
     colors.link_hover = colors.primary_hover;
     colors.link_active = colors.primary_active;
     if dark {
-        colors.background = hex(0x1A1B1F);
+        colors.background = transparent_black();
         colors.foreground = hex(0xE6E7EA);
         colors.border = hex(0x2B2D32);
         colors.input = hex(0x34363C);
@@ -163,7 +176,8 @@ fn paint(theme: &mut Theme, dark: bool) {
         colors.warning = hex(0xFBBF24);
         colors.danger = hex(0xF87171);
     } else {
-        colors.background = hex(0xFFFFFF);
+        colors.background = transparent_black();
+        colors.switch_thumb = hex(0xFFFFFF);
         colors.foreground = hex(0x18191C);
         colors.border = hex(0xE7E8EB);
         colors.input = hex(0xDCDEE2);
@@ -196,9 +210,7 @@ pub(crate) fn sidebar_surface(over_picture: bool, cx: &App) -> Hsla {
 /// The main content's surface: translucent enough to show what is behind it, opaque enough
 /// that text stays crisp.
 pub(crate) fn content_surface(over_picture: bool, cx: &App) -> Hsla {
-    cx.theme()
-        .background
-        .opacity(if over_picture { 0.74 } else { 0.86 })
+    surface(cx).opacity(if over_picture { 0.74 } else { 0.86 })
 }
 
 /// A wash for hovered rows; [`selected_fill`] is one step stronger.
@@ -446,10 +458,7 @@ pub(crate) fn segment(
             .child(label.into()),
     );
     if selected {
-        segment
-            .bg(cx.theme().background)
-            .text_color(foreground)
-            .shadow_xs()
+        segment.bg(surface(cx)).text_color(foreground).shadow_xs()
     } else {
         segment
             .text_color(cx.theme().muted_foreground)

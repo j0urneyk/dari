@@ -584,7 +584,7 @@ fn overlay_card(icon: impl Into<Icon>, color: Hsla, cx: &App) -> Div {
         .w(px(360.))
         .p_6()
         .rounded(cx.theme().radius_lg)
-        .bg(cx.theme().background)
+        .bg(style::surface(cx))
         .border_1()
         .border_color(cx.theme().border)
         .shadow_lg()
@@ -603,8 +603,7 @@ fn remote_button(button: MouseButton) -> RemoteButton {
 }
 
 impl Render for ViewerView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_rem_size(style::REM);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let image = self.image.clone();
         let frame_size = self.frame_size;
         let picture = self.picture.clone();
@@ -662,7 +661,6 @@ impl Render for ViewerView {
         div()
             .v_flex()
             .size_full()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_toolbar(cx))
             .child(surface)

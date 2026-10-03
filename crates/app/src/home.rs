@@ -416,8 +416,7 @@ impl Home {
 }
 
 impl Render for Home {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_rem_size(style::REM);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page: AnyView = match self.page {
             Page::Device => self.host.clone().into(),
             Page::Connect => self.connect.clone().into(),
