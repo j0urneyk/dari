@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dari_proto::{
-    CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, StreamKind, TransferId,
-    VIDEO_FRAME_LIMIT, VideoPacket,
+    AudioPacket, CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, StreamKind, TransferId,
+    VIDEO_FRAME_LIMIT, Validate, VideoPacket,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -196,6 +196,29 @@ impl SessionStreams {
                 }
                 Err(StreamError::Io(_)) if self.connection.close_reason().is_none() => {}
                 Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Host side: sends one audio packet as a datagram. When the network can't keep up, quinn
+    /// drops the oldest unsent datagrams, which is what late audio deserves.
+    pub fn send_audio(&self, packet: &AudioPacket) -> Result<(), StreamError> {
+        let datagram = postcard::to_allocvec(packet).map_err(std::io::Error::other)?;
+        self.connection
+            .send_datagram(datagram.into())
+            .map_err(|error| match error {
+                quinn::SendDatagramError::ConnectionLost(error) => StreamError::Connection(error),
+                other => StreamError::Io(std::io::Error::other(other)),
+            })
+    }
+
+    /// Viewer side: the next valid audio packet from the host. Malformed datagrams are skipped.
+    pub async fn receive_audio(&self) -> Result<AudioPacket, StreamError> {
+        loop {
+            let datagram = self.connection.read_datagram().await?;
+            match postcard::from_bytes::<AudioPacket>(&datagram) {
+                Ok(packet) if packet.validate().is_ok() => return Ok(packet),
+                _ => tracing::debug!(len = datagram.len(), "dropping a malformed audio datagram"),
             }
         }
     }

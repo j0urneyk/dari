@@ -14,7 +14,8 @@ use dari_net::DeviceIdentity;
 use dari_proto::{Availability, HostStatus, KeyCode, MouseButton, NamedKey, Os};
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostHandle,
-    HostPlatform, RelayStatus, SessionEndReason, SystemClipboard, SystemPlatform, start_host,
+    HostPlatform, HostPolicy, RelayStatus, SessionEndReason, SystemClipboard, SystemPlatform,
+    start_host,
 };
 use enigo::{Coordinate, Enigo, Mouse as _, Settings};
 use tokio::sync::mpsc;
@@ -245,9 +246,12 @@ pub(crate) async fn run(args: HostArgs) -> anyhow::Result<ExitCode> {
             bind_address: (Ipv6Addr::UNSPECIFIED, args.port).into(),
             host_name: crate::device_name(),
             stream: StreamSettings::default(),
-            require_approval: true,
-            clipboard: true,
-            file_transfer: false,
+            policy: HostPolicy {
+                require_approval: true,
+                clipboard: true,
+                file_transfer: false,
+                audio: false,
+            },
             downloads: None,
             relay: args.relay.clone(),
         },

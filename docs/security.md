@@ -93,6 +93,14 @@ stops its own clipboard sharing and refuses to send or accept files too.
 The headless CLI host (`dari host`) has nobody to approve requests, so it gives control to any viewer that knows the
 password and turns off the clipboard and file transfer. Use it only on servers or for testing.
 
+## Audio
+
+System audio can carry private sound (calls, notifications), so the host shares it only while **Share sound** is on,
+and only after the session was approved and the viewer asked with `SetAudio(true)`. Nothing is recorded while the
+host user decides. View-only viewers hear the host too, the same way they see its screen; turn **Share sound** off
+to prevent that. Audio travels as datagrams from host to viewer only: hosts announce a one-byte datagram limit, so a
+viewer can't send them any. Each datagram is decoded and validated (at most 1,276 bytes of Opus) before playback.
+
 ## File transfer safety
 
 - **Who may transfer:** files flow only in sessions that allow control, with file transfer on at the host. A viewer

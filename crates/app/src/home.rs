@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dari_media::StreamSettings;
+use dari_media::{StreamSettings, SystemAudioOutput};
 use dari_net::{
     AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
     NearbyDevice, PeerInfo, fingerprint_hint,
@@ -245,9 +245,7 @@ impl HostPanel {
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, AppState::settings(cx).port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
-            require_approval: AppState::settings(cx).require_approval,
-            clipboard: AppState::settings(cx).clipboard_sync,
-            file_transfer: AppState::settings(cx).file_transfer,
+            policy: AppState::settings(cx).host_policy(),
             downloads: downloads_directory(),
             relay: Some(AppState::settings(cx).relay_address.clone())
                 .filter(|relay| !relay.is_empty()),
@@ -412,11 +410,7 @@ impl HostPanel {
         AppState::update_settings(cx, change);
         let settings = AppState::settings(cx).clone();
         if let Hosting::Running(handle) = &self.hosting {
-            handle.set_policy(
-                settings.require_approval,
-                settings.clipboard_sync,
-                settings.file_transfer,
-            );
+            handle.set_policy(settings.host_policy());
             let port = handle.local_address().port();
             self.update_advertisement(port, cx);
         }
@@ -499,6 +493,15 @@ impl HostPanel {
                     .on_change(cx.listener(|this, checked: &bool, _, cx| {
                         let checked = *checked;
                         this.set_policy(|settings| settings.file_transfer = checked, cx);
+                    })),
+            )
+            .child(
+                Switch::new("policy-audio")
+                    .label(text().share_audio)
+                    .checked(settings.share_audio)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.set_policy(|settings| settings.share_audio = checked, cx);
                     })),
             )
             .child(
@@ -896,6 +899,7 @@ impl ConnectPanel {
 
         let map_shortcut_modifier = AppState::settings(cx).map_shortcut_modifier;
         let clipboard_sync = AppState::settings(cx).clipboard_sync;
+        let play_audio = AppState::settings(cx).play_audio;
         let relay = AppState::settings(cx).relay_address.clone();
         let target = address_text.clone();
         let attempt = TokioRuntime::spawn(cx, async move {
@@ -908,6 +912,8 @@ impl ConnectPanel {
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),
                 downloads: downloads_directory(),
+                audio: Some(SystemAudioOutput::factory()),
+                play_audio,
             };
             connect_viewer(config, &password)
                 .await

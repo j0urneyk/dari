@@ -1,15 +1,15 @@
-//! The viewer side: authenticate, decode the host's screen, and send input.
+//! The viewer side: authenticate, decode the host's screen, play its audio, and send input.
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use dari_input::ModifierMapping;
-use dari_media::{DecodedFrame, VideoDecoder};
+use dari_media::{AudioOutputFactory, AudioPlayer, DecodedFrame, VideoDecoder};
 use dari_net::{
     AccessPassword, ConnectError, FileReceiver, IncomingStream, MessageReceiver, PeerInfo,
     SessionLink, SessionStreams, StreamError, connect, connect_via_relay,
@@ -47,6 +47,10 @@ pub struct ViewerConfig {
     pub clipboard: Option<ClipboardFactory>,
     /// Where files from the host are saved once the user accepts them; `None` declines them.
     pub downloads: Option<PathBuf>,
+    /// Plays the host's system audio; `None` never asks the host for it.
+    pub audio: Option<AudioOutputFactory>,
+    /// Whether audio plays from the start (see [`ViewerHandle::set_audio`]).
+    pub play_audio: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +90,8 @@ impl std::fmt::Debug for ViewerConfig {
             .field("map_shortcut_modifier", &self.map_shortcut_modifier)
             .field("clipboard", &self.clipboard.is_some())
             .field("downloads", &self.downloads)
+            .field("audio", &self.audio.is_some())
+            .field("play_audio", &self.play_audio)
             .finish()
     }
 }
@@ -105,6 +111,7 @@ enum Outgoing {
     Clipboard(String),
     /// A file transfer message.
     Transfer(ControlMessage),
+    SetAudio(bool),
     Disconnect,
 }
 
@@ -117,6 +124,8 @@ pub struct ViewerHandle {
     stats: Arc<ViewerStats>,
     link: Arc<SessionLink>,
     transfers: mpsc::UnboundedSender<TransferCommand>,
+    /// `None` when the viewer has no audio output.
+    audio_enabled: Option<Arc<AtomicBool>>,
     supervisor: JoinHandle<()>,
 }
 
@@ -129,6 +138,7 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::SetQuality(_) => "SetQuality",
             Outgoing::Clipboard(_) => "Clipboard",
             Outgoing::Transfer(_) => "Transfer",
+            Outgoing::SetAudio(_) => "SetAudio",
             Outgoing::Disconnect => "Disconnect",
         })
     }
@@ -186,6 +196,14 @@ impl ViewerHandle {
         let _sent = self.transfers.send(TransferCommand::Cancel(id));
     }
 
+    /// Turns the host's audio on or off. Off, the host stops capturing it altogether.
+    pub fn set_audio(&self, enabled: bool) {
+        if let Some(audio_enabled) = &self.audio_enabled {
+            audio_enabled.store(enabled, Ordering::Relaxed);
+            let _sent = self.outgoing.try_send(Outgoing::SetAudio(enabled));
+        }
+    }
+
     /// Tells the host the session is over and closes the connection.
     pub fn disconnect(&self) {
         let _sent = self.outgoing.try_send(Outgoing::Disconnect);
@@ -232,6 +250,11 @@ pub async fn connect_viewer(
     let (events, event_receiver) = mpsc::unbounded_channel();
     let stats = Arc::new(ViewerStats::default());
     let (transfers, transfer_commands) = mpsc::unbounded_channel();
+    let audio = config.audio.map(|output| ViewerAudio {
+        output,
+        enabled: Arc::new(AtomicBool::new(config.play_audio)),
+    });
+    let audio_enabled = audio.as_ref().map(|audio| audio.enabled.clone());
 
     let supervisor = tokio::spawn(supervise(
         link.clone(),
@@ -246,6 +269,7 @@ pub async fn connect_viewer(
         config.clipboard,
         config.downloads,
         transfer_commands,
+        audio,
     ));
     Ok((
         ViewerHandle {
@@ -255,6 +279,7 @@ pub async fn connect_viewer(
             stats,
             link,
             transfers,
+            audio_enabled,
             supervisor,
         },
         event_receiver,
@@ -278,7 +303,11 @@ async fn supervise(
     clipboard_factory: Option<ClipboardFactory>,
     downloads: Option<PathBuf>,
     mut transfer_commands: mpsc::UnboundedReceiver<TransferCommand>,
+    audio: Option<ViewerAudio>,
 ) {
+    let audio_task = audio
+        .as_ref()
+        .map(|audio| tokio::spawn(receive_audio(link.streams(), audio.clone())));
     let mut writer = tokio::spawn(write_control(control_sender, outgoing_receiver, mapping));
     let (files, mut incoming_files) = mpsc::channel(4);
     let mut streams = Some(tokio::spawn(receive_streams(
@@ -296,6 +325,7 @@ async fn supervise(
         clipboard_factory,
         clipboard_out,
         downloads,
+        audio,
     );
 
     let reason = loop {
@@ -361,6 +391,9 @@ async fn supervise(
     if let Some(streams) = streams {
         streams.abort();
     }
+    if let Some(audio_task) = audio_task {
+        audio_task.abort();
+    }
     session.transfers.shut_down().await;
     if reason == SessionEndReason::ViewerLeft {
         // Closing now would discard a Disconnect still in flight; the host closes the
@@ -387,6 +420,7 @@ async fn write_control(
             Outgoing::SetQuality(preset) => ControlMessage::SetQuality(preset),
             Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
             Outgoing::Transfer(message) => message,
+            Outgoing::SetAudio(enabled) => ControlMessage::SetAudio(enabled),
             Outgoing::Disconnect => {
                 let _sent = control.send(&ControlMessage::Disconnect).await;
                 let _closed = control.close().await;
@@ -409,6 +443,16 @@ struct ViewerSession {
     clipboard_factory: Option<ClipboardFactory>,
     clipboard_out: mpsc::Sender<String>,
     transfers: Transfers,
+    audio: Option<ViewerAudio>,
+    /// Whether the host was already told whether to send audio.
+    audio_requested: bool,
+}
+
+/// The viewer's audio output and whether the user wants sound.
+#[derive(Clone)]
+struct ViewerAudio {
+    output: AudioOutputFactory,
+    enabled: Arc<AtomicBool>,
 }
 
 impl ViewerSession {
@@ -419,6 +463,7 @@ impl ViewerSession {
         clipboard_factory: Option<ClipboardFactory>,
         clipboard_out: mpsc::Sender<String>,
         downloads: Option<PathBuf>,
+        audio: Option<ViewerAudio>,
     ) -> (Self, mpsc::UnboundedReceiver<TransferStep>) {
         let transfer_events = events.clone();
         let (transfers, steps) = Transfers::new(
@@ -441,6 +486,8 @@ impl ViewerSession {
             clipboard_factory,
             clipboard_out,
             transfers,
+            audio,
+            audio_requested: false,
         };
         (session, steps)
     }
@@ -458,6 +505,16 @@ impl ViewerSession {
                     self.clipboard = self.clipboard_factory.clone().and_then(|factory| {
                         ClipboardSync::start(factory, self.clipboard_out.clone())
                     });
+                }
+                // Hosts capture audio only for viewers that ask, once they can share it.
+                if status.audio == Availability::Available
+                    && !self.audio_requested
+                    && let Some(audio) = &self.audio
+                {
+                    self.audio_requested = true;
+                    if audio.enabled.load(Ordering::Relaxed) {
+                        let _sent = self.outgoing.try_send(Outgoing::SetAudio(true));
+                    }
                 }
                 let _sent = self.events.send(ViewerEvent::HostStatus(status));
             }
@@ -489,7 +546,8 @@ impl ViewerSession {
             ControlMessage::Input(_)
             | ControlMessage::RequestKeyframe
             | ControlMessage::SelectDisplay(_)
-            | ControlMessage::SetQuality(_) => {
+            | ControlMessage::SetQuality(_)
+            | ControlMessage::SetAudio(_) => {
                 return Err(SessionEndReason::ProtocolError(
                     "host sent a viewer message".into(),
                 ));
@@ -504,6 +562,31 @@ impl ViewerSession {
             let _sent = self.outgoing.send(Outgoing::Transfer(message)).await;
         }
     }
+}
+
+/// Plays the host's audio datagrams for the whole session, dropping them while muted. The
+/// output device opens with the first packet, so sessions without sound never hold it.
+async fn receive_audio(streams: SessionStreams, audio: ViewerAudio) {
+    let mut player = None;
+    while let Ok(packet) = streams.receive_audio().await {
+        if !audio.enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+        if player.is_none() {
+            match AudioPlayer::start(audio.output.clone()) {
+                Ok(started) => player = Some(started),
+                Err(error) => {
+                    warn!(%error, "cannot start audio playback");
+                    return;
+                }
+            }
+        }
+        if let Some(player) = &player {
+            player.push(packet.sequence, packet.data);
+        }
+    }
+    // Dropping joins the playback thread.
+    let _joined = tokio::task::spawn_blocking(move || drop(player)).await;
 }
 
 type VideoTask = Pin<Box<dyn Future<Output = Result<(), SessionEndReason>> + Send>>;

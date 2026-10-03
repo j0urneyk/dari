@@ -3,6 +3,7 @@
 //! This crate defines every message exchanged over a session, the protocol version rules,
 //! and a length-bounded framing codec. It performs no I/O of its own.
 
+mod audio;
 mod codec;
 mod control;
 mod handshake;
@@ -14,6 +15,7 @@ mod validate;
 mod version;
 mod video;
 
+pub use audio::{AudioPacket, MAX_AUDIO_PACKET_BYTES};
 pub use codec::{
     CONTROL_FRAME_LIMIT, CodecError, HANDSHAKE_FRAME_LIMIT, MessageCodec, VIDEO_FRAME_LIMIT,
 };

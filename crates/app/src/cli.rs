@@ -15,8 +15,8 @@ use anyhow::Context as _;
 use dari_media::StreamSettings;
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_session::{
-    HostConfig, HostEvent, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent, connect_viewer,
-    start_host,
+    HostConfig, HostEvent, HostPolicy, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent,
+    connect_viewer, start_host,
 };
 
 use crate::config::{data_directory, device_name, local_addresses, resolve_target};
@@ -28,11 +28,14 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
-            // The headless host has no one to ask; anyone with the password gets control.
-            require_approval: false,
-            clipboard: false,
-            // Files would land on this machine without anyone choosing to accept them.
-            file_transfer: false,
+            policy: HostPolicy {
+                // The headless host has no one to ask; anyone with the password gets control.
+                require_approval: false,
+                clipboard: false,
+                // Files would land on this machine without anyone choosing to accept them.
+                file_transfer: false,
+                audio: true,
+            },
             downloads: None,
             relay,
         },
@@ -108,6 +111,8 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
             map_shortcut_modifier: true,
             clipboard: None,
             downloads: None,
+            audio: None,
+            play_audio: false,
         },
         &password,
     )

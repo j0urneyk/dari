@@ -13,7 +13,7 @@ use dari_net::{
     AccessPassword, ConnectError, DeviceIdentity, HandshakeError, HostEndpoint, HostSettings,
     IncomingStream, connect,
 };
-use dari_proto::{ControlMessage, RejectReason, TransferId, VideoPacket};
+use dari_proto::{AudioPacket, ControlMessage, RejectReason, TransferId, VideoPacket};
 use futures_util::{SinkExt, StreamExt};
 
 fn host() -> HostEndpoint {
@@ -321,4 +321,28 @@ async fn a_stream_reset_before_its_header_is_skipped() {
             other => panic!("unexpected {other:?}"),
         }
     }
+}
+
+#[tokio::test]
+async fn audio_datagrams_flow_only_from_host_to_viewer() {
+    let (_host, viewer, hosted) = session_pair().await;
+    let (viewer_link, _viewer_tx, _viewer_rx) = viewer.split();
+    let (host_link, _host_tx, _host_rx) = hosted.split();
+
+    let packet = AudioPacket {
+        sequence: 9,
+        data: vec![0xfc; 300],
+    };
+    host_link.streams().send_audio(&packet).unwrap();
+    let received = tokio::time::timeout(
+        Duration::from_secs(5),
+        viewer_link.streams().receive_audio(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(received, packet);
+
+    // Hosts accept no datagrams, so a viewer can't push audio (or anything else) that way.
+    assert!(viewer_link.streams().send_audio(&packet).is_err());
 }

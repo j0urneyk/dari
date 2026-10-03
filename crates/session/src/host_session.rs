@@ -1,4 +1,5 @@
-//! Serving one authenticated viewer: approval, screen streaming, input, and clipboard.
+//! Serving one authenticated viewer: approval, screen and audio streaming, input, clipboard,
+//! and files.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,15 +8,15 @@ use std::time::{Duration, Instant};
 
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
-    CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError, StreamSettings,
-    spawn_capture_stream,
+    AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError,
+    StreamSettings, spawn_audio_stream, spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
     PeerInfo, SessionLink, SessionStreams,
 };
 use dari_proto::{
-    Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
+    AudioPacket, Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
     MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, TransferId, VideoPacket,
     sanitize_display_text,
 };
@@ -26,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use crate::SessionEndReason;
 use crate::clipboard::ClipboardSync;
-use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent};
+use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent, HostPolicy};
 use crate::platform::HostPlatform;
 use crate::transfer::{
     PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
@@ -38,14 +39,14 @@ pub(crate) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30);
 const DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 /// Input events buffered for injection; beyond this the viewer is flooding and events drop.
 const INPUT_QUEUE: usize = 256;
+/// Encoded audio packets waiting to be sent; more means the network is stalled.
+const AUDIO_QUEUE: usize = 16;
 
 /// How a host serves its viewers.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionOptions {
     pub(crate) stream: StreamSettings,
-    pub(crate) require_approval: bool,
-    pub(crate) clipboard: bool,
-    pub(crate) file_transfer: bool,
+    pub(crate) policy: HostPolicy,
     /// Where files from the viewer are saved.
     pub(crate) downloads: Option<PathBuf>,
 }
@@ -103,6 +104,7 @@ pub(crate) async fn serve_viewer(
             screen: Availability::Unavailable,
             input: Availability::Unavailable,
             files: Availability::Unavailable,
+            audio: Availability::Unavailable,
         },
         displays: Vec::new(),
         active_display: None,
@@ -112,6 +114,7 @@ pub(crate) async fn serve_viewer(
         capture: None,
         frames: None,
         pump: None,
+        audio: None,
         clipboard: None,
     };
 
@@ -152,7 +155,15 @@ struct HostSession {
     /// Feeds the video pump; each capture stream gets a clone.
     frames: Option<mpsc::Sender<Result<EncodedFrame, StreamError>>>,
     pump: Option<JoinHandle<Result<(), String>>>,
+    /// System audio, while the viewer asks for it.
+    audio: Option<SharedAudio>,
     clipboard: Option<ClipboardSync>,
+}
+
+/// The audio capture thread and the task sending its packets as datagrams.
+struct SharedAudio {
+    capture: AudioStream,
+    sender: JoinHandle<()>,
 }
 
 impl HostSession {
@@ -171,7 +182,7 @@ impl HostSession {
         control: &mut MessageReceiver<ControlMessage>,
         end: &mut oneshot::Receiver<()>,
     ) -> Result<ApprovalDecision, SessionEndReason> {
-        if !self.options.require_approval {
+        if !self.options.policy.require_approval {
             return Ok(ApprovalDecision::AllowControl);
         }
         self.send(&ControlMessage::AwaitingApproval).await?;
@@ -356,7 +367,7 @@ impl HostSession {
             };
         }
 
-        if control_allowed && self.options.clipboard {
+        if control_allowed && self.options.policy.clipboard {
             let factory = self.platform.clipboard();
             self.clipboard =
                 factory.and_then(|factory| ClipboardSync::start(factory, clipboard_out));
@@ -365,7 +376,7 @@ impl HostSession {
         let incoming_files = if !control_allowed {
             self.status.files = Availability::NotAllowed;
             None
-        } else if self.options.file_transfer && self.options.downloads.is_some() {
+        } else if self.options.policy.file_transfer && self.options.downloads.is_some() {
             self.status.files = Availability::Available;
             self.transfers.set_allowed(true);
             let streams = self.link.streams();
@@ -376,6 +387,14 @@ impl HostSession {
         } else {
             self.status.files = Availability::Unavailable;
             None
+        };
+
+        // Audio is output like the screen, so view-only viewers may have it too. It starts only
+        // once the viewer asks.
+        self.status.audio = if self.options.policy.audio {
+            Availability::Available
+        } else {
+            Availability::Unavailable
         };
 
         self.publish_status().await?;
@@ -463,6 +482,13 @@ impl HostSession {
                     self.publish_displays().await?;
                 }
             }
+            ControlMessage::SetAudio(enabled) => {
+                if enabled {
+                    self.start_audio().await?;
+                } else {
+                    self.stop_audio().await;
+                }
+            }
             ControlMessage::SetQuality(preset) => {
                 let settings = stream_settings(preset, self.options.stream);
                 if settings != self.stream {
@@ -501,10 +527,62 @@ impl HostSession {
         Ok(())
     }
 
+    /// Starts sharing system audio if the policy allows it and it isn't running yet. If the
+    /// platform can't capture, the viewer is told through `HostStatus.audio`.
+    async fn start_audio(&mut self) -> Result<(), SessionEndReason> {
+        if self.status.audio != Availability::Available {
+            return Ok(());
+        }
+        match &self.audio {
+            // The sender ends when the capture thread stopped (e.g. the device went away).
+            Some(audio) if !audio.sender.is_finished() => return Ok(()),
+            Some(_) => self.stop_audio().await,
+            None => {}
+        }
+        let (packets, mut encoded) = mpsc::channel(AUDIO_QUEUE);
+        let platform = self.platform.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            spawn_audio_stream(move || platform.open_audio(), packets)
+        })
+        .await
+        .unwrap_or_else(|error| Err(AudioError::Device(error.to_string())));
+        match opened {
+            Ok(capture) => {
+                let streams = self.link.streams();
+                let sender = tokio::spawn(async move {
+                    let mut sequence = 0u32;
+                    while let Some(data) = encoded.recv().await {
+                        let packet = AudioPacket { sequence, data };
+                        sequence = sequence.wrapping_add(1);
+                        if let Err(error) = streams.send_audio(&packet) {
+                            debug!(%error, "cannot send audio");
+                        }
+                    }
+                });
+                self.audio = Some(SharedAudio { capture, sender });
+                Ok(())
+            }
+            Err(error) => {
+                warn!(%error, "system audio is unavailable");
+                self.status.audio = Availability::Unavailable;
+                self.publish_status().await
+            }
+        }
+    }
+
+    async fn stop_audio(&mut self) {
+        if let Some(audio) = self.audio.take() {
+            audio.sender.abort();
+            // Stopping joins the capture thread; keep that off the async workers.
+            let _joined = tokio::task::spawn_blocking(move || audio.capture.stop()).await;
+        }
+    }
+
     async fn shut_down(mut self, reason: &SessionEndReason) {
         if let Some(pump) = self.pump.take() {
             pump.abort();
         }
+        self.stop_audio().await;
         // Stopping joins the capture thread; keep that off the async workers.
         if let Some(capture) = self.capture.take() {
             let _joined = tokio::task::spawn_blocking(move || capture.stop()).await;

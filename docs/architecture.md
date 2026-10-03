@@ -17,7 +17,7 @@ dari-relay ──► dari-net, dari-proto
 | --- | --- | --- | --- |
 | `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
-| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, paced capture thread | xcap, fast_image_resize, openh264 |
+| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, paced capture thread, system audio capture, Opus, playback | xcap, fast_image_resize, openh264, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
@@ -34,6 +34,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Authentication and crypto | `spake2`, `hmac`, `sha2`, `subtle`, `zeroize`, `getrandom` |
 | Serialization | `serde`, `postcard` |
 | Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize` |
+| System audio | `cpal` (WASAPI loopback, Core Audio process tap, playback), `opus-rs` (pure-Rust Opus) |
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
 | Settings, logging, errors, CLI | `directories`, `toml`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `clap`, `sys-locale` |
@@ -52,6 +53,10 @@ Work that is CPU-heavy or uses blocking APIs runs on dedicated OS threads.
   aren't `Send`, so they're opened inside the thread through a factory closure.
 - **Input thread** (host): injects received input events with enigo. The enigo backend stays on this thread too.
 - **Decode thread** (viewer): decodes H.264 to BGRA and publishes only the latest frame on a `watch` channel.
+- **Audio capture thread** (host): reads the cpal loopback stream, maps it to 48 kHz stereo, and encodes 20 ms Opus
+  packets. A task sends them as datagrams. It runs only while the viewer asks for audio.
+- **Audio playback thread** (viewer): decodes Opus packets (concealing lost ones), converts them to the output
+  device's rate and channels, and feeds a jitter buffer that the device's callback drains.
 
 ## Host flow
 
@@ -129,6 +134,15 @@ and returns a `ViewerHandle` and a `ViewerEvent` channel.
 - Clipboard sharing turns on only when the host allows control, and turns off if the host later reports view-only.
 - One task accepts every unidirectional stream the host opens for the whole session and routes it by its kind: the
   video stream to the decoder, file streams to the session's transfers.
+
+## Audio
+
+`dari-media`'s `audio.rs` holds the pipeline and `HostPlatform::open_audio` opens the capturer, so tests use a
+synthetic tone. cpal records system output with a Core Audio process tap on macOS, whose functions exist only from
+macOS 14.2. The app's `build.rs` therefore weak-links Core Audio, which keeps the app launching on macOS 12 and 13,
+and `SystemAudioCapturer::open` refuses below macOS 14.6 without touching those functions (a unit test checks the
+binary's Core Audio link is weak). Devices nearly always run at 48 kHz; other rates are converted by linear
+interpolation.
 
 ## File transfer
 

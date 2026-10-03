@@ -32,6 +32,7 @@ message is handed to the caller only after it passes `Validate`.
 | Handshake | `HandshakeMessage` | 4 KiB | Bidirectional stream opened by the viewer |
 | Control | `ControlMessage` | 2 MiB | The handshake stream, reused once authenticated |
 | Video | `VideoPacket` | 16 MiB | Unidirectional stream opened by the host |
+| Audio | `AudioPacket` | One QUIC datagram (no length prefix) | Datagrams from the host |
 | Relay control | `RelayRequest` / `RelayResponse` | 2 MiB | Bidirectional stream to the relay (ALPN `dari-relay/2`) |
 
 The control channel's 2 MiB limit leaves room for clipboard text of up to 1 MiB, which travels on the same channel.
@@ -102,13 +103,14 @@ that hasn't been sent yet.
 | `Displays { displays, active }` | Host → viewer | Displays that can be shown (at most 16) and the current one |
 | `SelectDisplay(id)` | Viewer → host | Switch to another display |
 | `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
+| `SetAudio(on)` | Viewer → host | Start or stop sending system audio. Hosts send none until asked |
 | `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
 | `FileOffer { id, name, size }` | Both | The sender would like to transfer a file (see below) |
 | `FileAccept(id)` | Both | The receiver accepted; the sender opens the file's stream |
 | `FileDone(id)` | Both | The receiver saved the whole file |
 | `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
 
-`HostStatus` reports `screen`, `input`, and `files`. `Availability` is one of `Available`, `PermissionDenied`
+`HostStatus` reports `screen`, `input`, `files`, and `audio`. `Availability` is one of `Available`, `PermissionDenied`
 (macOS permission missing), `Unavailable`, or `NotAllowed` (input and files in a view-only session).
 
 ## File transfer
@@ -157,6 +159,29 @@ Hanja only on Windows, so macOS hosts ignore them.
 The ⌘↔Ctrl mapping is applied by the viewer (`ModifierMapping`). When the two sides' shortcut modifiers differ
 (`Meta` on macOS, `Control` elsewhere) and the setting is on, the two keys are swapped. So ⌘C from a macOS viewer
 arrives on a Windows host as Ctrl+C, and Ctrl+C from a Windows viewer arrives on a macOS host as ⌘C.
+
+## Audio
+
+```text
+AudioPacket { sequence: u32, data: Vec<u8> }
+```
+
+`data` is one Opus packet (RFC 6716, at most 1,276 bytes) holding 20 ms of 48 kHz stereo at about 96 kbit/s. Each
+packet is postcard-encoded into one QUIC datagram, so a lost packet is never resent: the viewer conceals up to three
+missing packets in a row with Opus packet loss concealment and drops packets that arrive late. `sequence` grows by
+one per packet and wraps.
+
+Audio flows only after the viewer sends `SetAudio(true)` and only while `HostStatus.audio` is `Available`, which
+needs the host's **Share sound** setting on and a platform that can record its output (Windows, or macOS 14.6 and
+later). It's available in view-only sessions too, since sound is output like the screen. If capture fails to start,
+the host reports `audio: Unavailable`. `SetAudio(false)` stops capture on the host.
+
+Only hosts send datagrams. A viewer accepts up to 64 KiB of buffered datagrams; a host announces a one-byte limit, so
+no viewer datagram fits and the host never reads any.
+
+The viewer plays with a jitter buffer: it waits until 60 ms are buffered, keeps at most 200 ms (dropping the oldest
+beyond that so latency can't grow), and re-buffers after running dry. Audio isn't synchronized to video; each plays
+as soon as it can.
 
 ## Video
 
@@ -213,5 +238,7 @@ reply. A `DeviceId` is in the range 100000000..=999999999, displayed as
 | Approval wait | 30 s | `crates/session/src/host_session.rs` |
 | Clipboard polling interval | 250 ms | `crates/session/src/clipboard.rs` |
 | File streams the viewer may open, offers tracked | 4, 32 | `crates/session/src/transfer.rs` |
+| Audio frame, bitrate, jitter buffer | 20 ms, 96 kbit/s, 60–200 ms | `crates/media/src/audio.rs` |
+| Datagram buffer: viewer / host | 64 KiB / 1 byte | `crates/net/src/tls.rs` |
 | Viewer input queue / reserved for keys | 512 / 128 | `crates/session/src/viewer.rs` |
 | mDNS service | `_dari._udp.local.` | `crates/net/src/discovery.rs` |

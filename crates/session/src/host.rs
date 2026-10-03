@@ -21,17 +21,26 @@ use crate::host_session::{SessionOptions, serve_viewer};
 use crate::platform::HostPlatform;
 use crate::transfer::{Transfer, TransferCommand};
 
-#[derive(Debug, Clone)]
-pub struct HostConfig {
-    pub bind_address: SocketAddr,
-    pub host_name: String,
-    pub stream: StreamSettings,
+/// What a host lets its viewers do. Changes apply from the next session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent user toggles")]
+pub struct HostPolicy {
     /// Ask the host user before a viewer that knows the password may see the screen.
     pub require_approval: bool,
     /// Share clipboard text with viewers allowed to control this device.
     pub clipboard: bool,
     /// Exchange files with viewers allowed to control this device.
     pub file_transfer: bool,
+    /// Share system audio with viewers that ask for it, including view-only ones.
+    pub audio: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostConfig {
+    pub bind_address: SocketAddr,
+    pub host_name: String,
+    pub stream: StreamSettings,
+    pub policy: HostPolicy,
     /// Where files from viewers are saved; `None` turns file transfer off.
     pub downloads: Option<PathBuf>,
     /// Relay to register with (`host` or `host:port`) so viewers can reach this device by ID.
@@ -116,11 +125,7 @@ pub enum HostEvent {
 enum HostCommand {
     RegeneratePassword,
     SetAccepting(bool),
-    SetPolicy {
-        require_approval: bool,
-        clipboard: bool,
-        file_transfer: bool,
-    },
+    SetPolicy(HostPolicy),
     EndSession,
     Transfer(TransferCommand),
 }
@@ -148,13 +153,9 @@ impl HostHandle {
         let _sent = self.commands.send(HostCommand::SetAccepting(accepting));
     }
 
-    /// Changes approval, clipboard, and file transfer policy for the next session.
-    pub fn set_policy(&self, require_approval: bool, clipboard: bool, file_transfer: bool) {
-        let _sent = self.commands.send(HostCommand::SetPolicy {
-            require_approval,
-            clipboard,
-            file_transfer,
-        });
+    /// Changes what the next session allows.
+    pub fn set_policy(&self, policy: HostPolicy) {
+        let _sent = self.commands.send(HostCommand::SetPolicy(policy));
     }
 
     /// Offers a file to the connected viewer. Progress arrives as [`HostEvent::Transfer`].
@@ -188,7 +189,7 @@ impl std::fmt::Debug for HostCommand {
         f.write_str(match self {
             HostCommand::RegeneratePassword => "RegeneratePassword",
             HostCommand::SetAccepting(_) => "SetAccepting",
-            HostCommand::SetPolicy { .. } => "SetPolicy",
+            HostCommand::SetPolicy(_) => "SetPolicy",
             HostCommand::EndSession => "EndSession",
             HostCommand::Transfer(_) => "Transfer",
         })
@@ -226,9 +227,7 @@ pub fn start_host(
         platform,
         options: SessionOptions {
             stream: config.stream,
-            require_approval: config.require_approval,
-            clipboard: config.clipboard,
-            file_transfer: config.file_transfer,
+            policy: config.policy,
             downloads: config.downloads,
         },
         accepting: true,
@@ -294,11 +293,7 @@ impl HostService {
                             self.reissue_password();
                         }
                     }
-                    Some(HostCommand::SetPolicy { require_approval, clipboard, file_transfer }) => {
-                        self.options.require_approval = require_approval;
-                        self.options.clipboard = clipboard;
-                        self.options.file_transfer = file_transfer;
-                    }
+                    Some(HostCommand::SetPolicy(policy)) => self.options.policy = policy,
                     Some(HostCommand::Transfer(command)) => {
                         if let Some(running) = &session {
                             let _sent = running.transfers.send(command);

@@ -74,6 +74,10 @@ pub(crate) struct Text {
     pub(crate) transfer_cancelled: &'static str,
     pub(crate) transfer_failed: &'static str,
     pub(crate) drop_to_send: &'static str,
+    pub(crate) share_audio: &'static str,
+    pub(crate) sound_on: &'static str,
+    pub(crate) sound_off: &'static str,
+    pub(crate) toggle_sound: &'static str,
     korean: bool,
 }
 
@@ -240,6 +244,10 @@ static KOREAN: Text = Text {
     transfer_cancelled: "취소됨",
     transfer_failed: "실패",
     drop_to_send: "놓으면 상대 기기로 파일을 보냅니다",
+    share_audio: "소리 공유",
+    sound_on: "소리 켜짐",
+    sound_off: "소리 꺼짐",
+    toggle_sound: "원격 기기의 소리 켜기/끄기",
     korean: true,
 };
 
@@ -311,6 +319,10 @@ static ENGLISH: Text = Text {
     transfer_cancelled: "Cancelled",
     transfer_failed: "Failed",
     drop_to_send: "Drop to send to the remote device",
+    share_audio: "Share sound",
+    sound_on: "Sound on",
+    sound_off: "Sound off",
+    toggle_sound: "Play or mute the remote device's sound",
     korean: false,
 };
 

@@ -27,6 +27,8 @@ pub struct HostStatus {
     pub input: Availability,
     /// Whether files can be sent to and received from the host.
     pub files: Availability,
+    /// Whether the host can share its system audio.
+    pub audio: Availability,
 }
 
 /// One of the host's displays, as offered to the viewer.
@@ -80,6 +82,8 @@ pub enum ControlMessage {
     SelectDisplay(u32),
     /// Viewer → host: change the stream quality.
     SetQuality(QualityPreset),
+    /// Viewer → host: start (`true`) or stop sending system audio. Hosts send none until asked.
+    SetAudio(bool),
     /// Either direction: the sender's clipboard text changed.
     Clipboard(String),
     /// Either direction: the sender would like to transfer a file.
@@ -128,6 +132,7 @@ impl Validate for ControlMessage {
             | ControlMessage::Declined
             | ControlMessage::SelectDisplay(_)
             | ControlMessage::SetQuality(_)
+            | ControlMessage::SetAudio(_)
             | ControlMessage::FileAccept(_)
             | ControlMessage::FileDone(_)
             | ControlMessage::FileCancel { .. } => Ok(()),

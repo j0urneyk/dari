@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use dari_session::HostPolicy;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DEFAULT_PORT;
@@ -26,6 +27,10 @@ pub struct Settings {
     pub clipboard_sync: bool,
     /// Exchange files with viewers allowed to control this device.
     pub file_transfer: bool,
+    /// Let viewers hear this device's sound.
+    pub share_audio: bool,
+    /// Play the remote device's sound in viewer windows.
+    pub play_audio: bool,
     /// Announce this device to viewers on the local network.
     pub lan_discovery: bool,
     /// Relay server (`host` or `host:port`) for reaching devices outside the local network;
@@ -43,6 +48,8 @@ impl Default for Settings {
             require_approval: true,
             clipboard_sync: true,
             file_transfer: true,
+            share_audio: true,
+            play_audio: true,
             lan_discovery: true,
             relay_address: String::new(),
         }
@@ -50,6 +57,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// What this device lets its viewers do.
+    pub(crate) fn host_policy(&self) -> HostPolicy {
+        HostPolicy {
+            require_approval: self.require_approval,
+            clipboard: self.clipboard_sync,
+            file_transfer: self.file_transfer,
+            audio: self.share_audio,
+        }
+    }
+
     /// Loads settings, falling back to defaults when the file is missing or unreadable.
     pub(crate) fn load(directory: &Path) -> Self {
         let path = directory.join(SETTINGS_FILE);

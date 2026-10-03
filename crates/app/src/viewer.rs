@@ -22,6 +22,7 @@ use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
 
 use crate::keymap::{key_code, modifier_changes};
+use crate::state::AppState;
 use crate::text::text;
 use crate::transfers::{TransferAction, TransferActions, TransferList};
 use crate::video_layout::{ScrollAccumulator, letterbox, pointer_position};
@@ -105,6 +106,8 @@ pub struct ViewerView {
     displays: Vec<DisplayDescription>,
     active_display: Option<u32>,
     quality: QualityPreset,
+    /// Whether the host's sound plays (saved as a setting).
+    sound: bool,
     transfers: TransferList,
     focus: FocusHandle,
     modifiers: Modifiers,
@@ -193,6 +196,7 @@ impl ViewerView {
             displays: Vec::new(),
             active_display: None,
             quality: QualityPreset::Balanced,
+            sound: AppState::settings(cx).play_audio,
             transfers: TransferList::default(),
             focus,
             modifiers: Modifiers::default(),
@@ -259,6 +263,24 @@ impl ViewerView {
                 self.session = None;
             }
         }
+        cx.notify();
+    }
+
+    /// Whether the host can share its sound in this session.
+    fn audio_available(&self) -> bool {
+        self.session.is_some()
+            && self
+                .status
+                .is_some_and(|status| status.audio == Availability::Available)
+    }
+
+    fn toggle_sound(&mut self, cx: &mut Context<Self>) {
+        self.sound = !self.sound;
+        if let Some(session) = &self.session {
+            session.set_audio(self.sound);
+        }
+        let sound = self.sound;
+        AppState::update_settings(cx, |settings| settings.play_audio = sound);
         cx.notify();
     }
 
@@ -416,6 +438,38 @@ impl ViewerView {
         cx.notify();
     }
 
+    /// The sound and file buttons, shown when the host offers them.
+    fn render_session_actions(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .h_flex()
+            .gap_3()
+            .when(self.audio_available(), |actions| {
+                actions.child(
+                    Button::new("sound")
+                        .small()
+                        .ghost()
+                        .selected(self.sound)
+                        .label(if self.sound {
+                            text().sound_on
+                        } else {
+                            text().sound_off
+                        })
+                        .tooltip(text().toggle_sound)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_sound(cx))),
+                )
+            })
+            .when(self.files_available(), |actions| {
+                actions.child(
+                    Button::new("send-file")
+                        .small()
+                        .ghost()
+                        .label(text().send_file)
+                        .tooltip(text().drop_to_send)
+                        .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
+                )
+            })
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let stats = if self.session.is_some() {
             format!("{:.0} fps · {} ms", self.fps, self.rtt.as_millis())
@@ -491,16 +545,7 @@ impl ViewerView {
                     }),
                 )
             })
-            .when(self.files_available(), |toolbar| {
-                toolbar.child(
-                    Button::new("send-file")
-                        .small()
-                        .ghost()
-                        .label(text().send_file)
-                        .tooltip(text().drop_to_send)
-                        .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
-                )
-            })
+            .child(self.render_session_actions(cx))
             .when(self.session.is_some(), |toolbar| {
                 toolbar.child(
                     Button::new("disconnect")

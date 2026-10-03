@@ -8,18 +8,23 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dari_input::{InjectError, InputBackend, RecordedAction};
-use dari_media::{CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer};
+use dari_media::{
+    AudioCapturer, AudioChunk, AudioError, AudioOutput, AudioOutputFactory, CaptureError,
+    DisplayInfo, PlaybackBuffer, ScreenCapturer, StreamSettings, SyntheticAudioCapturer,
+    SyntheticCapturer,
+};
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
 use dari_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
-    RelayStatus, SessionEndReason, Transfer, TransferDirection, TransferState, ViewerConfig,
-    ViewerEvent, ViewerTarget, connect_viewer, start_host,
+    HostPolicy, RelayStatus, SessionEndReason, Transfer, TransferDirection, TransferState,
+    ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer, start_host,
 };
 use tokio::sync::mpsc;
 
@@ -42,6 +47,26 @@ struct TestPlatform {
     clipboard: MemoryClipboard,
     /// Display ids opened by the capturer, in order.
     captured: Arc<Mutex<Vec<u32>>>,
+    /// Audio capturers open right now.
+    audio_live: Arc<AtomicUsize>,
+}
+
+/// A synthetic tone that counts itself in `live` while open.
+struct LiveAudio {
+    tone: SyntheticAudioCapturer,
+    live: Arc<AtomicUsize>,
+}
+
+impl AudioCapturer for LiveAudio {
+    fn next_chunk(&mut self, timeout: Duration) -> Result<Option<AudioChunk>, AudioError> {
+        self.tone.next_chunk(timeout)
+    }
+}
+
+impl Drop for LiveAudio {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -125,6 +150,13 @@ impl HostPlatform for TestPlatform {
         }
         Ok(Box::new(SharedRecorder(self.actions.clone())))
     }
+    fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
+        self.audio_live.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(LiveAudio {
+            tone: SyntheticAudioCapturer::new(440.),
+            live: self.audio_live.clone(),
+        }))
+    }
 }
 
 const SECOND_DISPLAY: DisplayInfo = DisplayInfo {
@@ -166,9 +198,12 @@ async fn start_host_with(
                 max_fps: 30,
                 bitrate_bps: 1_000_000,
             },
-            require_approval,
-            clipboard: true,
-            file_transfer: downloads.is_some(),
+            policy: HostPolicy {
+                require_approval,
+                clipboard: true,
+                file_transfer: downloads.is_some(),
+                audio: true,
+            },
             downloads,
             relay: None,
         },
@@ -194,6 +229,8 @@ fn viewer_config(host: &Host) -> ViewerConfig {
         map_shortcut_modifier: false,
         clipboard: None,
         downloads: None,
+        audio: None,
+        play_audio: true,
     }
 }
 
@@ -237,6 +274,7 @@ async fn viewer_sees_the_screen_and_controls_the_host() {
             screen: Availability::Available,
             input: Availability::Available,
             files: Availability::Unavailable,
+            audio: Availability::Available,
         })
     );
 
@@ -332,6 +370,7 @@ async fn missing_input_permission_is_reported_and_the_screen_still_streams() {
             screen: Availability::Available,
             input: Availability::PermissionDenied,
             files: Availability::Unavailable,
+            audio: Availability::Available,
         })
     );
     let mut frames = viewer.frames();
@@ -439,6 +478,7 @@ async fn nothing_is_shared_until_the_host_user_allows_it() {
             screen: Availability::Available,
             input: Availability::Available,
             files: Availability::Unavailable,
+            audio: Availability::Available,
         })
     );
     let mut frames = viewer.frames();
@@ -489,6 +529,7 @@ async fn view_only_sessions_ignore_input() {
             screen: Availability::Available,
             input: Availability::NotAllowed,
             files: Availability::NotAllowed,
+            audio: Availability::Available,
         })
     );
     assert!(viewer.send_input(InputEvent::Text("ignored".into())));
@@ -588,9 +629,12 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             host_name: "relayed".into(),
             stream: StreamSettings::default(),
-            require_approval: false,
-            clipboard: false,
-            file_transfer: false,
+            policy: HostPolicy {
+                require_approval: false,
+                clipboard: false,
+                file_transfer: false,
+                audio: false,
+            },
             downloads: None,
             relay: Some(relay_address.clone()),
         },
@@ -621,6 +665,8 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             map_shortcut_modifier: false,
             clipboard: None,
             downloads: None,
+            audio: None,
+            play_audio: true,
         },
         &password.unwrap(),
     )
@@ -853,4 +899,120 @@ async fn view_only_sessions_transfer_no_files() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(files_in(host_downloads.path()), Vec::<String>::new());
     assert_eq!(files_in(viewer_downloads.path()), Vec::<String>::new());
+}
+
+/// An output device that plays its buffer in real time and remembers the loudest sample.
+struct RecordingOutput {
+    buffer: PlaybackBuffer,
+    stop: Arc<AtomicBool>,
+}
+
+impl AudioOutput for RecordingOutput {
+    fn buffer(&self) -> &PlaybackBuffer {
+        &self.buffer
+    }
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+}
+
+impl Drop for RecordingOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Records the loudest sample played into `peak`, in thousandths.
+fn recording_output(peak: Arc<AtomicUsize>) -> AudioOutputFactory {
+    Arc::new(move || {
+        let buffer = PlaybackBuffer::new(48_000, 2);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (playing, stopped, peak) = (buffer.clone(), stop.clone(), peak.clone());
+        std::thread::spawn(move || {
+            let mut period = vec![0.; 960];
+            while !stopped.load(Ordering::SeqCst) {
+                playing.fill(&mut period);
+                let loudest = period
+                    .iter()
+                    .fold(0f32, |loudest, sample| loudest.max(sample.abs()));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "test"
+                )]
+                peak.fetch_max((loudest * 1000.) as usize, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        Ok(Box::new(RecordingOutput { buffer, stop }) as Box<dyn AudioOutput>)
+    })
+}
+
+fn audio_viewer_config(host: &Host, peak: &Arc<AtomicUsize>) -> ViewerConfig {
+    let mut config = viewer_config(host);
+    config.audio = Some(recording_output(peak.clone()));
+    config
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hosts_audio_plays_on_the_viewer_and_stops_when_muted() {
+    let platform = TestPlatform::default();
+    let live = platform.audio_live.clone();
+    let host = start(platform).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (viewer, _viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    // The 0.5-amplitude tone survives capture, resampling, Opus, datagrams, and playback.
+    wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+
+    // Muting stops capture on the host, and unmuting starts it again.
+    viewer.set_audio(false);
+    wait_until(|| live.load(Ordering::SeqCst) == 0).await;
+    viewer.set_audio(true);
+    wait_until(|| live.load(Ordering::SeqCst) == 1).await;
+    drop(viewer);
+    wait_until(|| live.load(Ordering::SeqCst) == 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_only_sessions_still_hear_the_host() {
+    let platform = TestPlatform::default();
+    let live = platform.audio_live.clone();
+    let mut host = start_with(platform, true).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (_viewer, _viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    // Nothing is captured while the host user decides.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(live.load(Ordering::SeqCst), 0);
+    approve(&mut host, ApprovalDecision::ViewOnly).await;
+    wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hosts_capture_audio_only_for_viewers_that_ask() {
+    let platform = TestPlatform::default();
+    let live = platform.audio_live.clone();
+    let host = start(platform).await;
+    // This viewer has no audio output, so it never asks.
+    let (_viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let status = wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::HostStatus(_))
+    })
+    .await;
+    assert!(
+        matches!(status, ViewerEvent::HostStatus(status) if status.audio == Availability::Available)
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(live.load(Ordering::SeqCst), 0);
 }

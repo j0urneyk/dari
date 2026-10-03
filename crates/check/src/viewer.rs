@@ -125,6 +125,8 @@ pub(crate) async fn run(args: ViewArgs) -> anyhow::Result<ExitCode> {
             map_shortcut_modifier: true,
             clipboard: Some(SystemClipboard::factory()),
             downloads: None,
+            audio: None,
+            play_audio: false,
         },
         &password,
     )

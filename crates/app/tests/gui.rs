@@ -38,8 +38,8 @@ mod macos {
     use dari_net::{AccessPassword, DeviceIdentity};
     use dari_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
     use dari_session::{
-        HostConfig, HostEvent, HostPlatform, TransferDirection, TransferState, ViewerConfig,
-        ViewerTarget, connect_viewer, start_host,
+        HostConfig, HostEvent, HostPlatform, HostPolicy, TransferDirection, TransferState,
+        ViewerConfig, ViewerTarget, connect_viewer, start_host,
     };
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::*;
@@ -204,9 +204,12 @@ mod macos {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             host_name: "synthetic-host".into(),
             stream: StreamSettings::default(),
-            require_approval: false,
-            clipboard: false,
-            file_transfer: false,
+            policy: HostPolicy {
+                require_approval: false,
+                clipboard: false,
+                file_transfer: false,
+                audio: false,
+            },
             downloads: None,
             relay: None,
         };
@@ -225,6 +228,8 @@ mod macos {
             map_shortcut_modifier: false,
             clipboard: None,
             downloads: None,
+            audio: None,
+            play_audio: false,
         };
         let attempt = cx.update(|cx| {
             TokioRuntime::spawn(
@@ -417,6 +422,8 @@ mod macos {
         Settings {
             port: 0,
             relay_address: relay.local_address().unwrap().to_string(),
+            // Host and viewer share this machine: real audio would play into its own capture.
+            share_audio: false,
             ..Settings::default()
         }
         .save(data.path())
@@ -485,9 +492,12 @@ mod macos {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             host_name: "synthetic-host".into(),
             stream: StreamSettings::default(),
-            require_approval: false,
-            clipboard: false,
-            file_transfer: true,
+            policy: HostPolicy {
+                require_approval: false,
+                clipboard: false,
+                file_transfer: true,
+                audio: false,
+            },
             downloads: Some(host_downloads.path().to_owned()),
             relay: None,
         };
@@ -507,6 +517,8 @@ mod macos {
             map_shortcut_modifier: false,
             clipboard: None,
             downloads: Some(viewer_downloads.path().to_owned()),
+            audio: None,
+            play_audio: false,
         };
         let attempt = cx.update(|cx| {
             TokioRuntime::spawn(
