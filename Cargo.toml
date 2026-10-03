@@ -46,6 +46,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+socket2 = "0.6"
 spake2 = "0.4"
 subtle = "2"
 sys-locale = "0.3"
@@ -56,6 +57,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows = "0.62"
+# Only dari-check's input window; macOS and Windows need no optional platform features.
+winit = { version = "0.30", default-features = false }
 xcap = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 

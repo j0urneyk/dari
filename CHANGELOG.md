@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
+  keyboard layout from the input thread, which macOS only allows on the main thread, so the app crashed; character
+  keys are now pressed by their key code.
+
+- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
+  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
+
 ### Changed
 
 - The app has a new look. It uses Dari's blue throughout and follows the system's light or dark appearance. The

@@ -6,7 +6,7 @@
     reason = "test helpers may panic"
 )]
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use dari_net::{
@@ -17,10 +17,14 @@ use dari_proto::{ControlMessage, RejectReason, VideoPacket};
 use futures_util::{SinkExt, StreamExt};
 
 fn host() -> HostEndpoint {
+    host_on(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+}
+
+fn host_on(bind_address: SocketAddr) -> HostEndpoint {
     let identity = DeviceIdentity::generate().unwrap();
     HostEndpoint::bind(
         HostSettings {
-            bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            bind_address,
             host_name: "test-host".into(),
         },
         &identity,
@@ -184,4 +188,25 @@ async fn repeated_failures_lock_out_the_source() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn host_on_the_ipv6_wildcard_accepts_ipv4_viewers() {
+    // The app hosts on [::]. Windows makes IPv6 sockets IPv6-only by default, which turned away
+    // every viewer that connected by IPv4 address.
+    let mut host = host_on(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)));
+    let password = AccessPassword::generate().unwrap();
+    host.set_password(Some(password.clone()));
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, host.local_address().unwrap().port()));
+
+    let (viewer, hosted) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            connect(address, &password, "ipv4-viewer".into()),
+            host.accept()
+        )
+    })
+    .await
+    .expect("an IPv4 viewer reaches a host on [::]");
+    viewer.unwrap();
+    assert_eq!(hosted.unwrap().peer().name, "ipv4-viewer");
 }

@@ -73,6 +73,7 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 | Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, two-way clipboard, connecting through a relay |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
 | GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
+| Cross-device | `crates/check`, `scripts/crosscheck/` | This Mac against a Windows VM or an x64 runner over SSH, in both directions; see [Cross-device checks](#cross-device-checks) |
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
 Real capture and encoding performance is measured with an example that captures and encodes the primary display
@@ -120,18 +121,145 @@ The **Platform checks** workflow (`.github/workflows/platform.yml`, manual or on
 Windows and macOS runners, and installs the published Windows installer silently to host and connect a session
 with the installed `dari.exe`.
 
-### Cross-device checklist
+### Cross-device checks
 
-Hosted runners can't reach each other, so a session between two physical machines is still a manual check. Before a
-release, on a Mac and a Windows 11 PC with the release builds installed:
+`scripts/crosscheck/crosscheck.sh` runs sessions between this Mac and a Windows machine it reaches over SSH, in both
+directions. The Windows machine is either a local Windows 11 VM (the everyday check) or an x64 GitHub Windows runner
+joined to your tailnet (to cover the architecture the release ships). Each case runs `dari-check host` on one side and
+`dari-check view` on the other. `dari-check` (`crates/check`) is a test-only binary that isn't packaged. The two
+sides share nothing but the session, and each checks what it can observe on its own machine:
 
-1. Each side hosts while the other connects, by address and by relay ID.
-2. Approve with **Allow control**: pointer, clicks, wheel, typing (including Korean IME on the host), and ⌘C/Ctrl+C
-   shortcuts work in both directions.
-3. Copy text on each side and paste it on the other.
-4. With two monitors on the host, switch displays in the viewer toolbar; the pointer lands on the selected display.
-5. On a scaled display (Retina, or Windows at 150%), the pointer lands where it's clicked.
-6. **View only** blocks input and clipboard; **Disconnect** on either side ends the session.
+| Side | Checks |
+| --- | --- |
+| Host | It is asked to approve once; screen and input report Available; for every display, each of the viewer's pointer targets lands there in the real OS pointer position, computed from the display's own bounds, so a scaling or multi-monitor coordinate mismatch shows up as a miss; the viewer's ⌘/Ctrl arrives as this OS's shortcut modifier; the viewer's clipboard text reaches the system clipboard |
+| Host's input window | `dari-check host` opens a window at the centre of the primary display and records what an app there receives: the viewer's click at the display's centre lands in it and focuses it, the wheel scrolls it, typed keys arrive as text, and the viewer's copy shortcut arrives as this OS's (⌘C or Ctrl+C). On a Windows host with Korean installed, the Korean input method must also compose 한 from the keys the viewer types after the Hangul key. On a Mac host the window types with an ASCII input source while it is open and then restores the user's |
+| Viewer | Status matches the approval; the expected number of displays; switching to each display; frames shaped like the display with real content (saved as PNGs); the host's clipboard reply arrives on this machine's clipboard |
+| View only | No input or clipboard text reaches the host, and nothing comes back |
+
+The cases are `mac-host-direct`, `windows-host-direct`, `mac-host-relay`, `windows-host-relay` (through a
+`dari-relay` the script runs on the Mac), `mac-host-view-only` and `windows-host-view-only`. With `--release TAG` it
+also downloads that release, installs the DMG's app here and the Windows installer on the peer, and connects the
+installed apps to each other in both directions with their own headless `host` and `connect` commands
+(`installed-windows-host`, `installed-mac-host`), which catches packaging problems a source build can't. In an allowed
+session the
+host ends the session after the clipboard round trip, and in a view-only session the viewer disconnects, which
+covers both disconnect directions. Logs and frames go to `target/crosscheck/<time>/`. Don't touch the Mac's mouse
+during a run: the host check reads the real pointer position, and the Mac's clipboard is overwritten and then
+restored. The terminal running the script needs Screen Recording and Accessibility.
+
+A host and a viewer on the same machine share one clipboard, so the clipboard round trip only passes between two
+machines. The rest of `dari-check` can still be tried locally with `dari-check host --port 0 --approve view-only
+--nonce x` and `dari-check view 127.0.0.1:<port> --approve view-only --nonce x`.
+
+#### Local Windows 11 VM
+
+On Apple silicon, `scripts/crosscheck/vm/create-vm.sh` creates a Windows 11 on Arm VM in UTM (`brew install --cask
+utm`) and installs it unattended. Download the Windows 11 Arm64 ISO from
+[microsoft.com](https://www.microsoft.com/software-download/windows11arm64) first; the page refuses scripted
+downloads. The answer file (`vm/autounattend.xml`, based on the one in UTM's guest tools) installs Windows with a
+local account that signs in automatically, because the checks run in the signed-in desktop session through a
+scheduled task: a program started over SSH can't see the desktop. At first sign-in, `vm/bootstrap.ps1` installs the
+guest tools, keeps the desktop awake and unlocked, turns off the guest agent's clipboard sharing with the Mac (it
+would carry clipboard text outside Dari and race the clipboard check), and runs `windows/setup-vm.ps1`: SSH with
+key-only login, the firewall rules, Rust, and the Visual Studio Build Tools. The SSH key and the VM user's password
+are in `~/.dari-check-vm`. Windows isn't activated; that doesn't affect the checks.
+
+```bash
+scripts/crosscheck/vm/create-vm.sh --iso ~/Downloads/Windows11_Client_arm64_ko-kr_26300_9457.iso
+```
+
+```bash
+scripts/crosscheck/vm/wait-vm.sh
+```
+
+`wait-vm.sh` prints the `crosscheck.sh` command once the VM is ready (about an hour after creating it). `--build`
+copies this checkout to `C:\dari-check\src` and builds `dari-check` there for x64, the architecture the release
+ships, so it runs under emulation; leave it off to reuse the last build. The app running the script needs Local
+Network access (System Settings → Privacy & Security → Local Network), or every connection to the VM fails with
+"No route to host".
+
+```bash
+scripts/crosscheck/crosscheck.sh --windows dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build
+```
+
+`vm/add-second-display.sh` then gives the VM a second monitor, 1920×1080 at 150% to the right of the 100% primary,
+so the checks cover switching displays and pointer coordinates on a scaled display next to an unscaled one. UTM can't
+add one itself (a second virtio-gpu device stops Windows on Arm from booting), so the script installs the
+[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) with
+`windows/install-virtual-display.ps1`. Windows 11 24H2 and later refuse that Arm64 driver unless test signing is on,
+so the script turns test signing on in the VM (`bcdedit /set testsigning off` undoes it). Then pass
+`--expect-windows-displays 2`. For a Windows machine set up by hand, run `windows/setup-vm.ps1` in an elevated
+PowerShell instead of the VM scripts.
+
+```bash
+scripts/crosscheck/vm/add-second-display.sh
+```
+
+Don't remove the VM's CD drives: that moves the system disk to another PCI address and Windows stops booting.
+
+Scripts in `scripts/crosscheck/` that run on Windows are ASCII only, which CI checks: Windows PowerShell 5.1 reads
+a script without a byte order mark in the system code page, and on Korean Windows a single "…" broke parsing.
+
+#### x64 GitHub runner over Tailscale
+
+`scripts/crosscheck/runner.sh` dispatches the **Cross-device check** workflow (`.github/workflows/crosscheck.yml`)
+with a fresh SSH key. The runner builds `dari-check`, allows SSH and UDP 47821 from tailnet addresses only, joins the
+tailnet as `dari-check-<run id>` (an ephemeral node), and waits. The script then runs `crosscheck.sh` against it and
+tells it to finish. The runner's logs and frames are uploaded as the `crosscheck-windows` artifact. The runner is
+Windows Server, not Windows 11; it covers the x64 build and a separate network path.
+
+One-time setup:
+
+1. In the Tailscale policy file, add the tag and keep the runner's reach narrow: it runs whatever code the
+   dispatched branch has, so it may only send Dari's UDP traffic to your devices (the Mac's host on 47831, the relay on
+   47822, and the relay's allocations on ephemeral ports), while your devices can still reach it over SSH:
+
+   ```json
+   "tagOwners": {"tag:ci": ["autogroup:admin"]},
+   "grants": [
+       {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+       {"src": ["tag:ci"], "dst": ["autogroup:member"], "ip": ["udp:47822", "udp:47831", "udp:49152-65535"]},
+   ],
+   ```
+
+2. Under **Trust credentials**, add an OpenID Connect credential with the GitHub issuer, subject
+   `repo:j0urneyk@62772873/dari@1402251066:*`, the custom claim `job_workflow_ref` =
+   `*/.github/workflows/crosscheck.yml@*` (so only this workflow can use it), and only the writable `auth_keys` scope
+   for `tag:ci`. GitHub puts the owner's and repository's numeric IDs in the subject, so a renamed or recreated
+   repository can't take over the trust; a subject without them never matches (the credential's page shows the
+   subject it last received). The workflow signs in with
+   GitHub's OIDC token, so nothing secret is stored: the credential's client ID and audience aren't secrets and go in
+   the repository variables `TS_CLIENT_ID` and `TS_AUDIENCE`. If the tag isn't `tag:ci`, set `TS_TAGS` too.
+3. Run Tailscale on the Mac. The workflow file must be on the default branch before it can be dispatched.
+
+```bash
+scripts/crosscheck/runner.sh --cases mac-host-direct,windows-host-direct
+```
+
+#### Every night
+
+`scripts/crosscheck/vm/nightly.sh` checks the latest `main` against the VM: it updates its own clone in
+`~/.dari-check-vm/checkout`, starts the VM if it isn't running (and shuts it down again afterwards), runs
+`crosscheck.sh --build`, keeps two weeks of results in `~/.dari-check-vm/nightly/`, and posts a macOS notification
+when anything fails. When this Mac's screen is locked, the cases where the Mac hosts are skipped. It runs as a scheduled
+task in the Claude desktop app, because that app already has the Screen Recording, Accessibility, and Local Network
+access the checks need; the Mac has to be awake with the app open.
+
+#### Keeping the VM small
+
+The VM's disk is a qcow2 file that only grows: the 96 GB is its ceiling, not its size. To give space back, clean up
+inside Windows (`DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase`, the temp folders), fill its free
+space with zeros, shut it down, and rewrite the image; `qemu-img` (`brew install qemu`) leaves zeroed clusters out:
+
+```bash
+qemu-img convert -O qcow2 dari-win11.qcow2 compact.qcow2
+```
+
+#### Still manual
+
+Before a release, check on real hardware what the scripts don't cover: a real x64 Windows 11 PC with physical monitors
+at mixed scaling, the Korean input method on a Mac host, and the release apps' GUI (pairing through the approval card
+and the viewer window).
 
 ## CI
 

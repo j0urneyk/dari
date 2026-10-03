@@ -29,6 +29,10 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - run: cargo fmt --all --check
+      # Windows PowerShell 5.1 reads BOM-less UTF-8 scripts in the system code page; on Korean
+      # Windows a non-ASCII character such as "…" garbled into CP949 broke parsing.
+      - name: PowerShell scripts are ASCII
+        run: if LC_ALL=C grep -rn --include='*.ps1' $'[\x80-\xFF]' scripts; then exit 1; fi
 
   deny:
     name: cargo-deny
