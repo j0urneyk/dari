@@ -1,0 +1,80 @@
+name: Cross-device check
+
+# The Windows half of scripts/crosscheck/runner.sh. Builds dari-check on an x64 Windows runner,
+# joins the tailnet, and lets the Mac that dispatched the run drive it over SSH until the Mac
+# signals it is done. It joins through Tailscale workload identity federation with GitHub's OIDC
+# token, so no Tailscale secret is stored: the TS_CLIENT_ID and TS_AUDIENCE repository variables
+# name a federated credential allowed to create keys for the tag in TS_TAGS (tag:ci by default).
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_public_key:
+        description: Public key the dispatching Mac logs in with (runner.sh makes a fresh one)
+        required: true
+      hold_minutes:
+        description: Minutes to wait for the Mac to finish before failing
+        required: false
+        default: '40'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  windows-peer:
+    name: Windows peer
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      # Lets the Tailscale action exchange GitHub's OIDC token for a node key.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Build dari-check
+        run: cargo build -p dari-check --locked
+      - name: Let the Mac drive this runner over SSH
+        shell: powershell
+        env:
+          SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # SSH and the check's UDP port only answer tailnet addresses.
+          .\scripts\crosscheck\windows\prepare-peer.ps1 -PublicKey $env:SSH_PUBLIC_KEY -AllowFrom '100.64.0.0/10', 'fd7a:115c:a1e0::/48'
+          Copy-Item target\debug\dari-check.exe C:\dari-check\dari-check.exe
+          Copy-Item scripts\crosscheck\windows\interactive.ps1 C:\dari-check\interactive.ps1
+          Write-Output "SSH user: $env:USERNAME"
+      # Joining last means the runner shows up on the tailnet only once it is ready.
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        with:
+          oauth-client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: ${{ vars.TS_TAGS || 'tag:ci' }}
+          hostname: dari-check-${{ github.run_id }}
+      - name: Wait for the Mac to finish
+        shell: powershell
+        env:
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
+        run: |
+          $deadline = (Get-Date).AddMinutes([int]$env:HOLD_MINUTES)
+          while (-not (Test-Path C:\dari-check\done) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
+          if (-not (Test-Path C:\dari-check\done)) { throw "the Mac did not finish within $env:HOLD_MINUTES minutes" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: crosscheck-windows
+          path: |
+            C:\dari-check\logs
+            C:\dari-check\frames
+          if-no-files-found: ignore

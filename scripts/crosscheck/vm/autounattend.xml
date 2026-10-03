@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Unattended install of Windows 11 on Arm for a dari-check peer VM, based on the template in
+  UTM's guest tools ISO. create-vm.sh fills in @USER@ and @PASSWORD@ and puts this file at the
+  root of the setup ISO, next to the guest tools and bootstrap.ps1.
+
+  The product key is Microsoft's public KMS client key for Pro: it selects the edition and does
+  not activate Windows.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+    <settings pass="windowsPE">
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <SetupUILanguage>
+                <UILanguage>ko-KR</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>0412:00000412</InputLocale>
+            <SystemLocale>ko-KR</SystemLocale>
+            <UILanguage>ko-KR</UILanguage>
+            <UserLocale>ko-KR</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <Diagnostics>
+                <OptIn>false</OptIn>
+            </Diagnostics>
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg add HKLM\System\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <Path>reg add HKLM\System\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <Path>reg add HKLM\System\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>4</Order>
+                    <Path>reg add HKLM\System\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+            <DiskConfiguration>
+                <Disk wcm:action="add">
+                    <DiskID>0</DiskID>
+                    <WillWipeDisk>true</WillWipeDisk>
+                    <CreatePartitions>
+                        <CreatePartition wcm:action="add">
+                            <Order>1</Order>
+                            <Type>EFI</Type>
+                            <Size>300</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>2</Order>
+                            <Type>MSR</Type>
+                            <Size>16</Size>
+                        </CreatePartition>
+                        <CreatePartition wcm:action="add">
+                            <Order>3</Order>
+                            <Type>Primary</Type>
+                            <Extend>true</Extend>
+                        </CreatePartition>
+                    </CreatePartitions>
+                    <ModifyPartitions>
+                        <ModifyPartition wcm:action="add">
+                            <Order>1</Order>
+                            <PartitionID>1</PartitionID>
+                            <Format>FAT32</Format>
+                            <Label>System</Label>
+                        </ModifyPartition>
+                        <ModifyPartition wcm:action="add">
+                            <Order>2</Order>
+                            <PartitionID>3</PartitionID>
+                            <Format>NTFS</Format>
+                            <Label>Windows</Label>
+                            <Letter>C</Letter>
+                        </ModifyPartition>
+                    </ModifyPartitions>
+                </Disk>
+            </DiskConfiguration>
+            <ImageInstall>
+                <OSImage>
+                    <InstallTo>
+                        <DiskID>0</DiskID>
+                        <PartitionID>3</PartitionID>
+                    </InstallTo>
+                </OSImage>
+            </ImageInstall>
+            <UserData>
+                <AcceptEula>true</AcceptEula>
+                <FullName>@USER@</FullName>
+                <ProductKey>
+                    <Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key>
+                    <WillShowUI>OnError</WillShowUI>
+                </ProductKey>
+            </UserData>
+        </component>
+        <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <DriverPaths>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="1">
+                    <Path>E:\Drivers\viostor\w10\ARM64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="2">
+                    <Path>E:\Drivers\vioscsi\w10\ARM64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="3">
+                    <Path>E:\Drivers\NetKVM\w10\ARM64</Path>
+                </PathAndCredentials>
+                <PathAndCredentials wcm:action="add" wcm:keyValue="4">
+                    <Path>E:\Drivers\vioserial\w10\ARM64</Path>
+                </PathAndCredentials>
+            </DriverPaths>
+        </component>
+    </settings>
+    <settings pass="offlineServicing">
+        <component name="Microsoft-Windows-LUA-Settings" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <EnableLUA>false</EnableLUA>
+        </component>
+    </settings>
+    <settings pass="specialize">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <ComputerName>DARI-WIN11</ComputerName>
+            <TimeZone>Korea Standard Time</TimeZone>
+        </component>
+        <component name="Microsoft-Windows-Security-SPP-UX" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <SkipAutoActivation>true</SkipAutoActivation>
+        </component>
+        <component name="Microsoft-Windows-SQMApi" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <CEIPEnabled>0</CEIPEnabled>
+        </component>
+    </settings>
+    <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <InputLocale>0412:00000412</InputLocale>
+            <SystemLocale>ko-KR</SystemLocale>
+            <UILanguage>ko-KR</UILanguage>
+            <UserLocale>ko-KR</UserLocale>
+        </component>
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideLocalAccountScreen>true</HideLocalAccountScreen>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <ProtectYourPC>3</ProtectYourPC>
+                <VMModeOptimizations>
+                    <SkipWinREInitialization>true</SkipWinREInitialization>
+                </VMModeOptimizations>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Name>@USER@</Name>
+                        <Group>Administrators</Group>
+                        <Password>
+                            <Value>@PASSWORD@</Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+            <!-- dari-check runs in the signed-in desktop session, so the VM signs in at every boot. -->
+            <AutoLogon>
+                <Enabled>true</Enabled>
+                <Username>@USER@</Username>
+                <LogonCount>9999999</LogonCount>
+                <Password>
+                    <Value>@PASSWORD@</Value>
+                    <PlainText>true</PlainText>
+                </Password>
+            </AutoLogon>
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Description>Disable hibernation</Description>
+                    <CommandLine>cmd /c powercfg -h off</CommandLine>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <Description>Install the UTM guest tools (network driver, guest agent)</Description>
+                    <CommandLine>cmd /c for %d in (D E F G H) do @if exist %d:\utm-guest-tools-*.exe for %f in (%d:\utm-guest-tools-*.exe) do start /wait "" "%f" /S</CommandLine>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <Description>Prepare the dari-check peer in the background</Description>
+                    <CommandLine>cmd /c for %d in (D E F G H) do @if exist %d:\bootstrap.ps1 start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File %d:\bootstrap.ps1</CommandLine>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+        </component>
+    </settings>
+</unattend>
