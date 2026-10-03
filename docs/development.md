@@ -84,13 +84,21 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
 Real capture and encoding performance is measured with an example that captures and encodes the primary display
-for a few seconds and prints the frame rate, bitrate, encoder (hardware or software), and the time spent encoding
-each frame. The arguments are seconds, the longest edge, the frame rate, and `hardware` or `software`. Capture only
-produces frames while the screen changes, so keep something moving on the primary display (a video, scrolling).
-On macOS the terminal needs Screen Recording permission.
+for a few seconds and prints the frame rate, bitrate, encoder (hardware or software), the time from capture to
+encoded frame, and then how long the viewer's decoder takes per frame. The arguments are seconds, the longest
+edge, the frame rate, and `hardware` or `software`. Capture only produces frames while the screen changes, so keep
+something moving on the primary display (a video, scrolling). On macOS the terminal needs Screen Recording
+permission. The display's refresh rate caps the result.
 
 ```bash
-cargo run --release -p dari-media --example capture_bench -- 5 1920 120 hardware
+cargo run --release -p dari-media --example capture_bench -- 5 1920 144 hardware
+```
+
+To measure the hardware stream past the display's refresh rate, an ignored test feeds the stream prepared frames
+from a 144 Hz clock and checks that it keeps up after VideoToolbox settles:
+
+```bash
+cargo test --release -p dari-media -- --ignored --nocapture hardware_stream_keeps_up
 ```
 
 The session layer swaps screen and input through the `HostPlatform` trait, so even environments without screen

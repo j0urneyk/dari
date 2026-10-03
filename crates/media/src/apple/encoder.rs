@@ -1,17 +1,25 @@
 //! H.264 encoding with VideoToolbox, the hardware encoder on Apple silicon and Intel Macs.
 //!
-//! The session is configured for real-time screen streaming: Constrained Baseline (what OpenH264
-//! decodes) and no frame reordering. Each frame is encoded synchronously
-//! (`VTCompressionSessionCompleteFrames`), which keeps the capture loop's one-frame-at-a-time
-//! backpressure intact. VideoToolbox's low-latency rate control is deliberately not used: on Apple
-//! silicon it made each synchronous encode 15–20% slower (about 9.5 ms instead of 8 ms for a
-//! 1920×1246 screen), which is the difference between reaching 120 fps and not. The output arrives in AVCC form with the
-//! parameter sets in the format description, and is rewritten as Annex-B for the wire.
+//! The session is configured for screen streaming: Constrained Baseline (what OpenH264 decodes)
+//! and no frame reordering. Real-time mode is off: with it, VideoToolbox lowered its clock after
+//! a few seconds to just keep up with the expected frame rate, which stretched each frame from
+//! about 4.5 ms to 8–11 ms (1920×1246 on an M5) and capped the stream near 120 fps.
+//!
+//! Frames are submitted without waiting for the previous one (no
+//! `VTCompressionSessionCompleteFrames` per frame), so the hardware works on the next frame while
+//! the last one finishes; at 2560×1662, where one frame takes about 8 ms, that is what reaches
+//! 144 fps. Each frame's output callback hands it straight to the delivery submitted with it, so
+//! an isolated frame (a keystroke on a still screen) leaves as soon as it is encoded rather than
+//! when a next frame arrives. VideoToolbox's low-latency rate control is not used: it made each
+//! frame 20–70% slower, so 2560×1662 no longer kept up with 144 fps, and on screen content it spent
+//! a fifth of the target bitrate. The output arrives in AVCC form with the parameter sets in the
+//! format description, and is rewritten as Annex-B for the wire.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
@@ -30,7 +38,9 @@ use objc2_video_toolbox::{
 };
 
 use super::NativeFrame;
-use crate::codec::{CodecError, EncodedFrame, EncoderSettings, avcc_to_annex_b, rgba_to_i420};
+use crate::codec::{
+    CodecError, EncodedFrame, EncoderSettings, FrameDelivery, avcc_to_annex_b, rgba_to_i420,
+};
 use crate::frame::CapturedFrame;
 
 /// Encodes frames with VideoToolbox. The compression session is created for the first frame and
@@ -47,6 +57,13 @@ impl std::fmt::Debug for HardwareEncoder {
             .field("settings", &self.settings)
             .finish_non_exhaustive()
     }
+}
+
+/// A frame the hardware encoder could not take.
+pub(crate) struct SubmitError {
+    pub(crate) error: CodecError,
+    /// The frame's delivery, if it was not consumed, so another encoder can take the frame.
+    pub(crate) deliver: Option<FrameDelivery>,
 }
 
 impl HardwareEncoder {
@@ -66,58 +83,110 @@ impl HardwareEncoder {
         self.keyframe_requested = true;
     }
 
-    pub(crate) fn encode(
+    /// Whether a frame already submitted failed to encode. Frames after it are discarded, so the
+    /// encoder must be replaced.
+    pub(crate) fn has_failed(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.outputs.lock().failed)
+    }
+
+    /// Starts encoding `frame`; `deliver` receives it from a VideoToolbox thread once it is
+    /// encoded.
+    pub(crate) fn submit(
         &mut self,
         frame: &CapturedFrame,
-    ) -> Result<Option<EncodedFrame>, CodecError> {
+        deliver: FrameDelivery,
+    ) -> Result<(), SubmitError> {
         let converted;
         let frame = match frame {
             CapturedFrame::Native(frame) => frame,
-            CapturedFrame::Rgba(frame) => {
-                converted = NativeFrame::from_i420(&rgba_to_i420(frame))?;
-                &converted
-            }
+            CapturedFrame::Rgba(frame) => match NativeFrame::from_i420(&rgba_to_i420(frame)) {
+                Ok(frame) => {
+                    converted = frame;
+                    &converted
+                }
+                Err(error) => {
+                    return Err(SubmitError {
+                        error,
+                        deliver: Some(deliver),
+                    });
+                }
+            },
         };
         let size = (frame.width(), frame.height());
         let session = match &mut self.session {
-            Some(session) if session.size == size => session,
+            Some(session) if session.outputs.lock().size == size => session,
             slot => {
+                // Dropping the old session delivers its last frames before the new size's first.
                 *slot = None;
-                slot.insert(Session::new(size, self.settings)?)
+                match Session::new(size, self.settings) {
+                    Ok(session) => slot.insert(session),
+                    Err(error) => {
+                        return Err(SubmitError {
+                            error,
+                            deliver: Some(deliver),
+                        });
+                    }
+                }
             }
         };
         let force_keyframe = std::mem::take(&mut self.keyframe_requested);
-        let encoded = session.encode(frame, force_keyframe)?;
-        Ok(encoded.map(|(data, keyframe)| EncodedFrame {
-            width: size.0,
-            height: size.1,
-            keyframe,
-            data,
-        }))
+        session.submit(frame, force_keyframe, deliver)
+    }
+
+    /// Waits until every submitted frame has been delivered or dropped.
+    pub(crate) fn flush(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.flush();
+        }
     }
 }
 
 /// The timescale of presentation times.
 const MICROSECONDS: i32 = 1_000_000;
 
-/// What the output callback produced for the frame being encoded.
-type CallbackOutput = Option<Result<(Vec<u8>, bool), CodecError>>;
+/// State shared with the output callback. Boxed so its address, the callback's refcon, never
+/// moves.
+struct Outputs {
+    state: Mutex<OutputState>,
+}
+
+struct OutputState {
+    size: (u32, u32),
+    /// Deliveries of submitted frames, oldest first, each with the id passed to VideoToolbox as
+    /// the frame's refcon.
+    pending: VecDeque<(usize, FrameDelivery)>,
+    /// A frame failed to encode; later frames are discarded rather than sent after the gap.
+    failed: bool,
+}
+
+impl Outputs {
+    fn lock(&self) -> MutexGuard<'_, OutputState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 struct Session {
     compression: CFRetained<VTCompressionSession>,
-    /// Written by the output callback. Boxed so its address, the callback's refcon, never moves.
-    output: Box<Mutex<CallbackOutput>>,
-    size: (u32, u32),
+    outputs: Box<Outputs>,
     /// Presentation times are microseconds since this instant: frames only arrive when the
     /// screen changes, and real times let rate control spend the bits saved while it was still.
     started: Instant,
     last_time: i64,
+    next_id: usize,
 }
 
 impl Session {
     fn new(size: (u32, u32), settings: EncoderSettings) -> Result<Self, CodecError> {
-        let output = Box::new(Mutex::new(None));
-        let compression = create_session(size, &output)?;
+        let outputs = Box::new(Outputs {
+            state: Mutex::new(OutputState {
+                size,
+                pending: VecDeque::new(),
+                failed: false,
+            }),
+        });
+        let compression = create_session(size, &outputs)?;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "frame rates are small positive numbers"
@@ -127,7 +196,9 @@ impl Session {
         // SAFETY: Reading immutable static VideoToolbox and CoreVideo constants.
         let properties: [(&CFString, &CFType); 6] = unsafe {
             [
-                (kVTCompressionPropertyKey_RealTime, &**CFBoolean::new(true)),
+                // Real-time mode lowers the encoder's clock after a few seconds to just keep up with
+                // the expected frame rate, so each frame took 8–11 ms instead of 4.5 ms.
+                (kVTCompressionPropertyKey_RealTime, &**CFBoolean::new(false)),
                 (
                     kVTCompressionPropertyKey_ProfileLevel,
                     &**kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel,
@@ -144,9 +215,16 @@ impl Session {
                 ),
             ]
         };
+        let session = Self {
+            compression,
+            outputs,
+            started: Instant::now(),
+            last_time: -1,
+            next_id: 0,
+        };
         for (key, value) in properties {
             // SAFETY: Each value has the type its key documents.
-            let status = unsafe { VTSessionSetProperty(&compression, key, Some(value)) };
+            let status = unsafe { VTSessionSetProperty(&session.compression, key, Some(value)) };
             if status != 0 {
                 return Err(CodecError::VideoToolbox {
                     operation: "session configuration",
@@ -154,22 +232,16 @@ impl Session {
                 });
             }
         }
-        Ok(Self {
-            compression,
-            output,
-            size,
-            started: Instant::now(),
-            last_time: -1,
-        })
+        Ok(session)
     }
 
-    /// Encodes one frame and waits for it. Returns the Annex-B data and whether it is a
-    /// keyframe, or `None` if the encoder dropped the frame.
-    fn encode(
+    /// Starts encoding one frame without waiting for it.
+    fn submit(
         &mut self,
         frame: &NativeFrame,
         force_keyframe: bool,
-    ) -> Result<Option<(Vec<u8>, bool)>, CodecError> {
+        deliver: FrameDelivery,
+    ) -> Result<(), SubmitError> {
         let elapsed = i64::try_from(self.started.elapsed().as_micros()).unwrap_or(i64::MAX);
         // Presentation times must increase.
         self.last_time = elapsed.max(self.last_time + 1);
@@ -182,45 +254,60 @@ impl Session {
                 &[CFBoolean::new(true)],
             )
         });
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.outputs.lock().pending.push_back((id, deliver));
         let mut flags = VTEncodeInfoFlags::empty();
-        // SAFETY: The pixel buffer and the options dictionary are valid for the call; the output
-        // callback only touches `self.output`, which outlives the session.
+        // SAFETY: The pixel buffer and the options dictionary are valid for the call. The frame
+        // refcon is an id, never dereferenced; the output callback only touches `self.outputs`,
+        // which outlives the session.
         let status = unsafe {
             self.compression.encode_frame(
                 frame.buffer(),
                 time,
                 kCMTimeInvalid,
                 options.as_deref().map(CFDictionary::as_opaque),
-                std::ptr::null_mut(),
+                std::ptr::without_provenance_mut(id),
                 &raw mut flags,
             )
         };
         if status != 0 {
-            return Err(CodecError::VideoToolbox {
-                operation: "frame encoding",
-                status,
+            let mut outputs = self.outputs.lock();
+            let deliver = outputs
+                .pending
+                .iter()
+                .position(|(pending, _)| *pending == id)
+                .and_then(|index| outputs.pending.remove(index))
+                .map(|(_, deliver)| deliver);
+            return Err(SubmitError {
+                error: CodecError::VideoToolbox {
+                    operation: "frame encoding",
+                    status,
+                },
+                deliver,
             });
         }
-        // SAFETY: Waits for the frame just submitted; the callback runs before this returns.
-        let status = unsafe { self.compression.complete_frames(time) };
+        Ok(())
+    }
+
+    /// Waits for every submitted frame. Deliveries VideoToolbox never answered are dropped, so
+    /// no caller waits on them forever.
+    fn flush(&mut self) {
+        // SAFETY: The session is valid; the callbacks this runs only touch `self.outputs`.
+        let status = unsafe { self.compression.complete_frames(kCMTimeInvalid) };
         if status != 0 {
-            return Err(CodecError::VideoToolbox {
-                operation: "frame completion",
-                status,
-            });
+            tracing::debug!(status, "VideoToolbox frame completion failed");
         }
-        let output = self
-            .output
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        output.transpose()
+        let abandoned = std::mem::take(&mut self.outputs.lock().pending);
+        drop(abandoned);
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Invalidating stops callbacks before `output` is freed.
+        // Frames still in flight are delivered first, in order.
+        self.flush();
+        // Invalidating stops callbacks before `outputs` is freed.
         // SAFETY: The session is valid and is not used afterwards.
         unsafe { self.compression.invalidate() };
     }
@@ -228,12 +315,12 @@ impl Drop for Session {
 
 fn create_session(
     size: (u32, u32),
-    output: &Mutex<CallbackOutput>,
+    outputs: &Outputs,
 ) -> Result<CFRetained<VTCompressionSession>, CodecError> {
     let width = i32::try_from(size.0).map_err(|_| unsupported(size))?;
     let height = i32::try_from(size.1).map_err(|_| unsupported(size))?;
     let mut raw = std::ptr::null_mut();
-    // SAFETY: Every pointer is valid for the call. The refcon points at `output`, which the
+    // SAFETY: Every pointer is valid for the call. The refcon points at `outputs`, which the
     // caller keeps alive (boxed) until the session is invalidated.
     let status = unsafe {
         VTCompressionSession::create(
@@ -245,7 +332,7 @@ fn create_session(
             None,
             None,
             Some(output_callback),
-            std::ptr::from_ref(output).cast_mut().cast(),
+            std::ptr::from_ref(outputs).cast_mut().cast(),
             NonNull::from(&mut raw),
         )
     };
@@ -266,33 +353,58 @@ fn unsupported(size: (u32, u32)) -> CodecError {
     }
 }
 
-/// Receives each compressed frame, on a VideoToolbox thread or within
-/// `VTCompressionSessionCompleteFrames`.
+/// Receives each compressed frame, in submission order, on a VideoToolbox thread or within
+/// `VTCompressionSessionCompleteFrames`, and hands it to the frame's delivery.
 unsafe extern "C-unwind" fn output_callback(
     refcon: *mut c_void,
-    _source_frame: *mut c_void,
+    source_frame: *mut c_void,
     status: i32,
     flags: VTEncodeInfoFlags,
     sample: *mut CMSampleBuffer,
 ) {
-    // SAFETY: The refcon is the session's boxed output slot, alive until the session is
-    // invalidated.
-    let output: &Mutex<CallbackOutput> = unsafe { &*refcon.cast_const().cast() };
-    let result = if status != 0 {
-        Some(Err(CodecError::VideoToolbox {
+    // SAFETY: The refcon is the session's boxed outputs, alive until the session is invalidated.
+    let outputs: &Outputs = unsafe { &*refcon.cast_const().cast() };
+    let id = source_frame.addr();
+    // Delivering under the lock keeps frames in order even if callbacks were to overlap.
+    let mut state = outputs.lock();
+    let Some(index) = state.pending.iter().position(|(pending, _)| *pending == id) else {
+        return;
+    };
+    let Some((_, deliver)) = state.pending.remove(index) else {
+        return;
+    };
+    if state.failed {
+        return;
+    }
+    let encoded = if status != 0 {
+        Err(CodecError::VideoToolbox {
             operation: "frame encoding",
             status,
-        }))
+        })
     } else if flags.contains(VTEncodeInfoFlags::FrameDropped) {
-        None
+        // The encoder skipped the frame itself, so the next one does not reference it.
+        return;
     } else {
         // SAFETY: A successful callback carries a valid sample buffer, or none for a dropped
         // frame.
-        unsafe { sample.as_ref() }.map(annex_b)
+        let Some(sample) = (unsafe { sample.as_ref() }) else {
+            return;
+        };
+        annex_b(sample)
     };
-    *output
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = result;
+    match encoded {
+        Ok((data, keyframe)) => deliver(EncodedFrame {
+            width: state.size.0,
+            height: state.size.1,
+            keyframe,
+            data,
+        }),
+        Err(error) => {
+            // A missing frame would break the reference chain of every frame after it.
+            tracing::warn!(%error, "hardware encoding failed");
+            state.failed = true;
+        }
+    }
 }
 
 /// Extracts one access unit as Annex-B, with SPS and PPS in front of a keyframe.
