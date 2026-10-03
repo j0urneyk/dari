@@ -344,13 +344,17 @@ mod tests {
 
     /// One encoder per backend this platform has.
     fn encoders() -> Vec<VideoEncoder> {
+        encoders_with(EncoderSettings::default())
+    }
+
+    fn encoders_with(settings: EncoderSettings) -> Vec<VideoEncoder> {
         [false, true]
             .into_iter()
             .filter(|hardware| !hardware || cfg!(target_os = "macos"))
             .map(|hardware| {
                 VideoEncoder::new(EncoderSettings {
                     hardware,
-                    ..EncoderSettings::default()
+                    ..settings
                 })
                 .unwrap()
             })
@@ -442,6 +446,27 @@ mod tests {
             assert_eq!((encoded.width, encoded.height), (128, 96));
             let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
             assert_eq!((decoded.width, decoded.height), (128, 96));
+        }
+    }
+
+    #[test]
+    fn a_large_fast_stream_stays_decodable() {
+        // 2560×1662 at 144 fps is past level 5.2's macroblock rate, the highest OpenH264 knows.
+        for mut encoder in encoders_with(EncoderSettings {
+            max_fps: 144.0,
+            ..EncoderSettings::default()
+        }) {
+            let hardware = encoder.is_hardware();
+            let mut capturer = SyntheticCapturer::new(2560, 1662);
+            let mut decoder = VideoDecoder::new().unwrap();
+            for _ in 0..2 {
+                let encoded = encoder.encode(&frame(&mut capturer)).unwrap().unwrap();
+                let decoded = decoder.decode(&encoded.data);
+                assert!(
+                    matches!(decoded, Ok(Some(_))),
+                    "{decoded:?} (hardware: {hardware})"
+                );
+            }
         }
     }
 
