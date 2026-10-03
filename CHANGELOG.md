@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
   groups settings into a list, and lists nearby and recent devices as rows you can pick from. The viewer toolbar
   has a session status dot and segmented display and quality controls, and waiting, approval, and session-ended
   states appear as centered cards over the screen.
+- A new app icon: an arch bridge (다리, the app's name) with a remote pointer on its crown, replacing the generic
+  monitor. The home window's header shows the same icon.
 
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.

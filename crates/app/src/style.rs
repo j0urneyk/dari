@@ -30,12 +30,20 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
-/// The component icons plus the few extra Lucide icons Dari uses.
+/// Where [`AppAssets`] serves the app icon, for [`logo`].
+const APP_ICON: &str = "brand/icon.png";
+
+/// The component icons, the few extra Lucide icons Dari uses, and the app icon.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == APP_ICON {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icons/icon-128.png"
+            ))));
+        }
         match ExtraIcons.load(path)? {
             Some(data) => Ok(Some(data)),
             None => gpui_kit::assets::Assets.load(path),
@@ -323,21 +331,8 @@ pub(crate) fn segment(
     }
 }
 
-/// The app mark: the icon's blue tile with a monitor.
-pub(crate) fn logo() -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(38.))
-        .rounded(px(11.))
-        .bg(linear_gradient(
-            135.,
-            linear_color_stop(rgb(0x3B82F6), 0.),
-            linear_color_stop(rgb(0x1D4ED8), 1.),
-        ))
-        .shadow_sm()
-        .text_color(gpui_kit::white())
-        .child(Icon::new(gpui_kit::assets::IconName::Monitor).with_size(px(20.)))
+/// The app icon, as shown in the home window's header.
+pub(crate) fn logo() -> Img {
+    // The icon's tile fills 7/8 of the image, so 44px shows a 38px tile.
+    img(APP_ICON).flex_none().size(px(44.))
 }

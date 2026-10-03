@@ -161,7 +161,18 @@ runner takes about 15 minutes for clippy and about 20 minutes for tests.
 
 Packaging is configured in `[package.metadata.packager]` in `crates/app/Cargo.toml` (bundle ID `dev.dari.app`,
 macOS 12.0 minimum, per-user Windows NSIS install). The icon's source is `crates/app/assets/icon.svg`, from which
-the PNGs and `.icns` (via `iconutil`) are generated. `assets/Info.plist` declares the local network usage
+the PNGs and `.icns` are generated with [librsvg](https://gitlab.gnome.org/GNOME/librsvg)'s `rsvg-convert` and
+`iconutil` (run from `crates/app/assets`). The home window's header shows `icon-128.png`, embedded in the binary.
+
+```bash
+for s in 32 128 256 512 1024; do rsvg-convert -w $s -h $s icon.svg -o icons/icon-$s.png; done
+```
+
+```bash
+mkdir -p Dari.iconset && for s in 16 32 128 256 512; do rsvg-convert -w $s -h $s icon.svg -o Dari.iconset/icon_${s}x${s}.png; rsvg-convert -w $((s*2)) -h $((s*2)) icon.svg -o Dari.iconset/icon_${s}x${s}@2x.png; done && iconutil -c icns Dari.iconset -o icons/icon.icns && rm -r Dari.iconset
+```
+
+`assets/Info.plist` declares the local network usage
 description (`NSLocalNetworkUsageDescription`) and the Bonjour service (`_dari._udp`); since macOS 15, LAN
 connections and mDNS are blocked without them. macOS grants Screen Recording and Accessibility per bundle ID, so
 changing the bundle ID makes users grant them again.

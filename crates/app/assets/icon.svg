@@ -6,10 +6,15 @@
     </linearGradient>
   </defs>
   <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#background)"/>
-  <!-- Monitor -->
-  <rect x="232" y="292" width="560" height="360" rx="44" fill="none" stroke="#FFFFFF" stroke-width="44"/>
-  <rect x="452" y="652" width="120" height="70" fill="#FFFFFF"/>
-  <rect x="352" y="716" width="320" height="44" rx="22" fill="#FFFFFF"/>
-  <!-- Remote pointer on the screen -->
-  <path d="M470 392 L470 568 L512 528 L544 596 L576 582 L544 514 L600 510 Z" fill="#FFFFFF"/>
+  <g transform="translate(0 -24)">
+  <!-- Water under the bridge -->
+  <path d="M312 762 H712" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="28" stroke-linecap="round"/>
+  <path d="M408 830 H616" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="28" stroke-linecap="round"/>
+  <!-- Bridge (다리): a low arch holding the deck up on four hangers -->
+  <path d="M296 650 V479 M392 650 V430 M632 650 V430 M728 650 V479" fill="none" stroke="#FFFFFF" stroke-width="26"/>
+  <path d="M168 650 C290 330 734 330 856 650" fill="none" stroke="#FFFFFF" stroke-width="56"/>
+  <path d="M140 650 H884" fill="none" stroke="#FFFFFF" stroke-width="60" stroke-linecap="round"/>
+  <!-- Remote pointer on the crown, cut out from the arch by a ring of the tile's blue -->
+  <path d="M468 330 L468 544 L515 498 L550 574 L586 557 L551 483 L617 478 Z" fill="#FFFFFF" stroke="#2C6CEC" stroke-width="30" stroke-linejoin="round" paint-order="stroke"/>
+  </g>
 </svg>
