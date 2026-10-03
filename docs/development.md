@@ -162,6 +162,27 @@ A host and a viewer on the same machine share one clipboard, so the clipboard ro
 machines. The rest of `dari-check` can still be tried locally with `dari-check host --port 0 --approve view-only
 --nonce x` and `dari-check view 127.0.0.1:<port> --approve view-only --nonce x`.
 
+#### Audio check
+
+`dari-check audio-host` plays a 997 Hz tone through this machine's speakers and shares its system audio;
+`dari-check audio-view ADDRESS` connects, asks for audio, records what arrives instead of playing it, and passes when
+the received sound is loud enough and strongest at 997 Hz. The host side needs a real output device (a VM needs a
+virtual sound card). On macOS the host must run from an app bundle that declares `NSAudioCaptureUsageDescription`,
+or macOS records silence without asking; `scripts/crosscheck/mac-check-app.sh` wraps `dari-check` in an ad-hoc
+signed `target/crosscheck/DariCheck.app`. Approve the system audio prompt once; rebuilding the bundle changes its
+signature, so macOS may ask again.
+
+```bash
+scripts/crosscheck/mac-check-app.sh
+```
+
+```bash
+open -n --stdout target/crosscheck/host.log target/crosscheck/DariCheck.app --args audio-host --port 0
+```
+
+Then run `dari-check audio-view 127.0.0.1:PORT` with the port and password from `host.log` (here, or from another
+machine with this Mac's address). The tone is audible during the run.
+
 #### Local Windows 11 VM
 
 On Apple silicon, `scripts/crosscheck/vm/create-vm.sh` creates a Windows 11 on Arm VM in UTM (`brew install --cask
