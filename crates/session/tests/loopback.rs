@@ -648,9 +648,7 @@ async fn without_approval_the_stream_starts_at_the_requested_rate() {
     })
     .await;
     assert_eq!(first, ViewerEvent::FrameRate(60));
-    let opened = opened.lock().unwrap().clone();
-    assert_eq!(opened.len(), 1, "capture never restarted: {opened:?}");
-    assert_eq!(opened[0].max_fps, 60);
+    assert_single_capture_at(&opened, 60).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -670,10 +668,18 @@ async fn a_frame_rate_asked_for_before_approval_applies_from_the_start() {
         *event == ViewerEvent::FrameRate(60)
     })
     .await;
-    // One capture at the requested rate, not a default one restarted.
+    assert_single_capture_at(&opened, 60).await;
+}
+
+/// Checks that capture opened once, at `max_fps`, rather than at a default and again after.
+async fn assert_single_capture_at(opened: &Arc<Mutex<Vec<StreamSettings>>>, max_fps: u32) {
+    // The capturer opens on its own thread, so the host may report the rate before it ran.
+    wait_until(|| !opened.lock().unwrap().is_empty()).await;
+    // A restart would follow within a loopback round trip; give it ample time to show up.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let opened = opened.lock().unwrap().clone();
-    assert_eq!(opened.len(), 1);
-    assert_eq!(opened[0].max_fps, 60);
+    assert_eq!(opened.len(), 1, "capture restarted: {opened:?}");
+    assert_eq!(opened[0].max_fps, max_fps);
 }
 
 #[tokio::test(flavor = "multi_thread")]
