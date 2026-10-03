@@ -19,6 +19,7 @@ use dari_session::{
 use enigo::{Coordinate, Enigo, Mouse as _, Settings};
 use tokio::sync::mpsc;
 
+use crate::probe::{self, HANGUL_KEYS, HANGUL_TEXT, ProbeLog, SharedProbe, TYPED_TEXT};
 use crate::scenario::{
     Approval, POINTER_TARGETS, Verdict, expected_landing, host_token, lands_near,
     shortcut_modifier, viewer_token,
@@ -47,6 +48,17 @@ pub(crate) struct HostArgs {
     /// Give up if no session has started and ended within this many seconds.
     #[arg(long, default_value_t = 180)]
     timeout: u64,
+    /// Expect the Korean input method to compose Hangul from the viewer's keys (Windows hosts
+    /// with Korean installed).
+    #[arg(long)]
+    expect_hangul: bool,
+}
+
+impl HostArgs {
+    /// Whether the input window should record the session's effects: only control does anything.
+    pub(crate) fn wants_probe(&self) -> bool {
+        self.approve == Approval::Allow
+    }
 }
 
 /// Everything the session did to this machine.
@@ -55,7 +67,7 @@ struct Observations {
     /// Where the OS pointer was after each injected pointer move; `None` if unreadable.
     landings: Vec<Option<(i32, i32)>>,
     keys: Vec<(KeyCode, bool)>,
-    /// Buttons, wheel, and text: not part of the scenario, so any is unexpected.
+    /// Buttons, wheel, and text, which a view-only session must not inject.
     other_input: usize,
     inject_errors: Vec<String>,
     /// Text the session put on the system clipboard, as read back from it.
@@ -223,7 +235,8 @@ struct Timeline {
     ended: Option<SessionEndReason>,
 }
 
-pub(crate) async fn run(args: HostArgs) -> anyhow::Result<ExitCode> {
+/// Hosts one session and judges it. `probe` is the input window's record, when it runs.
+pub(crate) async fn run(args: HostArgs, probe: Option<SharedProbe>) -> anyhow::Result<ExitCode> {
     let displays = SystemPlatform
         .displays()
         .context("cannot list this machine's displays")?;
@@ -271,7 +284,8 @@ pub(crate) async fn run(args: HostArgs) -> anyhow::Result<ExitCode> {
 
     let observations =
         std::mem::take(&mut *observations.lock().unwrap_or_else(PoisonError::into_inner));
-    Ok(judge(&args, &displays, &timeline, &observations).finish())
+    let probe = probe.as_ref().map(probe::snapshot);
+    Ok(judge(&args, &displays, &timeline, &observations, probe.as_ref()).finish())
 }
 
 fn print_displays(displays: &[DisplayInfo]) {
@@ -362,6 +376,7 @@ fn judge(
     displays: &[DisplayInfo],
     timeline: &Timeline,
     seen: &Observations,
+    probe: Option<&ProbeLog>,
 ) -> Verdict {
     let mut verdict = Verdict::default();
     if !timeline.started {
@@ -379,7 +394,10 @@ fn judge(
         verdict.fail(format!("input injection failed: {error}"));
     }
     match args.approve {
-        Approval::Allow => judge_allowed(args, displays, timeline, seen, &mut verdict),
+        Approval::Allow => {
+            judge_allowed(args, displays, timeline, seen, &mut verdict);
+            judge_effects(args, probe, &mut verdict);
+        }
         Approval::ViewOnly => judge_view_only(timeline, seen, &mut verdict),
     }
     verdict
@@ -446,13 +464,6 @@ fn judge_allowed(
             .any(|(key, _)| *key == KeyCode::Named(foreign)),
         format!("no untranslated {foreign:?} key arrives"),
     );
-    verdict.check(
-        seen.other_input == 0,
-        format!(
-            "no unexpected buttons, wheel, or text ({})",
-            seen.other_input
-        ),
-    );
     let token = viewer_token(&args.nonce);
     verdict.check(
         seen.clipboard_writes
@@ -470,6 +481,67 @@ fn judge_allowed(
     verdict.check(
         timeline.ended == Some(SessionEndReason::HostEnded),
         format!("the host ends the session (ended: {:?})", timeline.ended),
+    );
+}
+
+/// What the session's input did in the input window: the checks a person would make by typing,
+/// clicking, and scrolling in an app on the host.
+fn judge_effects(args: &HostArgs, probe: Option<&ProbeLog>, verdict: &mut Verdict) {
+    let Some(probe) = probe.filter(|probe| probe.opened) else {
+        verdict.fail(format!(
+            "the input window opens ({})",
+            probe
+                .and_then(|probe| probe.error.as_deref())
+                .unwrap_or("no window")
+        ));
+        return;
+    };
+    verdict.check(
+        probe.clicked_middle(),
+        format!(
+            "a click at the display's centre lands in the input window (clicks {:?} in a {}x{} \
+             window)",
+            probe.left_clicks, probe.size.0, probe.size.1
+        ),
+    );
+    verdict.check(
+        probe.focused,
+        "the click gives the input window keyboard focus",
+    );
+    verdict.check(
+        probe.wheel_down.abs() > 0.0,
+        format!(
+            "the wheel scrolls the window (moved {:+.1})",
+            probe.wheel_down
+        ),
+    );
+    verdict.check(
+        probe.text.contains(TYPED_TEXT),
+        format!(
+            "typed keys arrive as {TYPED_TEXT:?} (window got {:?})",
+            probe.text
+        ),
+    );
+    if args.expect_hangul {
+        verdict.check(
+            probe.text.contains(HANGUL_TEXT),
+            format!(
+                "the Korean input method composes {HANGUL_TEXT:?} from {HANGUL_KEYS:?} (window got \
+                 {:?})",
+                probe.text
+            ),
+        );
+    }
+    let modifier = match Os::current() {
+        Os::MacOs => "super",
+        _ => "control",
+    };
+    verdict.check(
+        probe.copy_shortcuts.contains(&modifier),
+        format!(
+            "the viewer's copy shortcut reaches the window as {modifier}+C (got {:?})",
+            probe.copy_shortcuts
+        ),
     );
 }
 
