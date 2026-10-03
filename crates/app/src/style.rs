@@ -34,6 +34,7 @@ gpui_kit::assets::icon_assets!(
         Gauge,
         Image,
         KeyRound,
+        Languages,
         Layers,
         Laptop,
         Monitor,

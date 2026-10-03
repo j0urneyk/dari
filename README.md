@@ -22,7 +22,7 @@ What you can do with it:
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
   host.
 
-The UI follows the system language: Korean or English.
+The UI is in Korean or English: it follows the system language unless you pick one in the settings.
 
 ## Status
 

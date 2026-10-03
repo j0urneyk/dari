@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   Auto follows the viewer's fastest display, and the host caps the rate at its own display's refresh rate and
   reports what it settled on. `dari connect --fps` does the same from the command line. Faster streams get a
   higher bitrate.
+- **Language** on the settings page: System, 한국어, or English. The choice is saved and every open window
+  switches right away; System keeps following the system language as before.
 
 ### Changed
 
