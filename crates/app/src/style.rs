@@ -268,7 +268,12 @@ pub(crate) fn setting_row(
 }
 
 /// A tinted message box, for warnings and errors.
-pub(crate) fn callout(icon: impl Into<Icon>, color: Hsla, cx: &App) -> Div {
+pub(crate) fn callout(
+    icon: impl Into<Icon>,
+    color: Hsla,
+    content: impl IntoElement,
+    cx: &App,
+) -> Div {
     div()
         .h_flex()
         .items_start()
@@ -285,6 +290,9 @@ pub(crate) fn callout(icon: impl Into<Icon>, color: Hsla, cx: &App) -> Div {
                 .text_color(color)
                 .child(Icon::new(icon).small()),
         )
+        // A flex item is never narrower than its content unless told so; without
+        // `min_w_0`, long messages run past the box instead of wrapping.
+        .child(div().flex_1().min_w_0().child(content))
 }
 
 /// A segmented control: a tray holding [`segment`]s, one of them selected.

@@ -188,6 +188,22 @@ mod macos {
         });
         save(&mut cx, window, "home");
 
+        // A failed attempt explains itself inside the error box; long messages wrap, not spill.
+        cx.update_window(window, |_, window, cx| {
+            window.click("connect", cx);
+            window.render_frame(cx);
+            let callout = window.find("connect-error").bounds();
+            let message = window.find("connect-error-text").bounds();
+            assert!(
+                message.right() <= callout.right(),
+                "the error text ends at {:?}, outside its box ending at {:?}",
+                message.right(),
+                callout.right()
+            );
+        })
+        .unwrap();
+        save(&mut cx, window, "home-error");
+
         cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
         save(&mut cx, window, "home-dark");
     }

@@ -495,7 +495,7 @@ impl ViewerView {
                         .text_xs()
                         .text_color(gpui_kit::white())
                         .child(Icon::new(IconName::Info).xsmall())
-                        .child(message),
+                        .child(div().min_w_0().child(message)),
                 ),
         })
     }

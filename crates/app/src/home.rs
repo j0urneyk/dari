@@ -14,6 +14,7 @@ use dari_session::{
     ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
     SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
 };
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
@@ -658,7 +659,7 @@ impl HostPanel {
         if self.permissions.all_granted() {
             return None;
         }
-        let mut message = div().v_flex().flex_1().gap_2().text_sm();
+        let mut message = div().v_flex().gap_2().text_sm();
         if !self.permissions.screen {
             message = message.child(text().screen_permission_missing);
         }
@@ -691,7 +692,12 @@ impl HostPanel {
                         }),
                 ),
         );
-        Some(style::callout(IconName::TriangleAlert, cx.theme().warning, cx).child(message))
+        Some(style::callout(
+            IconName::TriangleAlert,
+            cx.theme().warning,
+            message,
+            cx,
+        ))
     }
 
     fn render_session(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -902,16 +908,17 @@ impl Render for HostPanel {
                             .child(text().not_accepting_hint),
                     ),
             ),
-            Hosting::Failed(error) => panel.child(
-                style::callout(IconName::CircleX, cx.theme().danger, cx).child(
-                    div()
-                        .v_flex()
-                        .gap_0p5()
-                        .text_sm()
-                        .child(div().font_semibold().child(text().hosting_failed))
-                        .child(error.clone()),
-                ),
-            ),
+            Hosting::Failed(error) => panel.child(style::callout(
+                IconName::CircleX,
+                cx.theme().danger,
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .text_sm()
+                    .child(div().font_semibold().child(text().hosting_failed))
+                    .child(error.clone()),
+                cx,
+            )),
             Hosting::Running(_) => panel
                 .children(self.render_approval(cx))
                 .child(self.render_credentials(cx))
@@ -1281,8 +1288,18 @@ impl Render for ConnectPanel {
                             .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
                     )
                     .children(self.error.clone().map(|error| {
-                        style::callout(IconName::CircleX, cx.theme().danger, cx)
-                            .child(div().flex_1().text_sm().child(error))
+                        style::callout(
+                            IconName::CircleX,
+                            cx.theme().danger,
+                            div()
+                                .id("connect-error-text")
+                                .text_sm()
+                                .child(error)
+                                .test_support(),
+                            cx,
+                        )
+                        .id("connect-error")
+                        .test_support()
                     })),
             )
             .child(self.render_devices(cx))
