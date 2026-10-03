@@ -16,6 +16,9 @@ What you can do with it:
 - Let the host choose **Allow control**, **View only**, or **Decline** for each connection.
 - Stream the screen as H.264 and send keyboard, mouse, and wheel input. Text clipboard sharing, display
   switching, and speed/balanced/quality presets are included.
+- Hear the remote computer's sound (Opus over QUIC datagrams), muted with one click.
+- Send files both ways: drop them on the remote screen or pick them with **Send file…**. Files from the host are
+  saved only after you accept them.
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
   host.
 
@@ -29,6 +32,8 @@ GUI tests render the app on macOS. Some things haven't been checked on real hard
 - A session between a physical Mac and a physical Windows 11 PC.
 - Screen sharing and input injection with the macOS permissions actually granted.
 - The Windows installer produced by the release workflow.
+- Sound from a real host: system audio capture opens and streams on a Mac, but recording actual sound needs the
+  System Audio Recording permission granted to the app bundle, which automated tests can't do.
 
 ## Install
 
@@ -49,7 +54,9 @@ SmartScreen warns you.
 A Mac that shares its screen needs these permissions, granted in System Settings → Privacy & Security. The app's
 "This device" card shows which are missing and has **Request permission** and **Open System Settings** buttons.
 
-- **Screen & System Audio Recording**: lets the viewer see the screen. Restart the app after granting it.
+- **Screen & System Audio Recording**: lets the viewer see the screen, and (macOS 14.6 and later) hear its sound;
+  macOS asks about system audio separately the first time a viewer turns sound on. Restart the app after granting
+  screen recording.
 - **Accessibility**: lets the viewer control the keyboard and mouse.
 - **Local Network**: macOS asks on first launch. If you deny it, LAN connections and discovery are blocked.
 
@@ -132,7 +139,7 @@ input, wherever it sits on the network.
 
 - Windows' secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) can't be captured or controlled by a
   regular app.
-- Video uses software H.264 encoding only. There's no audio, file transfer, or unattended access.
+- Video uses software H.264 encoding only. There's no unattended access, folders can't be sent, and a Mac shares its sound only on macOS 14.6 or later.
 - Builds exist only for Apple silicon Macs and x64 Windows.
 
 ## Building from source

@@ -2,7 +2,8 @@ use dari_input::{EnigoBackend, InjectError, InputBackend};
 
 use crate::clipboard::{ClipboardFactory, SystemClipboard};
 use dari_media::{
-    CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer, StreamSettings, list_displays,
+    AudioCapturer, AudioError, CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer,
+    StreamSettings, SystemAudioCapturer, list_displays,
 };
 
 /// The host machine's screen and input devices.
@@ -23,9 +24,14 @@ pub trait HostPlatform: Send + Sync + 'static {
     fn clipboard(&self) -> Option<ClipboardFactory> {
         None
     }
+    /// Opens a capturer for what the system is playing. Called on the audio thread.
+    fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
+        Err(AudioError::Unsupported)
+    }
 }
 
-/// The real screen (ScreenCaptureKit on macOS, xcap elsewhere) and input (enigo).
+/// The real screen (ScreenCaptureKit on macOS, xcap elsewhere), input (enigo), and system audio
+/// (cpal loopback).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemPlatform;
 
@@ -48,5 +54,9 @@ impl HostPlatform for SystemPlatform {
 
     fn clipboard(&self) -> Option<ClipboardFactory> {
         Some(SystemClipboard::factory())
+    }
+
+    fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
+        Ok(Box::new(SystemAudioCapturer::open()?))
     }
 }

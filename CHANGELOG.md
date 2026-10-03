@@ -8,10 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- File transfer in both directions for sessions that allow control. Drop files on the remote screen or use
+  **Send file…** in the viewer toolbar or the host's session card. The host saves the viewer's files to Downloads;
+  files from the host wait until the viewer user chooses **Save**. Names are normalized (no more separated Korean
+  jamo from macOS), made safe for Windows, and never overwrite an existing file; cancelled or failed transfers
+  leave no partial file. Turn it off with **Exchange files** on the host.
+- Sound from the remote computer. The host records what it plays (WASAPI loopback on Windows, a Core Audio process
+  tap on macOS 14.6 and later) and sends 20 ms Opus packets as QUIC datagrams; the viewer plays them through a small
+  jitter buffer and conceals lost packets. **Sound on / Sound off** in the viewer toolbar mutes it, which also stops
+  recording on the host. Hosts turn it off with **Share sound**. View-only viewers hear the host too.
 - Frame rate choice in the viewer toolbar: Auto, 30, 60, 90, 120, or 144 fps, separate from the quality preset.
   Auto follows the viewer's fastest display, and the host caps the rate at its own display's refresh rate and
   reports what it settled on. `dari connect --fps` does the same from the command line. Faster streams get a
-  higher bitrate. Hosts on 0.0.1 keep streaming at 30 fps.
+  higher bitrate.
 
 ### Changed
 
@@ -19,14 +28,15 @@ All notable changes to this project are documented here. The format follows
   screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
   over 100 fps, and the host only sends frames when the screen changes. Windows hosts are unchanged.
 - Dari now requires macOS 13 or later (was 12).
-- The protocol version is 1.1. It adds the frame rate messages, which are only sent to peers that understand them,
-  so 1.1 and 1.0 apps still connect to each other.
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.
 - Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead
   of per relay, so one viewer's guesses no longer lock out everyone else using the same relay.
 - The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
   the new versions.
+- The session protocol is now version 2.0: every unidirectional stream starts with a byte naming its kind, so file
+  streams share the connection with video, audio travels as datagrams, and the viewer can ask for a frame rate.
+  0.0.1 apps are refused with a clear "incompatible version" message; update both computers.
 
 ### Fixed
 

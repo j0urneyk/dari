@@ -29,8 +29,8 @@ use dari_media::{DecodedFrame, StreamSettings};
 use dari_net::DeviceIdentity;
 use dari_proto::{Availability, HostStatus, InputEvent, PointerPosition};
 use dari_session::{
-    HostConfig, HostEvent, HostPlatform, SystemPlatform, ViewerConfig, ViewerEvent, ViewerTarget,
-    connect_viewer, start_host,
+    HostConfig, HostEvent, HostPlatform, HostPolicy, SystemPlatform, ViewerConfig, ViewerEvent,
+    ViewerTarget, connect_viewer, start_host,
 };
 use enigo::{Coordinate, Enigo, Mouse, Settings};
 
@@ -51,8 +51,13 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             host_name: "real-host".into(),
             stream: StreamSettings::default(),
-            require_approval: false,
-            clipboard: false,
+            policy: HostPolicy {
+                require_approval: false,
+                clipboard: false,
+                file_transfer: false,
+                audio: false,
+            },
+            downloads: None,
             relay: None,
         },
         Arc::new(DeviceIdentity::generate().unwrap()),
@@ -72,6 +77,9 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
             map_shortcut_modifier: false,
             clipboard: None,
             frame_rate: Some(144),
+            downloads: None,
+            audio: None,
+            play_audio: false,
         },
         &password,
     )
@@ -105,6 +113,8 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
         HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
+            files: Availability::Unavailable,
+            audio: Availability::Unavailable,
         },
         "grant Screen Recording and Accessibility to the process running this test"
     );

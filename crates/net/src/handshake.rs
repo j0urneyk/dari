@@ -270,7 +270,7 @@ fn confirmation(
 
 #[cfg(test)]
 mod tests {
-    use dari_proto::Os;
+    use dari_proto::{Os, ProtocolVersion};
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf, duplex, split};
 
     use super::*;
@@ -393,13 +393,14 @@ mod tests {
         assert!(!outcome.attempted);
     }
 
-    #[tokio::test]
-    async fn incompatible_viewer_version_is_rejected() {
+    async fn assert_viewer_version_rejected(version: ProtocolVersion) {
         let password = AccessPassword::generate().unwrap();
         let (mut viewer_channel, mut host_channel) = channel_pair();
         let mut attempted = false;
-        let mut hello = client_hello();
-        hello.version.major += 1;
+        let hello = ClientHello {
+            version,
+            ..client_hello()
+        };
         let viewer = async {
             viewer_channel
                 .send(&HandshakeMessage::ClientHello(hello))
@@ -424,6 +425,20 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!attempted);
+    }
+
+    #[tokio::test]
+    async fn incompatible_viewer_version_is_rejected() {
+        let mut version = PROTOCOL_VERSION;
+        version.major += 1;
+        assert_viewer_version_rejected(version).await;
+    }
+
+    #[tokio::test]
+    async fn released_1_0_viewer_is_rejected_as_incompatible() {
+        // 0.0.1 spoke 1.0 with untyped streams; its hello must still decode so it gets a clear
+        // rejection rather than a malformed-message error.
+        assert_viewer_version_rejected(ProtocolVersion { major: 1, minor: 0 }).await;
     }
 
     #[tokio::test]

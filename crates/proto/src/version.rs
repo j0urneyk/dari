@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version spoken by this build.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 2, minor: 0 };
 
 /// Protocol version advertised during the handshake.
 ///
@@ -16,11 +16,6 @@ pub struct ProtocolVersion {
 impl ProtocolVersion {
     pub fn is_compatible_with(self, other: ProtocolVersion) -> bool {
         self.major == other.major
-    }
-
-    /// Whether a peer speaking this version understands messages added in `version`.
-    pub fn understands(self, version: ProtocolVersion) -> bool {
-        self.major == version.major && self.minor >= version.minor
     }
 }
 
@@ -41,16 +36,5 @@ mod tests {
         let v2_0 = ProtocolVersion { major: 2, minor: 0 };
         assert!(v1_0.is_compatible_with(v1_3));
         assert!(!v1_0.is_compatible_with(v2_0));
-    }
-
-    #[test]
-    fn later_minor_versions_understand_earlier_messages() {
-        let v1_0 = ProtocolVersion { major: 1, minor: 0 };
-        let v1_1 = ProtocolVersion { major: 1, minor: 1 };
-        let v2_1 = ProtocolVersion { major: 2, minor: 1 };
-        assert!(v1_1.understands(v1_1));
-        assert!(v1_1.understands(v1_0));
-        assert!(!v1_0.understands(v1_1));
-        assert!(!v2_1.understands(v1_1));
     }
 }

@@ -53,7 +53,7 @@ pub fn sanitize_display_text(value: &str, max_chars: usize) -> String {
 
 /// Bidirectional overrides and zero-width characters, which can make a peer's name render as
 /// something other than what it is.
-fn is_invisible_format(character: char) -> bool {
+pub(crate) fn is_invisible_format(character: char) -> bool {
     matches!(
         character,
         '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}'

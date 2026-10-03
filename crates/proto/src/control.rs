@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputEvent;
+use crate::transfer::{FileOffer, TransferEnd, TransferId, validate_file_name};
 use crate::validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, validate_display_text};
-use crate::version::ProtocolVersion;
 
 /// Largest clipboard text either side sends, in bytes.
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -10,9 +10,6 @@ pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 pub const MAX_DISPLAYS: usize = 16;
 /// Highest frame rate, in frames per second, either side may name.
 pub const MAX_FRAME_RATE: u16 = 240;
-/// The version that added [`ControlMessage::SetFrameRate`] and [`ControlMessage::FrameRate`].
-/// Neither is sent to a peer that speaks an earlier version.
-pub const FRAME_RATE_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
 
 /// Whether a host capability works right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +27,10 @@ pub enum Availability {
 pub struct HostStatus {
     pub screen: Availability,
     pub input: Availability,
+    /// Whether files can be sent to and received from the host.
+    pub files: Availability,
+    /// Whether the host can share its system audio.
+    pub audio: Availability,
 }
 
 /// One of the host's displays, as offered to the viewer.
@@ -83,13 +84,24 @@ pub enum ControlMessage {
     SelectDisplay(u32),
     /// Viewer → host: change the stream quality.
     SetQuality(QualityPreset),
+    /// Viewer → host: start (`true`) or stop sending system audio. Hosts send none until asked.
+    SetAudio(bool),
     /// Either direction: the sender's clipboard text changed.
     Clipboard(String),
-    // Messages added after 1.0 go below, so earlier messages keep their encoding.
-    /// Viewer → host (since 1.1): the highest frame rate the viewer wants, in frames per second.
+    /// Either direction: the sender would like to transfer a file.
+    FileOffer(FileOffer),
+    /// The receiver accepted an offer; the sender opens the file's stream next.
+    FileAccept(TransferId),
+    /// The receiver saved the whole file.
+    FileDone(TransferId),
+    /// Either side stopped a transfer, or the receiver declined the offer.
+    FileCancel {
+        id: TransferId,
+        reason: TransferEnd,
+    },
+    /// Viewer → host: the highest frame rate the viewer wants, in frames per second.
     SetFrameRate(u16),
-    /// Host → viewer (since 1.1): the frame rate the host now streams at, at most what the
-    /// viewer asked for.
+    /// Host → viewer: the frame rate the host now streams at, at most what the viewer asked for.
     FrameRate(u16),
 }
 
@@ -116,6 +128,7 @@ impl Validate for ControlMessage {
                     Ok(())
                 }
             }
+            ControlMessage::FileOffer(offer) => validate_file_name(&offer.name),
             ControlMessage::SetFrameRate(rate) | ControlMessage::FrameRate(rate) => {
                 if (1..=MAX_FRAME_RATE).contains(rate) {
                     Ok(())
@@ -133,7 +146,11 @@ impl Validate for ControlMessage {
             | ControlMessage::AwaitingApproval
             | ControlMessage::Declined
             | ControlMessage::SelectDisplay(_)
-            | ControlMessage::SetQuality(_) => Ok(()),
+            | ControlMessage::SetQuality(_)
+            | ControlMessage::SetAudio(_)
+            | ControlMessage::FileAccept(_)
+            | ControlMessage::FileDone(_)
+            | ControlMessage::FileCancel { .. } => Ok(()),
         }
     }
 }
@@ -189,17 +206,17 @@ mod tests {
     }
 
     #[test]
-    fn messages_from_1_0_keep_their_encoding() {
-        // postcard encodes the variant index first; 1.0 peers rely on these staying put.
-        let encoded = |message: &ControlMessage| postcard::to_stdvec(message).unwrap()[0];
-        assert_eq!(encoded(&ControlMessage::Ping { token: 0 }), 0);
-        assert_eq!(
-            encoded(&ControlMessage::SetQuality(QualityPreset::Speed)),
-            10
-        );
-        assert_eq!(encoded(&ControlMessage::Clipboard(String::new())), 11);
-        assert_eq!(encoded(&ControlMessage::SetFrameRate(60)), 12);
-        assert_eq!(encoded(&ControlMessage::FrameRate(60)), 13);
+    fn file_offers_must_name_a_single_component() {
+        let offer = |name: &str| {
+            ControlMessage::FileOffer(FileOffer {
+                id: TransferId(1),
+                name: name.into(),
+                size: 10,
+            })
+        };
+        assert!(offer("photo.jpg").validate().is_ok());
+        assert!(offer("../photo.jpg").validate().is_err());
+        assert!(offer("C:\\photo.jpg").validate().is_err());
     }
 
     #[test]

@@ -28,7 +28,10 @@ pub use relay_client::{
     RelayBinding, RelayClientError, RelayIncoming, RelayRegistration, bind_to_allocation,
     connect_via_relay,
 };
-pub use session::{AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink};
+pub use session::{
+    AuthenticatedConnection, FileReceiver, FileSender, IncomingStream, MessageReceiver,
+    MessageSender, PeerInfo, SessionLink, SessionStreams, StreamError,
+};
 pub use tls::TlsConfigError;
 
 /// TLS configuration for relay servers (used by `dari-relay`).

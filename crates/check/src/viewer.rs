@@ -106,6 +106,7 @@ impl Session {
                 println!("session ended: {reason}");
                 self.ended = Some(reason);
             }
+            ViewerEvent::Transfer(_) => {}
         }
     }
 }
@@ -131,6 +132,9 @@ pub(crate) async fn run(args: ViewArgs) -> anyhow::Result<ExitCode> {
             map_shortcut_modifier: true,
             clipboard: Some(SystemClipboard::factory()),
             frame_rate: None,
+            downloads: None,
+            audio: None,
+            play_audio: false,
         },
         &password,
     )
@@ -183,11 +187,8 @@ async fn run_scenario(
         .await;
     verdict.check(
         reported
-            && session.status
-                == Some(HostStatus {
-                    screen: Availability::Available,
-                    input,
-                }),
+            && session.status.map(|status| (status.screen, status.input))
+                == Some((Availability::Available, input)),
         format!(
             "the host reports screen Available, input {input:?} (got {:?})",
             session.status
