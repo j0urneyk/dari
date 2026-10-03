@@ -35,6 +35,10 @@ use crate::transfer::{
 
 /// How long the host user has to allow or decline a viewer.
 pub(crate) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a host that admits viewers without asking waits for the viewer's stream request
+/// before streaming anyway. The request is the first thing a viewer sends, so it normally
+/// arrives one round trip after the handshake.
+const STREAM_REQUEST_WAIT: Duration = Duration::from_secs(2);
 /// How long the host waits for the viewer to acknowledge a host-initiated end.
 const DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 /// Input events buffered for injection; beyond this the viewer is flooding and events drop.
@@ -222,6 +226,7 @@ impl HostSession {
         end: &mut oneshot::Receiver<()>,
     ) -> Result<ApprovalDecision, SessionEndReason> {
         if !self.options.policy.require_approval {
+            self.await_stream_request(control, end).await?;
             return Ok(ApprovalDecision::AllowControl);
         }
         self.send(&ControlMessage::AwaitingApproval).await?;
@@ -238,23 +243,7 @@ impl HostSession {
                 decision = &mut decision => break decision.unwrap_or(ApprovalDecision::Deny),
                 () = &mut timeout => break ApprovalDecision::Deny,
                 _ = &mut *end => break ApprovalDecision::Deny,
-                message = control.next() => match message {
-                    None => return Err(SessionEndReason::ConnectionLost("control stream closed".into())),
-                    Some(Err(error)) => return Err(SessionEndReason::from_control_error(&error)),
-                    Some(Ok(ControlMessage::Disconnect)) => return Err(SessionEndReason::ViewerLeft),
-                    Some(Ok(ControlMessage::Ping { token })) => {
-                        self.send(&ControlMessage::Pong { token }).await?;
-                    }
-                    // Stream preferences only take effect once the stream starts.
-                    Some(Ok(ControlMessage::SetQuality(preset))) => {
-                        self.request.quality = Some(preset);
-                    }
-                    Some(Ok(ControlMessage::SetFrameRate(rate))) => {
-                        self.request.frame_rate = Some(rate);
-                    }
-                    // Anything else (input, requests) is ignored until the host user decides.
-                    Some(Ok(_)) => {}
-                },
+                message = control.next() => self.handle_before_start(message).await?,
             }
         };
         if decision == ApprovalDecision::Deny {
@@ -263,6 +252,54 @@ impl HostSession {
             return Err(SessionEndReason::Declined);
         }
         Ok(decision)
+    }
+
+    /// Waits for the viewer's first control message, its stream request, so the stream starts at
+    /// the frame rate the viewer wants instead of starting at the default and restarting.
+    async fn await_stream_request(
+        &mut self,
+        control: &mut MessageReceiver<ControlMessage>,
+        end: &mut oneshot::Receiver<()>,
+    ) -> Result<(), SessionEndReason> {
+        tokio::select! {
+            () = tokio::time::sleep(STREAM_REQUEST_WAIT) => {
+                debug!("no stream request from the viewer; streaming with the defaults");
+                Ok(())
+            }
+            _ = &mut *end => {
+                let _sent = self.send(&ControlMessage::Disconnect).await;
+                Err(SessionEndReason::HostEnded)
+            }
+            message = control.next() => self.handle_before_start(message).await,
+        }
+    }
+
+    /// Handles a control message that arrives before the stream starts.
+    async fn handle_before_start(
+        &mut self,
+        message: Option<Result<ControlMessage, dari_proto::CodecError>>,
+    ) -> Result<(), SessionEndReason> {
+        match message {
+            None => Err(SessionEndReason::ConnectionLost(
+                "control stream closed".into(),
+            )),
+            Some(Err(error)) => Err(SessionEndReason::from_control_error(&error)),
+            Some(Ok(ControlMessage::Disconnect)) => Err(SessionEndReason::ViewerLeft),
+            Some(Ok(ControlMessage::Ping { token })) => {
+                self.send(&ControlMessage::Pong { token }).await
+            }
+            // Stream preferences only take effect once the stream starts.
+            Some(Ok(ControlMessage::SetQuality(preset))) => {
+                self.request.quality = Some(preset);
+                Ok(())
+            }
+            Some(Ok(ControlMessage::SetFrameRate(rate))) => {
+                self.request.frame_rate = Some(rate);
+                Ok(())
+            }
+            // Anything else (input, requests) is ignored until the session starts.
+            Some(Ok(_)) => Ok(()),
+        }
     }
 
     async fn send_reply(&mut self, reply: Option<ControlMessage>) -> Result<(), SessionEndReason> {

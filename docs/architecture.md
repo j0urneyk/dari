@@ -79,7 +79,9 @@ end session) and receives state on a `HostEvent` channel (`PasswordChanged`, `Ap
 4. **During the session**: control-stream messages are handled. `SelectDisplay`, `SetQuality`, and `SetFrameRate`
    reopen only the capture stream (the new encoder starts with a keyframe); the video pump carries on and the
    input coordinate space follows the new display. A quality or frame rate request sent while approval is pending
-   is remembered and applies from the start. `RequestKeyframe` asks the encoder for a keyframe.
+   is remembered and applies from the start. Without approval, the host waits for the viewer's first control
+   message, its `SetFrameRate`, before streaming (up to 2 seconds), so the stream doesn't start at the default rate
+   and restart one round trip later. `RequestKeyframe` asks the encoder for a keyframe.
 5. **End**: the host sends `Disconnect` and waits up to 1 second for the peer to close the connection. Events left
    in the input queue are dropped, and keys and buttons still held are released. The service issues a new
    password.
@@ -134,7 +136,7 @@ changes, the encoder is recreated and starts with a keyframe. The `objc2` calls 
 The frame rate is a separate choice. The viewer asks for one with `SetFrameRate` (its "Auto" is the fastest refresh
 rate among its own displays, up to 144), and the host streams at that rate, capped by the refresh rate of the
 display it captures: the screen can't change faster than that. The host reports the result with `FrameRate`, and
-sends it again when switching displays changes it. A viewer that never asks gets the host's default, 30 fps. The bitrate
+sends it again when switching displays changes it. A viewer that doesn't ask gets the host's default, 30 fps. The bitrate
 grows with the frame rate as `bitrate × (fps / 30)^0.75`, up to 50 Mbps: a faster stream needs more bits, but less
 than proportionally more, because consecutive frames differ less. The host maps all of this in
 `host_session.rs` (`stream_settings`).
@@ -164,8 +166,8 @@ and returns a `ViewerHandle` and a `ViewerEvent` channel.
   network falls behind, pointer moves can't fill the queue and cause key releases to be dropped.
 - A cleanly ended video stream doesn't end the session; the control stream decides when the session is over.
 - Clipboard sharing turns on only when the host allows control, and turns off if the host later reports view-only.
-- `ViewerConfig::frame_rate` is sent as `SetFrameRate` right after authentication, and `set_frame_rate` changes it
-  later.
+- `ViewerConfig::frame_rate` is always sent as `SetFrameRate`, the first control message, right after
+  authentication, and `set_frame_rate` changes it later.
 - One task accepts every unidirectional stream the host opens for the whole session and routes it by its kind: the
   video stream to the decoder, file streams to the session's transfers.
 

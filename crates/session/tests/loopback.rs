@@ -238,7 +238,7 @@ fn viewer_config(host: &Host) -> ViewerConfig {
         client_name: "test-viewer".into(),
         map_shortcut_modifier: false,
         clipboard: None,
-        frame_rate: None,
+        frame_rate: 30,
         downloads: None,
         audio: None,
         play_audio: true,
@@ -600,7 +600,7 @@ async fn frame_rate_follows_the_viewer_up_to_the_display_refresh() {
     let opened = platform.opened.clone();
     let host = start(platform).await;
     let config = ViewerConfig {
-        frame_rate: Some(144),
+        frame_rate: 144,
         ..viewer_config(&host)
     };
     let (viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
@@ -632,12 +632,34 @@ async fn frame_rate_follows_the_viewer_up_to_the_display_refresh() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn without_approval_the_stream_starts_at_the_requested_rate() {
+    let platform = TestPlatform::default();
+    let opened = platform.opened.clone();
+    let host = start(platform).await;
+    let config = ViewerConfig {
+        frame_rate: 60,
+        ..viewer_config(&host)
+    };
+    let (_viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
+    // The first rate reported is the requested one, not the default the host would otherwise
+    // start with.
+    let first = wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::FrameRate(_))
+    })
+    .await;
+    assert_eq!(first, ViewerEvent::FrameRate(60));
+    let opened = opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1, "capture never restarted: {opened:?}");
+    assert_eq!(opened[0].max_fps, 60);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_frame_rate_asked_for_before_approval_applies_from_the_start() {
     let platform = TestPlatform::default();
     let opened = platform.opened.clone();
     let mut host = start_with(platform, true).await;
     let config = ViewerConfig {
-        frame_rate: Some(60),
+        frame_rate: 60,
         ..viewer_config(&host)
     };
     let (_viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
@@ -736,7 +758,7 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             client_name: "remote".into(),
             map_shortcut_modifier: false,
             clipboard: None,
-            frame_rate: None,
+            frame_rate: 30,
             downloads: None,
             audio: None,
             play_audio: true,

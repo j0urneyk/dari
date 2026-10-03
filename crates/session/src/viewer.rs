@@ -45,8 +45,9 @@ pub struct ViewerConfig {
     pub map_shortcut_modifier: bool,
     /// Share clipboard text once the host allows control; `None` disables it.
     pub clipboard: Option<ClipboardFactory>,
-    /// The highest frame rate to ask the host for, or `None` to leave it to the host.
-    pub frame_rate: Option<u16>,
+    /// The highest frame rate to ask the host for. It is the first message the viewer sends,
+    /// and a host that admits viewers without asking waits for it before streaming.
+    pub frame_rate: u16,
     /// Where files from the host are saved once the user accepts them; `None` declines them.
     pub downloads: Option<PathBuf>,
     /// Plays the host's system audio; `None` never asks the host for it.
@@ -261,9 +262,9 @@ pub async fn connect_viewer(
     let link = Arc::new(link);
 
     let (outgoing, outgoing_receiver) = mpsc::channel(INPUT_QUEUE);
-    if let Some(rate) = config.frame_rate {
-        let _sent = outgoing.try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
-    }
+    let _sent = outgoing.try_send(Outgoing::SetFrameRate(
+        config.frame_rate.clamp(1, MAX_FRAME_RATE),
+    ));
     let (frame_sender, frames) = watch::channel(None);
     let (events, event_receiver) = mpsc::unbounded_channel();
     let stats = Arc::new(ViewerStats::default());
