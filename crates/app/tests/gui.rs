@@ -548,6 +548,13 @@ mod macos {
             cx.update(|cx| home.read(cx).has_backdrop() && home.read(cx).has_password(cx))
         });
         save(&mut cx, window, "home-background");
+        // The picture fills the window's top half behind the page; it does not push the page
+        // down.
+        cx.update_window(window, |_, window, _| {
+            let switch = window.find("hosting").bounds();
+            assert!(switch.top() < px(110.), "{switch:?}");
+        })
+        .unwrap();
         cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
         save(&mut cx, window, "home-background-dark");
         cx.update_window(window, |_, window, cx| window.click("nav-settings", cx))
@@ -556,6 +563,17 @@ mod macos {
         cx.update_window(window, |_, window, cx| window.click("nav-connect", cx))
             .unwrap();
         save(&mut cx, window, "connect-background");
+        cx.update(|cx| apply_theme(ThemeMode::Light, cx));
+        cx.update_window(window, |_, window, cx| {
+            window.click("nav-settings", cx);
+            window.render_frame(cx);
+            window.click("translucent-window", cx);
+            window.click("nav-device", cx);
+        })
+        .unwrap();
+        save(&mut cx, window, "home-background-opaque");
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-background-opaque-dark");
     }
 
     /// The settings page switches the theme and the window's translucency, and remembers both.

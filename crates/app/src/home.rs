@@ -273,28 +273,17 @@ impl Home {
             )
             .child(self.render_devices(cx));
 
+        // The picture, blurred, drawn where it lies in the window: the sidebar reads as frosted
+        // glass over it, and keeps its own surface where the picture fades out.
         let frosted = self.backdrop.as_ref().map(|scenery| {
-            // The picture, blurred, drawn where it lies in the window: the sidebar reads as
-            // frosted glass over it.
-            div()
+            img(scenery.frost.clone())
                 .absolute()
-                .inset_0()
-                .child(
-                    img(scenery.frost.clone())
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .object_fit(ObjectFit::Cover)
-                        .opacity(style::frost_opacity(cx)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(style::frost_tint(scenery.average, cx)),
-                )
+                .top_0()
+                .left_0()
+                .w(viewport.width)
+                .h(viewport.height)
+                .object_fit(ObjectFit::Cover)
+                .opacity(style::frost_opacity(scenery.average, cx))
         });
         div()
             .relative()
@@ -304,9 +293,7 @@ impl Home {
             .w(style::SIDEBAR_WIDTH)
             .h_full()
             .pt(style::TITLE_BAR_HEIGHT)
-            .when(frosted.is_none(), |sidebar| {
-                sidebar.bg(style::sidebar_surface(cx))
-            })
+            .bg(style::sidebar_surface(cx))
             .children(frosted)
             // A hairline drawn inside the sidebar, over its surface: a border would sit outside
             // the frosted layer and let what is behind the window through untinted.
@@ -580,12 +567,6 @@ impl Render for Home {
             Page::Connect => self.connect.clone().into_any_element(),
             Page::Settings => self.render_settings(cx).into_any_element(),
         };
-        // Over a picture, pages start lower, so the picture shows across the top as the
-        // window's hero and the page sits where the veil has made the surface calm.
-        let page_top = match &self.backdrop {
-            Some(_) => (viewport.height * 0.24).max(style::TITLE_BAR_HEIGHT + px(16.)),
-            None => style::TITLE_BAR_HEIGHT + px(16.),
-        };
         let scenery = self.backdrop.as_ref().map(|scenery| {
             // Only behind the pages: the sidebar draws its own frosted copy, and layering both
             // would hide what is behind the window there. The picture is still placed against
@@ -597,6 +578,7 @@ impl Render for Home {
                 .left(style::SIDEBAR_WIDTH)
                 .right_0()
                 .overflow_hidden()
+                .bg(style::scenery_surface(cx))
                 .child(
                     // GPUI fades each primitive on its own, so only the picture is faded: the
                     // veil keeps its cover and the pages stay readable.
@@ -643,7 +625,7 @@ impl Render for Home {
                                     .max_w(px(620.))
                                     .mx_auto()
                                     .px_10()
-                                    .pt(page_top)
+                                    .pt(style::TITLE_BAR_HEIGHT + px(16.))
                                     .pb_10()
                                     .child(page),
                             ),

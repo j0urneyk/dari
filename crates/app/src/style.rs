@@ -17,6 +17,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 
+use crate::backdrop;
 use crate::settings::ThemePreference;
 use crate::state::AppState;
 use gpui_kit::*;
@@ -265,55 +266,72 @@ pub(crate) fn content_surface(cx: &App) -> Hsla {
     surface(cx).opacity(if translucent(cx) { 0.86 } else { 1. })
 }
 
-// With translucency on, the background picture's layers are drawn translucent too, so what is
-// behind the window shows through about as much as it does without a picture: about 40% across
-// the picture's hero band, a third through the sidebar, and a tenth under the pages, where the
-// veil keeps text readable. Every layer that thins out is blurred or sits in the hero band, so
-// no sharp detail reaches the pages.
+// With translucency on, the background picture is drawn translucent too, so what is behind the
+// window shows through it about as much as it does through the sidebar.
 
 /// How opaque the background picture is.
 pub(crate) fn picture_opacity(cx: &App) -> f32 {
     if translucent(cx) { 0.5 } else { 1. }
 }
 
-/// How opaque the blurred picture in a frosted panel is.
-pub(crate) fn frost_opacity(cx: &App) -> f32 {
-    if translucent(cx) { 0.3 } else { 1. }
+/// How opaque the blurred picture in the sidebar is, over the sidebar's own surface. The
+/// further the picture is from the surface in lightness, the less of it shows, so the sidebar's
+/// gray text stays readable.
+pub(crate) fn frost_opacity(average: Hsla, cx: &App) -> f32 {
+    let opacity = (0.55 - 0.6 * contrast(average, cx)).max(0.2);
+    if translucent(cx) {
+        opacity * 0.8
+    } else {
+        opacity
+    }
 }
 
-/// The surface color shifted toward a background picture's `average` color, so the surface
-/// over the picture belongs to it.
-fn picture_surface(average: Hsla, cx: &App) -> Hsla {
-    surface(cx).mix_oklab(average, if cx.theme().is_dark() { 0.78 } else { 0.84 })
+/// The pages' surface under a background picture. Translucent, it clears where the picture is
+/// whole, so the picture is all that stands between the desktop and the window's top half.
+pub(crate) fn scenery_surface(cx: &App) -> Background {
+    let surface = content_surface(cx);
+    if translucent(cx) {
+        linear_gradient(
+            180.,
+            linear_color_stop(surface.opacity(0.), backdrop::FADE_FROM),
+            linear_color_stop(surface, backdrop::FADE_TO),
+        )
+    } else {
+        surface.into()
+    }
 }
 
-/// The veil over a background picture: clear across the top, where the picture is the window's
-/// hero, thickening into a calm surface where the pages sit.
+/// The veil over a background picture: the surface's color shifted toward the picture's
+/// `average` color, covering the picture enough to keep the pages readable over it, and thinning
+/// out as the picture fades into the surface. A picture far from the surface in lightness, like
+/// a dark photo behind the light theme, needs the most cover.
 pub(crate) fn veil(average: Hsla, cx: &App) -> Background {
-    let color = picture_surface(average, cx);
+    let dark = cx.theme().is_dark();
+    let color = surface(cx).mix_oklab(average, if dark { 0.78 } else { 0.84 });
+    let cover = (0.2 + 0.7 * contrast(average, cx)).min(0.72);
     linear_gradient(
         180.,
-        linear_color_stop(color.opacity(0.02), 0.),
-        linear_color_stop(
-            color.opacity(match (translucent(cx), cx.theme().is_dark()) {
-                (true, true) => 0.4,
-                (true, false) => 0.46,
-                (false, _) => 0.92,
-            }),
-            0.27,
-        ),
+        linear_color_stop(color.opacity(cover), backdrop::FADE_FROM),
+        linear_color_stop(color.opacity(0.), backdrop::FADE_TO),
     )
 }
 
-/// The tint over the blurred picture in a frosted panel.
-pub(crate) fn frost_tint(average: Hsla, cx: &App) -> Hsla {
-    let cover = match (translucent(cx), cx.theme().is_dark()) {
-        (true, true) => 0.3,
-        (true, false) => 0.42,
-        (false, true) => 0.68,
-        (false, false) => 0.74,
+/// How far apart a picture's `average` color and the surface are in lightness, from 0 to 1.
+fn contrast(average: Hsla, cx: &App) -> f32 {
+    (lightness(surface(cx)) - lightness(average)).abs()
+}
+
+/// Perceived lightness, from 0 for black to 1 for white.
+fn lightness(color: Hsla) -> f32 {
+    let color = color.to_rgb();
+    let linear = |channel: f32| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
     };
-    picture_surface(average, cx).opacity(cover)
+    (0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)).cbrt()
 }
 
 /// A hairline between panels, visible on any background.
