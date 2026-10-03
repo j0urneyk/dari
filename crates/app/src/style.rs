@@ -109,7 +109,10 @@ pub(crate) fn sync_theme(cx: &mut App) {
 /// Has macOS draw the windows' own parts, the blur behind them above all, in the theme the
 /// settings ask for. Otherwise a light theme on a dark system sits on a dark blur and turns gray.
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code, reason = "reads two of AppKit's constant appearance names")]
+#[allow(
+    unsafe_code,
+    reason = "reads two of AppKit's constant appearance names"
+)]
 fn match_native_appearance(preference: ThemePreference) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{
