@@ -410,6 +410,7 @@ fn peer_from_hello(hello: ClientHello, address: SocketAddr) -> PeerInfo {
     PeerInfo {
         name: hello.client_name,
         os: hello.client_os,
+        version: hello.version,
         address,
         fingerprint: None,
     }
@@ -481,6 +482,7 @@ pub(crate) async fn connect_with(
         peer: PeerInfo {
             name: server_hello.host_name,
             os: server_hello.host_os,
+            version: server_hello.version,
             address,
             fingerprint,
         },

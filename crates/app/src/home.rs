@@ -22,7 +22,7 @@ use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _,
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::config::{device_name, local_addresses, resolve_target};
+use crate::config::{auto_frame_rate, device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::state::AppState;
@@ -836,6 +836,7 @@ impl ConnectPanel {
                 client_name: device_name(),
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),
+                frame_rate: Some(auto_frame_rate()),
             };
             connect_viewer(config, &password)
                 .await

@@ -16,8 +16,8 @@ pub use codec::{
     CONTROL_FRAME_LIMIT, CodecError, HANDSHAKE_FRAME_LIMIT, MessageCodec, VIDEO_FRAME_LIMIT,
 };
 pub use control::{
-    Availability, ControlMessage, DisplayDescription, HostStatus, MAX_CLIPBOARD_BYTES,
-    MAX_DISPLAYS, QualityPreset,
+    Availability, ControlMessage, DisplayDescription, FRAME_RATE_VERSION, HostStatus,
+    MAX_CLIPBOARD_BYTES, MAX_DISPLAYS, MAX_FRAME_RATE, QualityPreset,
 };
 pub use handshake::{
     AuthOutcome, ClientHello, HandshakeMessage, KEY_CONFIRMATION_LEN, Os, RejectReason, ServerHello,

@@ -82,8 +82,12 @@ impl HostPlatform for ObservedPlatform {
         SystemPlatform.displays()
     }
 
-    fn open_capturer(&self, display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
-        SystemPlatform.open_capturer(display)
+    fn open_capturer(
+        &self,
+        display: u32,
+        settings: StreamSettings,
+    ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+        SystemPlatform.open_capturer(display, settings)
     }
 
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {

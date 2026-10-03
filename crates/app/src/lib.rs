@@ -49,6 +49,10 @@ enum Command {
         /// Relay server for connecting by ID.
         #[arg(long, default_value = "")]
         relay: String,
+        /// Highest frame rate to ask the host for. Defaults to this machine's display refresh
+        /// rate (up to 144).
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=i64::from(dari_proto::MAX_FRAME_RATE)))]
+        fps: Option<u16>,
     },
 }
 
@@ -69,7 +73,11 @@ pub fn run() -> anyhow::Result<()> {
             runtime.block_on(async {
                 match command {
                     Command::Host { port, relay } => cli::host(port, relay).await,
-                    Command::Connect { address, relay } => cli::connect(&address, &relay).await,
+                    Command::Connect {
+                        address,
+                        relay,
+                        fps,
+                    } => cli::connect(&address, &relay, fps).await,
                 }
             })
         }

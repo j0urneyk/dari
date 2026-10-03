@@ -63,7 +63,7 @@ out-dir = "../../target/release"
 binaries = [{ path = "dari", main = true }]
 
 [package.metadata.packager.macos]
-minimum-system-version = "12.0"
+minimum-system-version = "13.0"
 info-plist-path = "assets/Info.plist"
 
 [package.metadata.packager.nsis]

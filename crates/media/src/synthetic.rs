@@ -1,7 +1,9 @@
 //! A capturer that renders a moving test pattern, for tests and machines without a display.
 
+use std::time::Duration;
+
 use crate::display::CaptureError;
-use crate::frame::RgbaFrame;
+use crate::frame::{CapturedFrame, RgbaFrame};
 use crate::stream::ScreenCapturer;
 
 /// Renders a horizontal gradient with a square that moves every frame.
@@ -26,10 +28,9 @@ impl SyntheticCapturer {
         self.width = width.max(1);
         self.height = height.max(1);
     }
-}
 
-impl ScreenCapturer for SyntheticCapturer {
-    fn capture(&mut self) -> Result<RgbaFrame, CaptureError> {
+    /// Draws the next frame of the pattern.
+    pub fn render(&mut self) -> RgbaFrame {
         let (width, height) = (self.width, self.height);
         let square = (width.min(height) / 4).max(1);
         let offset = (self.frame_index * 4) % width.max(1);
@@ -47,6 +48,12 @@ impl ScreenCapturer for SyntheticCapturer {
         }
         self.frame_index = self.frame_index.wrapping_add(1);
         RgbaFrame::new(width, height, pixels)
-            .ok_or_else(|| CaptureError::Backend("synthetic frame size overflow".into()))
+            .unwrap_or_else(|| unreachable!("the pattern fills exactly width * height pixels"))
+    }
+}
+
+impl ScreenCapturer for SyntheticCapturer {
+    fn capture(&mut self, _timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+        Ok(Some(self.render().into()))
     }
 }

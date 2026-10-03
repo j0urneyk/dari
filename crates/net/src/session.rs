@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dari_proto::{
-    CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, VIDEO_FRAME_LIMIT, VideoPacket,
+    CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, ProtocolVersion, VIDEO_FRAME_LIMIT,
+    VideoPacket,
 };
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -23,6 +24,9 @@ pub type MessageReceiver<T> = FramedRead<quinn::RecvStream, MessageCodec<T>>;
 pub struct PeerInfo {
     pub name: String,
     pub os: Os,
+    /// The protocol version the peer speaks. Same major version; the minor version says which
+    /// later messages it understands.
+    pub version: ProtocolVersion,
     pub address: SocketAddr,
     /// The host's certificate fingerprint. Only known on the viewer side.
     pub fingerprint: Option<Fingerprint>,

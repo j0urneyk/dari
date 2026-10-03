@@ -95,6 +95,7 @@ impl Session {
                 self.displays = displays;
                 self.active = Some(active);
             }
+            ViewerEvent::FrameRate(rate) => println!("host streams at up to {rate} fps"),
             ViewerEvent::Ended(reason) => {
                 println!("session ended: {reason}");
                 self.ended = Some(reason);
@@ -123,6 +124,7 @@ pub(crate) async fn run(args: ViewArgs) -> anyhow::Result<ExitCode> {
             client_name: crate::device_name(),
             map_shortcut_modifier: true,
             clipboard: Some(SystemClipboard::factory()),
+            frame_rate: None,
         },
         &password,
     )

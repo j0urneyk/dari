@@ -9,8 +9,8 @@ use dari_input::ModifierMapping;
 use dari_media::{DecodedFrame, VideoDecoder};
 use dari_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay};
 use dari_proto::{
-    Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
-    QualityPreset, VideoPacket,
+    Availability, ControlMessage, DeviceId, DisplayDescription, FRAME_RATE_VERSION, HostStatus,
+    InputEvent, MAX_FRAME_RATE, Os, QualityPreset, VideoPacket,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
@@ -38,6 +38,8 @@ pub struct ViewerConfig {
     pub map_shortcut_modifier: bool,
     /// Share clipboard text once the host allows control; `None` disables it.
     pub clipboard: Option<ClipboardFactory>,
+    /// The highest frame rate to ask the host for, or `None` to leave it to the host.
+    pub frame_rate: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,8 @@ pub enum ViewerEvent {
         displays: Vec<DisplayDescription>,
         active: u32,
     },
+    /// The frame rate the host streams at. Hosts older than protocol 1.1 do not report it.
+    FrameRate(u16),
     /// The session is over; no further events follow.
     Ended(SessionEndReason),
 }
@@ -72,6 +76,7 @@ impl std::fmt::Debug for ViewerConfig {
             .field("client_name", &self.client_name)
             .field("map_shortcut_modifier", &self.map_shortcut_modifier)
             .field("clipboard", &self.clipboard.is_some())
+            .field("frame_rate", &self.frame_rate)
             .finish()
     }
 }
@@ -88,6 +93,7 @@ enum Outgoing {
     RequestKeyframe,
     SelectDisplay(u32),
     SetQuality(QualityPreset),
+    SetFrameRate(u16),
     Clipboard(String),
     Disconnect,
 }
@@ -110,6 +116,7 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::RequestKeyframe => "RequestKeyframe",
             Outgoing::SelectDisplay(_) => "SelectDisplay",
             Outgoing::SetQuality(_) => "SetQuality",
+            Outgoing::SetFrameRate(_) => "SetFrameRate",
             Outgoing::Clipboard(_) => "Clipboard",
             Outgoing::Disconnect => "Disconnect",
         })
@@ -138,6 +145,15 @@ impl ViewerHandle {
     /// Asks the host for a different stream quality.
     pub fn set_quality(&self, preset: QualityPreset) {
         let _sent = self.outgoing.try_send(Outgoing::SetQuality(preset));
+    }
+
+    /// Asks the host to stream at up to `rate` frames per second (1 to [`MAX_FRAME_RATE`]).
+    /// The host answers with [`ViewerEvent::FrameRate`]. Hosts older than protocol 1.1 keep
+    /// their own rate.
+    pub fn set_frame_rate(&self, rate: u16) {
+        let _sent = self
+            .outgoing
+            .try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
     }
 
     /// The most recent decoded frame. Older frames are skipped, never queued.
@@ -195,6 +211,9 @@ pub async fn connect_viewer(
     let link = Arc::new(link);
 
     let (outgoing, outgoing_receiver) = mpsc::channel(INPUT_QUEUE);
+    if let Some(rate) = config.frame_rate {
+        let _sent = outgoing.try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
+    }
     let (frame_sender, frames) = watch::channel(None);
     let (events, event_receiver) = mpsc::unbounded_channel();
     let stats = Arc::new(ViewerStats::default());
@@ -208,7 +227,10 @@ pub async fn connect_viewer(
         frame_sender,
         events,
         stats.clone(),
-        mapping,
+        WriteOptions {
+            mapping,
+            frame_rate_supported: peer.version.understands(FRAME_RATE_VERSION),
+        },
         config.clipboard,
     ));
     Ok((
@@ -237,10 +259,14 @@ async fn supervise(
     frames: watch::Sender<Option<Arc<DecodedFrame>>>,
     events: mpsc::UnboundedSender<ViewerEvent>,
     stats: Arc<ViewerStats>,
-    mapping: Option<ModifierMapping>,
+    write_options: WriteOptions,
     clipboard_factory: Option<ClipboardFactory>,
 ) {
-    let mut writer = tokio::spawn(write_control(control_sender, outgoing_receiver, mapping));
+    let mut writer = tokio::spawn(write_control(
+        control_sender,
+        outgoing_receiver,
+        write_options,
+    ));
     let mut video = Some(tokio::spawn(receive_video(
         link.clone(),
         frames,
@@ -274,6 +300,9 @@ async fn supervise(
                 Some(Ok(ControlMessage::Displays { displays, active })) => {
                     let _sent = events.send(ViewerEvent::Displays { displays, active });
                 }
+                Some(Ok(ControlMessage::FrameRate(rate))) => {
+                    let _sent = events.send(ViewerEvent::FrameRate(rate));
+                }
                 Some(Ok(ControlMessage::Clipboard(text))) => {
                     if let Some(clipboard) = &clipboard {
                         clipboard.apply_remote(text);
@@ -285,7 +314,8 @@ async fn supervise(
                     ControlMessage::Input(_)
                     | ControlMessage::RequestKeyframe
                     | ControlMessage::SelectDisplay(_)
-                    | ControlMessage::SetQuality(_),
+                    | ControlMessage::SetQuality(_)
+                    | ControlMessage::SetFrameRate(_),
                 )) => {
                     break SessionEndReason::ProtocolError("host sent a viewer message".into());
                 }
@@ -336,20 +366,31 @@ async fn supervise(
     let _sent = events.send(ViewerEvent::Ended(reason));
 }
 
+/// How outgoing messages are adapted to the host.
+#[derive(Debug, Clone, Copy)]
+struct WriteOptions {
+    mapping: Option<ModifierMapping>,
+    /// The host speaks protocol 1.1 or later and understands `SetFrameRate`.
+    frame_rate_supported: bool,
+}
+
 async fn write_control(
     mut control: dari_net::MessageSender<ControlMessage>,
     mut outgoing: mpsc::Receiver<Outgoing>,
-    mapping: Option<ModifierMapping>,
+    options: WriteOptions,
 ) -> Result<(), String> {
     while let Some(item) = outgoing.recv().await {
         let message = match item {
-            Outgoing::Input(event) => ControlMessage::Input(match mapping {
+            Outgoing::Input(event) => ControlMessage::Input(match options.mapping {
                 Some(mapping) => mapping.apply(event),
                 None => event,
             }),
             Outgoing::RequestKeyframe => ControlMessage::RequestKeyframe,
             Outgoing::SelectDisplay(id) => ControlMessage::SelectDisplay(id),
             Outgoing::SetQuality(preset) => ControlMessage::SetQuality(preset),
+            // An older host would fail to decode it and end the session.
+            Outgoing::SetFrameRate(_) if !options.frame_rate_supported => continue,
+            Outgoing::SetFrameRate(rate) => ControlMessage::SetFrameRate(rate),
             Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
             Outgoing::Disconnect => {
                 let _sent = control.send(&ControlMessage::Disconnect).await;
