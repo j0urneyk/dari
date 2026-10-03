@@ -36,7 +36,7 @@ Download a build from [Releases](https://github.com/j0urneyk/dari/releases):
 
 | Platform | File |
 | --- | --- |
-| macOS (Apple silicon, 12 or later) | `dari_<version>_macos_aarch64.dmg` |
+| macOS (Apple silicon, 13 or later) | `dari_<version>_macos_aarch64.dmg` |
 | Windows 11 (x64) | `dari_<version>_x64-setup.exe` |
 | Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` |
 
@@ -66,7 +66,7 @@ the password, then press **Connect**. Computers on the same network also appear 
 The host user then sees a connection request and picks **Allow control**, **View only**, or **Decline**. If
 nobody answers within 30 seconds, the request is declined. Once allowed, the viewer window shows the remote
 screen and forwards your input. Its toolbar shows frames per second and round-trip latency, and lets you switch
-displays, change quality, or disconnect.
+displays, change quality, pick a frame rate (up to 144 fps), or disconnect.
 
 The password is used up the moment a viewer authenticates. The host gets a new one after the session ends.
 
@@ -106,7 +106,7 @@ dari connect 192.168.0.10
 ```
 
 `connect` asks for the password, or reads it from stdin when piped, and then reports received frames and bitrate
-every second. Set `RUST_LOG` to change the log level (default `info`).
+every second. `--fps` caps the frame rate it asks for; by default it matches this machine's display. Set `RUST_LOG` to change the log level (default `info`).
 
 ## Security model
 

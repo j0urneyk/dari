@@ -6,19 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
-  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
+- Frame rate choice in the viewer toolbar: Auto, 30, 60, 90, 120, or 144 fps, separate from the quality preset.
+  Auto follows the viewer's fastest display, and the host caps the rate at its own display's refresh rate and
+  reports what it settled on. `dari connect --fps` does the same from the command line. Faster streams get a
+  higher bitrate. Hosts on 0.0.1 keep streaming at 30 fps.
 
 ### Changed
 
+- macOS hosts capture with ScreenCaptureKit and encode with VideoToolbox in hardware, instead of taking a full
+  screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
+  over 100 fps, and the host only sends frames when the screen changes. Windows hosts are unchanged.
+- Dari now requires macOS 13 or later (was 12).
+- The protocol version is 1.1. It adds the frame rate messages, which are only sent to peers that understand them,
+  so 1.1 and 1.0 apps still connect to each other.
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.
 - Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead
   of per relay, so one viewer's guesses no longer lock out everyone else using the same relay.
 - The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
   the new versions.
+
+### Fixed
+
+- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
+  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
 
 ## [0.0.1] - 2026-10-03
 

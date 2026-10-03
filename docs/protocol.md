@@ -2,13 +2,22 @@
 
 Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
 `dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
-**1.0** (`PROTOCOL_VERSION`).
+**1.1** (`PROTOCOL_VERSION`).
 
 ## Version compatibility
 
 `ClientHello` and `ServerHello` in the handshake exchange a `ProtocolVersion { major, minor }`. Peers with the same
 `major` are compatible. A `minor` bump only adds messages, and a new message is never sent to a peer that didn't
 advertise support for it. The host refuses a different `major` with `Rejected(IncompatibleVersion)`.
+
+postcard encodes an enum variant by its index, so messages added in a minor version go at the end of
+`ControlMessage`, and each side checks the peer's version (`PeerInfo::version`, `ProtocolVersion::understands`)
+before sending one.
+
+| Version | Added |
+| --- | --- |
+| 1.0 | Everything not listed below |
+| 1.1 | `SetFrameRate`, `FrameRate` |
 
 ## Framing
 
@@ -81,6 +90,8 @@ that hasn't been sent yet.
 | `SelectDisplay(id)` | Viewer → host | Switch to another display |
 | `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
 | `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
+| `SetFrameRate(fps)` | Viewer → host | 1.1+. The highest frame rate the viewer wants, 1..=240 |
+| `FrameRate(fps)` | Host → viewer | 1.1+. The frame rate the host now streams at (the request capped by its display's refresh rate), 1..=240. Sent once streaming starts and whenever it changes |
 
 `Availability` is one of `Available`, `PermissionDenied` (macOS permission missing), `Unavailable`, or
 `NotAllowed` (input in a view-only session).
