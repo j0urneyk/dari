@@ -215,8 +215,11 @@ One-time setup:
    ```
 
 2. Under **Trust credentials**, add an OpenID Connect credential with the GitHub issuer, subject
-   `repo:j0urneyk/dari:*`, the custom claim `job_workflow_ref` = `j0urneyk/dari/.github/workflows/crosscheck.yml@*`
-   (so only this workflow can use it), and only the writable `auth_keys` scope for `tag:ci`. The workflow signs in with
+   `repo:j0urneyk@62772873/dari@1402251066:*`, the custom claim `job_workflow_ref` =
+   `*/.github/workflows/crosscheck.yml@*` (so only this workflow can use it), and only the writable `auth_keys` scope
+   for `tag:ci`. GitHub puts the owner's and repository's numeric IDs in the subject, so a renamed or recreated
+   repository can't take over the trust; a subject without them never matches (the credential's page shows the
+   subject it last received). The workflow signs in with
    GitHub's OIDC token, so nothing secret is stored: the credential's client ID and audience aren't secrets and go in
    the repository variables `TS_CLIENT_ID` and `TS_AUDIENCE`. If the tag isn't `tag:ci`, set `TS_TAGS` too.
 3. Run Tailscale on the Mac. The workflow file must be on the default branch before it can be dispatched.
