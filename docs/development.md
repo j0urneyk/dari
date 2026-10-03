@@ -202,12 +202,23 @@ Windows Server, not Windows 11; it covers the x64 build and a separate network p
 
 One-time setup:
 
-1. In the Tailscale admin console, add a tag (for example `tag:ci`) under `tagOwners` in the policy file, and make
-   sure the policy lets your Mac reach it.
-2. Under **Trust credentials**, add an OpenID Connect credential for GitHub with the writable `auth_keys` scope and
-   that tag, limited to this repository (`repo:j0urneyk/dari:*`). The workflow signs in with GitHub's OIDC token, so
-   nothing secret is stored: put the credential's client ID and audience in the repository variables `TS_CLIENT_ID`
-   and `TS_AUDIENCE`. If the tag isn't `tag:ci`, set the repository variable `TS_TAGS`.
+1. In the Tailscale policy file, add the tag and keep the runner's reach narrow: it runs whatever code the
+   dispatched branch has, so it may only send Dari's UDP traffic to your devices (the Mac's host on 47831, the relay on
+   47822, and the relay's allocations on ephemeral ports), while your devices can still reach it over SSH:
+
+   ```json
+   "tagOwners": {"tag:ci": ["autogroup:admin"]},
+   "grants": [
+       {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+       {"src": ["tag:ci"], "dst": ["autogroup:member"], "ip": ["udp:47822", "udp:47831", "udp:49152-65535"]},
+   ],
+   ```
+
+2. Under **Trust credentials**, add an OpenID Connect credential with the GitHub issuer, subject
+   `repo:j0urneyk/dari:*`, the custom claim `job_workflow_ref` = `j0urneyk/dari/.github/workflows/crosscheck.yml@*`
+   (so only this workflow can use it), and only the writable `auth_keys` scope for `tag:ci`. The workflow signs in with
+   GitHub's OIDC token, so nothing secret is stored: the credential's client ID and audience aren't secrets and go in
+   the repository variables `TS_CLIENT_ID` and `TS_AUDIENCE`. If the tag isn't `tag:ci`, set `TS_TAGS` too.
 3. Run Tailscale on the Mac. The workflow file must be on the default branch before it can be dispatched.
 
 ```bash
