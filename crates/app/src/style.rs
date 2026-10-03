@@ -101,9 +101,36 @@ fn preferred_mode(system: WindowAppearance, cx: &App) -> ThemeMode {
 
 /// Applies the theme the settings ask for. Call after the settings change.
 pub(crate) fn sync_theme(cx: &mut App) {
+    match_native_appearance(AppState::settings(cx).theme);
     let mode = preferred_mode(cx.window_appearance(), cx);
     apply(mode, cx);
 }
+
+/// Has macOS draw the windows' own parts, the blur behind them above all, in the theme the
+/// settings ask for. Otherwise a light theme on a dark system sits on a dark blur and turns gray.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "reads two of AppKit's constant appearance names")]
+fn match_native_appearance(preference: ThemePreference) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+    };
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: AppKit's appearance names are immutable strings it defines for the whole process.
+    let name = match preference {
+        ThemePreference::System => None,
+        ThemePreference::Light => Some(unsafe { NSAppearanceNameAqua }),
+        ThemePreference::Dark => Some(unsafe { NSAppearanceNameDarkAqua }),
+    };
+    let appearance = name.and_then(NSAppearance::appearanceNamed);
+    NSApplication::sharedApplication(main_thread).setAppearance(appearance.as_deref());
+}
+
+#[cfg(not(target_os = "macos"))]
+fn match_native_appearance(_preference: ThemePreference) {}
 
 /// Follows the system's light or dark appearance while `window` is open, when the settings
 /// leave the theme to the system.
@@ -233,7 +260,7 @@ fn paint(theme: &mut Theme, dark: bool) {
         colors.border = hex(0xE7E8EB);
         colors.input = hex(0xDCDEE2);
         colors.muted = hex(0xF4F4F6);
-        colors.muted_foreground = hex(0x6E717A);
+        colors.muted_foreground = hex(0x63666E);
         colors.secondary = hex(0xF2F3F5);
         colors.secondary_hover = hex(0xE9EAED);
         colors.secondary_active = hex(0xE1E2E6);
@@ -251,10 +278,11 @@ fn paint(theme: &mut Theme, dark: bool) {
 pub(crate) fn sidebar_surface(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     let tint = if dark { hex(0x141518) } else { hex(0xEEEFF2) };
-    // Gray text needs more cover on a light tint than on a dark one to stay readable.
+    // Gray text needs more cover on a light tint than on a dark one to stay readable: a dark
+    // window behind turns a thin light tint gray.
     let cover = match (translucent(cx), dark) {
         (true, true) => 0.55,
-        (true, false) => 0.6,
+        (true, false) => 0.9,
         (false, _) => 1.,
     };
     tint.opacity(cover)
