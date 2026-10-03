@@ -38,7 +38,8 @@ mod macos {
     use dari_net::{AccessPassword, DeviceIdentity};
     use dari_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
     use dari_session::{
-        HostConfig, HostEvent, HostPlatform, ViewerConfig, ViewerTarget, connect_viewer, start_host,
+        HostConfig, HostEvent, HostPlatform, TransferDirection, TransferState, ViewerConfig,
+        ViewerTarget, connect_viewer, start_host,
     };
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::*;
@@ -205,6 +206,8 @@ mod macos {
             stream: StreamSettings::default(),
             require_approval: false,
             clipboard: false,
+            file_transfer: false,
+            downloads: None,
             relay: None,
         };
         let (host, mut host_events) = cx
@@ -221,6 +224,7 @@ mod macos {
             client_name: "gui-test".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            downloads: None,
         };
         let attempt = cx.update(|cx| {
             TokioRuntime::spawn(
@@ -465,8 +469,126 @@ mod macos {
         drop(relay);
     }
 
+    /// Files dropped on the remote screen go to the host; files from the host wait in the
+    /// transfer strip until the viewer user saves them.
+    pub(super) fn files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save() {
+        let data = tempfile::tempdir().unwrap();
+        let host_downloads = tempfile::tempdir().unwrap();
+        let viewer_downloads = tempfile::tempdir().unwrap();
+        let sources = tempfile::tempdir().unwrap();
+        let mut cx = app(data.path());
+
+        let platform = Arc::new(SyntheticPlatform {
+            actions: Arc::new(Mutex::new(Vec::new())),
+        });
+        let config = HostConfig {
+            bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            host_name: "synthetic-host".into(),
+            stream: StreamSettings::default(),
+            require_approval: false,
+            clipboard: false,
+            file_transfer: true,
+            downloads: Some(host_downloads.path().to_owned()),
+            relay: None,
+        };
+        let identity = DeviceIdentity::generate().unwrap();
+        let (host, mut host_events) = cx
+            .update(|cx| {
+                TokioRuntime::enter(cx, || start_host(config, Arc::new(identity), platform))
+            })
+            .unwrap();
+        let password: AccessPassword = match host_events.blocking_recv() {
+            Some(HostEvent::PasswordChanged(Some(password))) => password,
+            other => panic!("expected a password, got {other:?}"),
+        };
+        let viewer_config = ViewerConfig {
+            target: ViewerTarget::Direct(host.local_address()),
+            client_name: "gui-test".into(),
+            map_shortcut_modifier: false,
+            clipboard: None,
+            downloads: Some(viewer_downloads.path().to_owned()),
+        };
+        let attempt = cx.update(|cx| {
+            TokioRuntime::spawn(
+                cx,
+                async move { connect_viewer(viewer_config, &password).await },
+            )
+        });
+        let (viewer, events) = futures_executor_block_on(attempt).unwrap().unwrap();
+        let (window, view) = cx
+            .update(|cx| open_viewer_window(viewer, events, cx))
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| view.read(cx).can_send_files())
+        });
+
+        // Drop a file on the picture.
+        let dropped = sources.path().join("notes.txt");
+        std::fs::write(&dropped, b"dropped on the viewer").unwrap();
+        let center = point(px(640.), px(420.));
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position: center,
+                    paths: ExternalPaths(vec![dropped.clone()].into()),
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Submit { position: center }),
+                cx,
+            );
+        })
+        .unwrap();
+        let saved = host_downloads.path().join("notes.txt");
+        pump(&mut cx, Duration::from_secs(10), |_| {
+            while let Ok(event) = host_events.try_recv() {
+                drop(event);
+            }
+            std::fs::read(&saved).is_ok_and(|bytes| bytes == b"dropped on the viewer")
+        });
+
+        // The host offers a file; it waits for the viewer user.
+        let offered = sources.path().join("from-host.bin");
+        std::fs::write(&offered, vec![7u8; 200_000]).unwrap();
+        host.send_file(offered);
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| {
+                view.read(cx).transfers().iter().any(|transfer| {
+                    transfer.direction == TransferDirection::Receiving
+                        && transfer.state == TransferState::Offered
+                })
+            })
+        });
+        save(&mut cx, window, "viewer-file-offer");
+        assert!(!viewer_downloads.path().join("from-host.bin").exists());
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("transfer-accept-0", cx)
+        })
+        .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| {
+                view.read(cx).transfers().iter().any(|transfer| {
+                    transfer.direction == TransferDirection::Receiving
+                        && transfer.state == TransferState::Completed
+                })
+            })
+        });
+        assert_eq!(
+            std::fs::read(viewer_downloads.path().join("from-host.bin")).unwrap(),
+            vec![7u8; 200_000]
+        );
+        save(&mut cx, window, "viewer-file-received");
+        drop(host);
+    }
+
     pub(super) fn run() {
-        let tests: [(&str, fn()); 3] = [
+        let tests: [(&str, fn()); 4] = [
+            (
+                "files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save",
+                files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save,
+            ),
             (
                 "connecting_through_the_form_asks_the_host_user_first",
                 connecting_through_the_form_asks_the_host_user_first,

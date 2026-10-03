@@ -24,6 +24,8 @@ pub struct Settings {
     pub require_approval: bool,
     /// Share clipboard text in sessions that allow control.
     pub clipboard_sync: bool,
+    /// Exchange files with viewers allowed to control this device.
+    pub file_transfer: bool,
     /// Announce this device to viewers on the local network.
     pub lan_discovery: bool,
     /// Relay server (`host` or `host:port`) for reaching devices outside the local network;
@@ -40,6 +42,7 @@ impl Default for Settings {
             recent_addresses: Vec::new(),
             require_approval: true,
             clipboard_sync: true,
+            file_transfer: true,
             lan_discovery: true,
             relay_address: String::new(),
         }

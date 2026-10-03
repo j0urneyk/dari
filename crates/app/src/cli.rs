@@ -31,6 +31,9 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
             // The headless host has no one to ask; anyone with the password gets control.
             require_approval: false,
             clipboard: false,
+            // Files would land on this machine without anyone choosing to accept them.
+            file_transfer: false,
+            downloads: None,
             relay,
         },
         identity.clone(),
@@ -76,6 +79,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
                 Some(HostEvent::SessionEnded { peer, reason }) => {
                     println!("{} left: {reason}", peer.name);
                 }
+                Some(HostEvent::Transfer(_)) => {}
             }
         }
     }
@@ -103,6 +107,7 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
             client_name: device_name(),
             map_shortcut_modifier: true,
             clipboard: None,
+            downloads: None,
         },
         &password,
     )
@@ -129,6 +134,7 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
                 Some(ViewerEvent::HostStatus(status)) => {
                     println!("host screen: {:?}, host input: {:?}", status.screen, status.input);
                 }
+                Some(ViewerEvent::Transfer(_)) => {}
                 Some(ViewerEvent::Ended(reason)) => {
                     println!("Session ended: {reason}");
                     break;

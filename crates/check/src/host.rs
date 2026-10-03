@@ -247,6 +247,8 @@ pub(crate) async fn run(args: HostArgs) -> anyhow::Result<ExitCode> {
             stream: StreamSettings::default(),
             require_approval: true,
             clipboard: true,
+            file_transfer: false,
+            downloads: None,
             relay: args.relay.clone(),
         },
         Arc::new(DeviceIdentity::generate().context("cannot create a device identity")?),
@@ -325,7 +327,7 @@ async fn serve(
                     password_shown = true;
                     println!("password: {}", password.display_text().as_str());
                 }
-                Some(HostEvent::PasswordChanged(_)) => {}
+                Some(HostEvent::PasswordChanged(_) | HostEvent::Transfer(_)) => {}
                 Some(HostEvent::Relay(RelayStatus::Registered(id))) => {
                     println!("relay-id: {}", id.to_string().replace(' ', ""));
                 }
@@ -393,11 +395,8 @@ fn judge_allowed(
     verdict: &mut Verdict,
 ) {
     verdict.check(
-        timeline.status
-            == Some(HostStatus {
-                screen: Availability::Available,
-                input: Availability::Available,
-            }),
+        timeline.status.map(|status| (status.screen, status.input))
+            == Some((Availability::Available, Availability::Available)),
         format!(
             "screen and input are available (got {:?}); grant Screen Recording and Accessibility \
              on macOS",
@@ -475,11 +474,8 @@ fn judge_allowed(
 
 fn judge_view_only(timeline: &Timeline, seen: &Observations, verdict: &mut Verdict) {
     verdict.check(
-        timeline.status
-            == Some(HostStatus {
-                screen: Availability::Available,
-                input: Availability::NotAllowed,
-            }),
+        timeline.status.map(|status| (status.screen, status.input))
+            == Some((Availability::Available, Availability::NotAllowed)),
         format!(
             "the screen is shared and input is not allowed (got {:?})",
             timeline.status

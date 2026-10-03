@@ -7,6 +7,9 @@
 pub enum StreamKind {
     /// Host → viewer: framed [`VideoPacket`](crate::VideoPacket)s.
     Video = 1,
+    /// Either direction: the bytes of one accepted file, after an 8-byte big-endian
+    /// [`TransferId`](crate::TransferId).
+    File = 2,
 }
 
 impl StreamKind {
@@ -19,6 +22,7 @@ impl StreamKind {
     pub const fn from_tag(tag: u8) -> Option<StreamKind> {
         match tag {
             1 => Some(StreamKind::Video),
+            2 => Some(StreamKind::File),
             _ => None,
         }
     }
@@ -30,10 +34,9 @@ mod tests {
 
     #[test]
     fn tags_round_trip() {
-        assert_eq!(
-            StreamKind::from_tag(StreamKind::Video.tag()),
-            Some(StreamKind::Video)
-        );
+        for kind in [StreamKind::Video, StreamKind::File] {
+            assert_eq!(StreamKind::from_tag(kind.tag()), Some(kind));
+        }
     }
 
     #[test]

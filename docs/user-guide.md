@@ -20,9 +20,11 @@ when the system language is Korean, and in English otherwise.
 | Permission notice (macOS) | When Screen Recording or Accessibility is missing, **Request permission** and **Open System Settings** buttons |
 | **Ask before each connection** | On by default. When off, a viewer that knows the password gets control immediately |
 | **Share clipboard** | On by default. Text is exchanged only in sessions that allow control |
+| **Exchange files** | On by default. In sessions that allow control, the viewer's files are saved to this computer's Downloads folder, and **Send file…** next to **Disconnect** sends files to the viewer |
 | **Show this device on the local network** | On by default. Advertises the name over mDNS so it appears in the other side's "Nearby devices" |
 
-Changes to the approval and clipboard settings apply from the next session.
+Changes to the approval, clipboard, and file settings apply from the next session. Transfers in the running session
+appear under the connected viewer, with progress, **Cancel**, and **Show in folder** for received files.
 
 ### Control a remote device
 
@@ -47,6 +49,11 @@ The toolbar shows frames per second and round-trip latency (`30 fps · 12 ms`), 
 among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. Closing the window also ends the
 session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
 remote device.
+
+In sessions that allow control, **Send file…** in the toolbar picks files to send, and files dragged onto the remote
+screen are sent too. They're saved in the remote computer's Downloads folder. A file the remote side sends appears
+under the toolbar with its name and size; it's saved to your Downloads folder only if you choose **Save**. A file
+with the same name is never replaced: the new one is saved as `name (1).ext`. Folders can't be sent yet.
 
 Status messages:
 
@@ -79,6 +86,7 @@ map_shortcut_modifier = true  # Translate ⌘ and Ctrl shortcuts
 recent_addresses = []         # Recent addresses (up to 5)
 require_approval = true       # Ask before each connection
 clipboard_sync = true         # Share clipboard
+file_transfer = true          # Exchange files
 lan_discovery = true          # Show this device on the local network
 relay_address = ""            # Relay server
 ```
@@ -97,7 +105,7 @@ dari connect 192.168.0.10 --relay relay.example.com
 
 `host` prints its addresses, device fingerprint, password (it changes every session), and relay ID, and waits
 until Ctrl+C. There's nobody to approve requests, so it gives control to any viewer that knows the password and
-turns off the clipboard. `connect` asks for the password (it can also be piped in), connects, and prints received
+turns off the clipboard and file transfer. `connect` asks for the password (it can also be piped in), connects, and prints received
 frames and bitrate every second.
 
 Set the log level with the `RUST_LOG` environment variable (default `info`), for example

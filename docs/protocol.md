@@ -38,8 +38,9 @@ The control channel's 2 MiB limit leaves room for clipboard text of up to 1 MiB,
 After authentication only the codec of the handshake stream is swapped (`map_decoder`/`map_encoder`) to turn it
 into the control stream, so control messages that arrived right after the handshake and are already buffered
 aren't lost. The QUIC transport configuration limits how many streams the peer may open: a viewer can open exactly
-one bidirectional stream (handshake, then control) and no unidirectional streams, and only the host opens
-unidirectional streams for media.
+one bidirectional stream (handshake, then control) and no unidirectional streams. Once a session that allows file
+transfer starts, the host raises the viewer's limit to 4 concurrent unidirectional streams, used only for files.
+The host may open up to 4 at a time (video plus files).
 
 ### Stream kinds
 
@@ -51,6 +52,12 @@ the session; a new kind is only ever sent to a peer whose version defines it.
 | Tag | Kind | Direction | Contents |
 | --- | --- | --- | --- |
 | `1` | `Video` | Host → viewer | Framed `VideoPacket`s, one stream for the whole session |
+| `2` | `File` | Either | An 8-byte big-endian `TransferId`, then the raw bytes of one accepted file |
+
+A file stream is finished after its last byte, so a clean end with exactly the offered size means the whole file
+arrived. A cancelled file's stream is reset instead, never finished. File streams run at a lower priority than
+video and control, so a large file doesn't delay frames or input. A stream that is reset before its header arrives
+is skipped; it doesn't end the session.
 
 ## Handshake
 
@@ -96,9 +103,39 @@ that hasn't been sent yet.
 | `SelectDisplay(id)` | Viewer → host | Switch to another display |
 | `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
 | `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
+| `FileOffer { id, name, size }` | Both | The sender would like to transfer a file (see below) |
+| `FileAccept(id)` | Both | The receiver accepted; the sender opens the file's stream |
+| `FileDone(id)` | Both | The receiver saved the whole file |
+| `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
 
-`Availability` is one of `Available`, `PermissionDenied` (macOS permission missing), `Unavailable`, or
-`NotAllowed` (input in a view-only session).
+`HostStatus` reports `screen`, `input`, and `files`. `Availability` is one of `Available`, `PermissionDenied`
+(macOS permission missing), `Unavailable`, or `NotAllowed` (input and files in a view-only session).
+
+## File transfer
+
+```text
+sender                                         receiver
+  │── FileOffer {id, name, size} ─────────────►│  checks policy; asks its user (viewer) or accepts (host)
+  │◄─────────────────────────── FileAccept(id) ─│  (or FileCancel {Declined})
+  │══ File stream: id, bytes…, finish ════════►│  writes <name>.part, checks the size, renames
+  │◄───────────────────────────── FileDone(id) ─│  (or FileCancel {Failed})
+```
+
+- The offering side picks `id`: hosts use even numbers and viewers odd ones, so a message about an id is never
+  ambiguous. An offer with the receiver's own parity, or a repeated id, is a protocol error. Messages about an id
+  that already finished are ignored, because a cancel and an accept can cross.
+- Either side can send `FileCancel` at any time; the sender resets the stream and the receiver deletes the partial
+  file.
+- Files flow only while `HostStatus.files` is `Available`, which needs a session that allows control and a host
+  with file transfer on. Otherwise offers are declined.
+- `name` is a single path component of at most 255 UTF-8 bytes, without `/`, `\`, control characters,
+  bidirectional overrides, or zero-width characters, and not `.` or `..`. Senders NFC-normalize it (macOS stores
+  names decomposed, which Windows would show as separate jamo) and apply the same sanitizing as receivers.
+- Receivers map the name onto the file system with `sanitize_file_name`: Windows-forbidden characters become `_`,
+  trailing dots and spaces are dropped, reserved device names (`CON`, `NUL`, `COM1`, …) get a `_` prefix, and long
+  names are shortened to 200 bytes, keeping the extension. A file never replaces an existing one; it is saved as
+  `name (1).ext`, `name (2).ext`, and so on.
+- A receiver tracks at most 32 offers at once and declines the rest.
 
 ## Input events
 
@@ -175,5 +212,6 @@ reply. A `DeviceId` is in the range 100000000..=999999999, displayed as
 | Handshake timeout, concurrent handshakes | 10 s, 8 | `crates/net/src/endpoint.rs` |
 | Approval wait | 30 s | `crates/session/src/host_session.rs` |
 | Clipboard polling interval | 250 ms | `crates/session/src/clipboard.rs` |
+| File streams the viewer may open, offers tracked | 4, 32 | `crates/session/src/transfer.rs` |
 | Viewer input queue / reserved for keys | 512 / 128 | `crates/session/src/viewer.rs` |
 | mDNS service | `_dari._udp.local.` | `crates/net/src/discovery.rs` |

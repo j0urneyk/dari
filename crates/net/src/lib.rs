@@ -29,8 +29,8 @@ pub use relay_client::{
     connect_via_relay,
 };
 pub use session::{
-    AuthenticatedConnection, IncomingStream, MessageReceiver, MessageSender, PeerInfo, SessionLink,
-    StreamError,
+    AuthenticatedConnection, FileReceiver, FileSender, IncomingStream, MessageReceiver,
+    MessageSender, PeerInfo, SessionLink, SessionStreams, StreamError,
 };
 pub use tls::TlsConfigError;
 

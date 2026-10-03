@@ -7,17 +7,19 @@
 )]
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dari_input::{InjectError, InputBackend, RecordedAction};
 use dari_media::{CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer};
 use dari_net::{AccessPassword, DeviceIdentity};
+use dari_proto::TransferEnd;
 use dari_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
-    RelayStatus, SessionEndReason, ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer,
-    start_host,
+    RelayStatus, SessionEndReason, Transfer, TransferDirection, TransferState, ViewerConfig,
+    ViewerEvent, ViewerTarget, connect_viewer, start_host,
 };
 use tokio::sync::mpsc;
 
@@ -147,6 +149,14 @@ async fn start(platform: TestPlatform) -> Host {
 }
 
 async fn start_with(platform: TestPlatform, require_approval: bool) -> Host {
+    start_host_with(platform, require_approval, None).await
+}
+
+async fn start_host_with(
+    platform: TestPlatform,
+    require_approval: bool,
+    downloads: Option<PathBuf>,
+) -> Host {
     let (handle, mut events) = start_host(
         HostConfig {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -158,6 +168,8 @@ async fn start_with(platform: TestPlatform, require_approval: bool) -> Host {
             },
             require_approval,
             clipboard: true,
+            file_transfer: downloads.is_some(),
+            downloads,
             relay: None,
         },
         Arc::new(DeviceIdentity::generate().unwrap()),
@@ -181,6 +193,7 @@ fn viewer_config(host: &Host) -> ViewerConfig {
         client_name: "test-viewer".into(),
         map_shortcut_modifier: false,
         clipboard: None,
+        downloads: None,
     }
 }
 
@@ -223,6 +236,7 @@ async fn viewer_sees_the_screen_and_controls_the_host() {
         ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
+            files: Availability::Unavailable,
         })
     );
 
@@ -317,6 +331,7 @@ async fn missing_input_permission_is_reported_and_the_screen_still_streams() {
         ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::PermissionDenied,
+            files: Availability::Unavailable,
         })
     );
     let mut frames = viewer.frames();
@@ -353,7 +368,9 @@ async fn missing_capture_permission_keeps_the_session_and_says_why() {
         match next_event(&mut viewer_events).await {
             ViewerEvent::HostStatus(status) => screen = Some(status.screen),
             ViewerEvent::Ended(reason) => panic!("session ended: {reason}"),
-            ViewerEvent::AwaitingApproval | ViewerEvent::Displays { .. } => {}
+            ViewerEvent::AwaitingApproval
+            | ViewerEvent::Displays { .. }
+            | ViewerEvent::Transfer(_) => {}
         }
     }
     // The session survives the end of the video stream.
@@ -421,6 +438,7 @@ async fn nothing_is_shared_until_the_host_user_allows_it() {
         ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
+            files: Availability::Unavailable,
         })
     );
     let mut frames = viewer.frames();
@@ -470,6 +488,7 @@ async fn view_only_sessions_ignore_input() {
         ViewerEvent::HostStatus(dari_proto::HostStatus {
             screen: Availability::Available,
             input: Availability::NotAllowed,
+            files: Availability::NotAllowed,
         })
     );
     assert!(viewer.send_input(InputEvent::Text("ignored".into())));
@@ -571,6 +590,8 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             stream: StreamSettings::default(),
             require_approval: false,
             clipboard: false,
+            file_transfer: false,
+            downloads: None,
             relay: Some(relay_address.clone()),
         },
         Arc::new(DeviceIdentity::generate().unwrap()),
@@ -599,6 +620,7 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             client_name: "remote".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            downloads: None,
         },
         &password.unwrap(),
     )
@@ -610,4 +632,225 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
         .await
         .unwrap()
         .unwrap();
+}
+
+/// A file with recognizable contents in its own directory.
+fn sample_file(dir: &Path, name: &str, size: usize) -> (PathBuf, Vec<u8>) {
+    let contents: Vec<u8> = (0..size)
+        .map(|index| u8::try_from(index * 31 % 251).unwrap())
+        .collect();
+    let path = dir.join(name);
+    std::fs::write(&path, &contents).unwrap();
+    (path, contents)
+}
+
+fn files_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn host_transfer(event: HostEvent) -> Option<Transfer> {
+    match event {
+        HostEvent::Transfer(transfer) => Some(transfer),
+        _ => None,
+    }
+}
+
+fn viewer_transfer(event: ViewerEvent) -> Option<Transfer> {
+    match event {
+        ViewerEvent::Transfer(transfer) => Some(transfer),
+        _ => None,
+    }
+}
+
+/// Waits for a transfer update in `state` (or any finished state when `state` is `None`).
+async fn wait_for_transfer<T: std::fmt::Debug>(
+    events: &mut mpsc::UnboundedReceiver<T>,
+    as_transfer: fn(T) -> Option<Transfer>,
+    finished_or: Option<TransferState>,
+) -> Transfer {
+    loop {
+        let Some(transfer) = as_transfer(next_event(events).await) else {
+            continue;
+        };
+        let wanted = match finished_or {
+            Some(state) => transfer.state == state || transfer.state.is_finished(),
+            None => transfer.state.is_finished(),
+        };
+        if wanted {
+            return transfer;
+        }
+    }
+}
+
+struct FileSession {
+    host: Host,
+    viewer: dari_session::ViewerHandle,
+    viewer_events: mpsc::UnboundedReceiver<ViewerEvent>,
+    host_downloads: tempfile::TempDir,
+    viewer_downloads: tempfile::TempDir,
+    sources: tempfile::TempDir,
+}
+
+async fn file_session() -> FileSession {
+    let host_downloads = tempfile::tempdir().unwrap();
+    let viewer_downloads = tempfile::tempdir().unwrap();
+    let host = start_host_with(
+        TestPlatform::default(),
+        false,
+        Some(host_downloads.path().to_owned()),
+    )
+    .await;
+    let mut config = viewer_config(&host);
+    config.downloads = Some(viewer_downloads.path().to_owned());
+    let (viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
+    let status = wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::HostStatus(_))
+    })
+    .await;
+    assert!(
+        matches!(status, ViewerEvent::HostStatus(status) if status.files == Availability::Available)
+    );
+    FileSession {
+        host,
+        viewer,
+        viewer_events,
+        host_downloads,
+        viewer_downloads,
+        sources: tempfile::tempdir().unwrap(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_flow_both_ways() {
+    let mut session = file_session().await;
+
+    // Viewer → host: the host saves it without asking. The name arrives composed (NFC) even
+    // though it was decomposed on disk, as macOS stores it.
+    let decomposed = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}.bin";
+    let (upload, contents) = sample_file(session.sources.path(), decomposed, 300_001);
+    session.viewer.send_file(upload);
+    let received = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(received.state, TransferState::Completed);
+    assert_eq!(received.direction, TransferDirection::Receiving);
+    assert_eq!(received.name, "한글.bin");
+    let saved = received.saved_to.unwrap();
+    assert_eq!(saved, session.host_downloads.path().join("한글.bin"));
+    assert_eq!(std::fs::read(&saved).unwrap(), contents);
+    let sent = wait_for_transfer(&mut session.viewer_events, viewer_transfer, None).await;
+    assert_eq!(sent.state, TransferState::Completed);
+    assert_eq!(sent.transferred, 300_001);
+
+    // Host → viewer: the viewer user accepts first. An existing file is never replaced.
+    std::fs::write(session.viewer_downloads.path().join("report.pdf"), b"mine").unwrap();
+    let (download, contents) = sample_file(session.sources.path(), "report.pdf", 1_000_000);
+    session.host.handle.send_file(download);
+    let offer = wait_for_transfer(
+        &mut session.viewer_events,
+        viewer_transfer,
+        Some(TransferState::Offered),
+    )
+    .await;
+    assert_eq!(offer.state, TransferState::Offered);
+    assert_eq!((offer.name.as_str(), offer.size), ("report.pdf", 1_000_000));
+    session.viewer.accept_transfer(offer.id);
+    let received = wait_for_transfer(&mut session.viewer_events, viewer_transfer, None).await;
+    assert_eq!(received.state, TransferState::Completed);
+    let saved = received.saved_to.unwrap();
+    assert_eq!(
+        saved,
+        session.viewer_downloads.path().join("report (1).pdf")
+    );
+    assert_eq!(std::fs::read(&saved).unwrap(), contents);
+    let sent = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(sent.state, TransferState::Completed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_viewer_can_decline_a_file() {
+    let mut session = file_session().await;
+    let (download, _contents) = sample_file(session.sources.path(), "unwanted.exe", 1000);
+    session.host.handle.send_file(download);
+    let offer = wait_for_transfer(
+        &mut session.viewer_events,
+        viewer_transfer,
+        Some(TransferState::Offered),
+    )
+    .await;
+    session.viewer.cancel_transfer(offer.id);
+    let declined = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(declined.state, TransferState::Ended(TransferEnd::Declined));
+    assert_eq!(
+        files_in(session.viewer_downloads.path()),
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_transfer_leaves_no_partial_file() {
+    let mut session = file_session().await;
+    let (download, _contents) = sample_file(session.sources.path(), "big.iso", 8_000_000);
+    session.host.handle.send_file(download);
+    let offer = wait_for_transfer(
+        &mut session.viewer_events,
+        viewer_transfer,
+        Some(TransferState::Offered),
+    )
+    .await;
+    // Accept and cancel at once: the host may already be streaming when the cancel arrives.
+    session.viewer.accept_transfer(offer.id);
+    session.viewer.cancel_transfer(offer.id);
+    let ended = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(ended.state, TransferState::Ended(TransferEnd::Cancelled));
+    let ended = wait_for_transfer(&mut session.viewer_events, viewer_transfer, None).await;
+    assert_eq!(ended.state, TransferState::Ended(TransferEnd::Cancelled));
+    // A late stream for the cancelled transfer is dropped, and the session goes on.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        files_in(session.viewer_downloads.path()),
+        Vec::<String>::new()
+    );
+    let (next, _contents) = sample_file(session.sources.path(), "next.txt", 10);
+    session.viewer.send_file(next);
+    let received = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(received.state, TransferState::Completed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_only_sessions_transfer_no_files() {
+    let host_downloads = tempfile::tempdir().unwrap();
+    let mut host = start_host_with(
+        TestPlatform::default(),
+        true,
+        Some(host_downloads.path().to_owned()),
+    )
+    .await;
+    let viewer_downloads = tempfile::tempdir().unwrap();
+    let mut config = viewer_config(&host);
+    config.downloads = Some(viewer_downloads.path().to_owned());
+    let (viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
+    approve(&mut host, ApprovalDecision::ViewOnly).await;
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::HostStatus(status) if status.files == Availability::NotAllowed)
+    })
+    .await;
+
+    let sources = tempfile::tempdir().unwrap();
+    let (upload, _contents) = sample_file(sources.path(), "upload.txt", 10);
+    viewer.send_file(upload);
+    let refused = wait_for_transfer(&mut viewer_events, viewer_transfer, None).await;
+    assert_eq!(refused.state, TransferState::Ended(TransferEnd::Declined));
+
+    let (download, _contents) = sample_file(sources.path(), "download.txt", 10);
+    host.handle.send_file(download);
+    let refused = wait_for_transfer(&mut host.events, host_transfer, None).await;
+    assert_eq!(refused.state, TransferState::Ended(TransferEnd::Declined));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(files_in(host_downloads.path()), Vec::<String>::new());
+    assert_eq!(files_in(viewer_downloads.path()), Vec::<String>::new());
 }

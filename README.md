@@ -16,6 +16,8 @@ What you can do with it:
 - Let the host choose **Allow control**, **View only**, or **Decline** for each connection.
 - Stream the screen as H.264 and send keyboard, mouse, and wheel input. Text clipboard sharing, display
   switching, and speed/balanced/quality presets are included.
+- Send files both ways: drop them on the remote screen or pick them with **Send file…**. Files from the host are
+  saved only after you accept them.
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
   host.
 
@@ -132,7 +134,7 @@ input, wherever it sits on the network.
 
 - Windows' secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) can't be captured or controlled by a
   regular app.
-- Video uses software H.264 encoding only. There's no audio, file transfer, or unattended access.
+- Video uses software H.264 encoding only. There's no audio or unattended access, and folders can't be sent.
 - Builds exist only for Apple silicon Macs and x64 Windows.
 
 ## Building from source

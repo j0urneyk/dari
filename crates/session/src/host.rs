@@ -1,6 +1,7 @@
 //! The host service: listening, password management, and serving one viewer at a time.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -9,15 +10,16 @@ use dari_net::{
     AccessPassword, DeviceIdentity, EndpointError, HostEndpoint, HostSettings, PasswordError,
     PeerInfo, RelayRegistration, RelayedAcceptor, bind_to_allocation,
 };
-use dari_proto::{DEFAULT_RELAY_PORT, DeviceId, HostStatus};
+use dari_proto::{DEFAULT_RELAY_PORT, DeviceId, HostStatus, TransferId};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::SessionEndReason;
 use crate::host_session::{SessionOptions, serve_viewer};
 use crate::platform::HostPlatform;
+use crate::transfer::{Transfer, TransferCommand};
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -28,6 +30,10 @@ pub struct HostConfig {
     pub require_approval: bool,
     /// Share clipboard text with viewers allowed to control this device.
     pub clipboard: bool,
+    /// Exchange files with viewers allowed to control this device.
+    pub file_transfer: bool,
+    /// Where files from viewers are saved; `None` turns file transfer off.
+    pub downloads: Option<PathBuf>,
     /// Relay to register with (`host` or `host:port`) so viewers can reach this device by ID.
     pub relay: Option<String>,
 }
@@ -103,6 +109,8 @@ pub enum HostEvent {
         reason: SessionEndReason,
     },
     Relay(RelayStatus),
+    /// A file transfer of the running session changed.
+    Transfer(Transfer),
 }
 
 enum HostCommand {
@@ -111,8 +119,10 @@ enum HostCommand {
     SetPolicy {
         require_approval: bool,
         clipboard: bool,
+        file_transfer: bool,
     },
     EndSession,
+    Transfer(TransferCommand),
 }
 
 /// Controls a running host service. Dropping it stops the service and ends any session.
@@ -138,12 +148,27 @@ impl HostHandle {
         let _sent = self.commands.send(HostCommand::SetAccepting(accepting));
     }
 
-    /// Changes approval and clipboard policy for the next session.
-    pub fn set_policy(&self, require_approval: bool, clipboard: bool) {
+    /// Changes approval, clipboard, and file transfer policy for the next session.
+    pub fn set_policy(&self, require_approval: bool, clipboard: bool, file_transfer: bool) {
         let _sent = self.commands.send(HostCommand::SetPolicy {
             require_approval,
             clipboard,
+            file_transfer,
         });
+    }
+
+    /// Offers a file to the connected viewer. Progress arrives as [`HostEvent::Transfer`].
+    pub fn send_file(&self, path: PathBuf) {
+        let _sent = self
+            .commands
+            .send(HostCommand::Transfer(TransferCommand::Send(path)));
+    }
+
+    /// Stops a running transfer in either direction.
+    pub fn cancel_transfer(&self, id: TransferId) {
+        let _sent = self
+            .commands
+            .send(HostCommand::Transfer(TransferCommand::Cancel(id)));
     }
 
     /// Ends the running session, if any.
@@ -165,6 +190,7 @@ impl std::fmt::Debug for HostCommand {
             HostCommand::SetAccepting(_) => "SetAccepting",
             HostCommand::SetPolicy { .. } => "SetPolicy",
             HostCommand::EndSession => "EndSession",
+            HostCommand::Transfer(_) => "Transfer",
         })
     }
 }
@@ -202,6 +228,8 @@ pub fn start_host(
             stream: config.stream,
             require_approval: config.require_approval,
             clipboard: config.clipboard,
+            file_transfer: config.file_transfer,
+            downloads: config.downloads,
         },
         accepting: true,
     };
@@ -220,6 +248,7 @@ pub fn start_host(
 struct RunningSession {
     peer: PeerInfo,
     end: Option<oneshot::Sender<()>>,
+    transfers: mpsc::UnboundedSender<TransferCommand>,
     task: JoinHandle<SessionEndReason>,
 }
 
@@ -265,9 +294,17 @@ impl HostService {
                             self.reissue_password();
                         }
                     }
-                    Some(HostCommand::SetPolicy { require_approval, clipboard }) => {
+                    Some(HostCommand::SetPolicy { require_approval, clipboard, file_transfer }) => {
                         self.options.require_approval = require_approval;
                         self.options.clipboard = clipboard;
+                        self.options.file_transfer = file_transfer;
+                    }
+                    Some(HostCommand::Transfer(command)) => {
+                        if let Some(running) = &session {
+                            let _sent = running.transfers.send(command);
+                        } else {
+                            debug!(?command, "no session to transfer files with");
+                        }
                     }
                     Some(HostCommand::EndSession) => {
                         if let Some(end) = session.as_mut().and_then(|running| running.end.take()) {
@@ -281,14 +318,16 @@ impl HostService {
                     info!(peer = %peer.name, address = %peer.address, "session started");
                     let _sent = self.events.send(HostEvent::SessionStarted(peer.clone()));
                     let (end, end_receiver) = oneshot::channel();
+                    let (transfers, transfer_commands) = mpsc::unbounded_channel();
                     let task = tokio::spawn(serve_viewer(
                         connection,
                         self.platform.clone(),
-                        self.options,
+                        self.options.clone(),
                         end_receiver,
+                        transfer_commands,
                         self.events.clone(),
                     ));
-                    session = Some(RunningSession { peer, end: Some(end), task });
+                    session = Some(RunningSession { peer, end: Some(end), transfers, task });
                 }
                 reason = async {
                     match session.as_mut() {

@@ -22,12 +22,13 @@ use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _,
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::config::{device_name, local_addresses, resolve_target};
+use crate::config::{device_name, downloads_directory, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::state::AppState;
 use crate::text::text;
-use crate::viewer::open_viewer_window;
+use crate::transfers::{TransferAction, TransferActions, TransferList};
+use crate::viewer::{open_viewer_window, pick_files};
 
 /// How often permissions and network addresses are re-read while the window is open.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -84,6 +85,10 @@ impl Home {
 
     pub fn admitted_session_status(&self, cx: &App) -> Option<HostStatus> {
         self.host.read(cx).session_status
+    }
+
+    pub fn host_transfers(&self, cx: &App) -> Vec<dari_session::Transfer> {
+        self.host.read(cx).transfers.transfers().to_vec()
     }
 }
 
@@ -158,6 +163,7 @@ pub(crate) struct HostPanel {
     /// A viewer waiting for the host user's decision.
     approval: Option<(PeerInfo, ApprovalRequest)>,
     relay: Option<RelayStatus>,
+    transfers: TransferList,
     relay_input: Entity<InputState>,
     advertisement: Option<Advertisement>,
     _relay_subscription: Subscription,
@@ -197,6 +203,7 @@ impl HostPanel {
             permissions: LocalPermissions::check(),
             approval: None,
             relay: None,
+            transfers: TransferList::default(),
             relay_input,
             _relay_subscription: relay_subscription,
             advertisement: None,
@@ -240,6 +247,8 @@ impl HostPanel {
             stream: StreamSettings::default(),
             require_approval: AppState::settings(cx).require_approval,
             clipboard: AppState::settings(cx).clipboard_sync,
+            file_transfer: AppState::settings(cx).file_transfer,
+            downloads: downloads_directory(),
             relay: Some(AppState::settings(cx).relay_address.clone())
                 .filter(|relay| !relay.is_empty()),
         };
@@ -276,6 +285,7 @@ impl HostPanel {
         self.password = None;
         self.viewer = None;
         self.session_status = None;
+        self.transfers.clear();
     }
 
     fn set_hosting(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -294,6 +304,7 @@ impl HostPanel {
             HostEvent::SessionStarted(peer) => {
                 self.viewer = Some(peer);
                 self.session_status = None;
+                self.transfers.clear();
                 // Authenticating consumed the one-time password; a new one is issued when the
                 // session ends, so showing the old one would only mislead.
                 self.password = None;
@@ -304,6 +315,7 @@ impl HostPanel {
                 self.session_status = Some(status);
             }
             HostEvent::Relay(status) => self.relay = Some(status),
+            HostEvent::Transfer(transfer) => self.transfers.update(transfer),
             HostEvent::SessionEnded { .. } => {
                 self.approval = None;
                 self.viewer = None;
@@ -400,7 +412,11 @@ impl HostPanel {
         AppState::update_settings(cx, change);
         let settings = AppState::settings(cx).clone();
         if let Hosting::Running(handle) = &self.hosting {
-            handle.set_policy(settings.require_approval, settings.clipboard_sync);
+            handle.set_policy(
+                settings.require_approval,
+                settings.clipboard_sync,
+                settings.file_transfer,
+            );
             let port = handle.local_address().port();
             self.update_advertisement(port, cx);
         }
@@ -474,6 +490,15 @@ impl HostPanel {
                     .on_change(cx.listener(|this, checked: &bool, _, cx| {
                         let checked = *checked;
                         this.set_policy(|settings| settings.clipboard_sync = checked, cx);
+                    })),
+            )
+            .child(
+                Switch::new("policy-files")
+                    .label(text().file_transfer)
+                    .checked(settings.file_transfer)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.set_policy(|settings| settings.file_transfer = checked, cx);
                     })),
             )
             .child(
@@ -655,17 +680,63 @@ impl HostPanel {
                 row = row.child(div().text_xs().child(text().input_permission_missing));
             }
         }
+        let files = self
+            .session_status
+            .is_some_and(|status| status.files == Availability::Available);
         row.child(
-            Button::new("session-end")
-                .danger()
-                .small()
-                .label(text().end_session)
-                .on_click(cx.listener(|this, _, _, _| {
-                    if let Hosting::Running(handle) = &this.hosting {
-                        handle.end_session();
-                    }
-                })),
+            div()
+                .h_flex()
+                .gap_2()
+                .when(files, |buttons| {
+                    buttons.child(
+                        Button::new("session-send-file")
+                            .small()
+                            .label(text().send_file)
+                            .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
+                    )
+                })
+                .child(
+                    Button::new("session-end")
+                        .danger()
+                        .small()
+                        .label(text().end_session)
+                        .on_click(cx.listener(|this, _, _, _| {
+                            if let Hosting::Running(handle) = &this.hosting {
+                                handle.end_session();
+                            }
+                        })),
+                ),
         )
+        .children(self.transfers.render(cx))
+    }
+
+    /// Asks for files and offers them to the connected viewer.
+    fn choose_files(cx: &mut Context<Self>) {
+        let picked = pick_files(cx);
+        cx.spawn(async move |this, cx| {
+            let paths = picked.await;
+            let _updated = this.update(cx, |this, _| {
+                if let Hosting::Running(handle) = &this.hosting {
+                    for path in paths {
+                        handle.send_file(path);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+impl TransferActions for HostPanel {
+    fn transfer_action(&mut self, action: TransferAction, cx: &mut Context<Self>) {
+        let action = self.transfers.apply(action, cx);
+        if let (Some(TransferAction::Cancel(id)), Hosting::Running(handle)) =
+            (action, &self.hosting)
+        {
+            // The host saves the viewer's files without asking, so there is nothing to accept.
+            handle.cancel_transfer(id);
+        }
+        cx.notify();
     }
 }
 
@@ -836,6 +907,7 @@ impl ConnectPanel {
                 client_name: device_name(),
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),
+                downloads: downloads_directory(),
             };
             connect_viewer(config, &password)
                 .await

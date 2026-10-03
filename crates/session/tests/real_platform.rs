@@ -53,6 +53,8 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
             stream: StreamSettings::default(),
             require_approval: false,
             clipboard: false,
+            file_transfer: false,
+            downloads: None,
             relay: None,
         },
         Arc::new(DeviceIdentity::generate().unwrap()),
@@ -71,6 +73,7 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
             client_name: "real-viewer".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            downloads: None,
         },
         &password,
     )
@@ -94,6 +97,7 @@ async fn real_screen_is_streamed_and_real_pointer_is_controlled() {
         HostStatus {
             screen: Availability::Available,
             input: Availability::Available,
+            files: Availability::Unavailable,
         },
         "grant Screen Recording and Accessibility to the process running this test"
     );

@@ -13,7 +13,7 @@ use dari_net::{
     AccessPassword, ConnectError, DeviceIdentity, HandshakeError, HostEndpoint, HostSettings,
     IncomingStream, connect,
 };
-use dari_proto::{ControlMessage, RejectReason, VideoPacket};
+use dari_proto::{ControlMessage, RejectReason, TransferId, VideoPacket};
 use futures_util::{SinkExt, StreamExt};
 
 fn host() -> HostEndpoint {
@@ -84,9 +84,11 @@ async fn authenticated_session_exchanges_control_and_video() {
         height: 48,
         data: vec![1; 50_000],
     };
-    let mut video_tx = host_link.open_video_sender().await.unwrap();
+    let mut video_tx = host_link.streams().open_video_sender().await.unwrap();
     video_tx.send(&packet).await.unwrap();
-    let IncomingStream::Video(mut video_rx) = viewer_link.accept_stream().await.unwrap();
+    let Ok(IncomingStream::Video(mut video_rx)) = viewer_link.streams().accept().await else {
+        panic!("expected the video stream");
+    };
     assert_eq!(video_rx.next().await.unwrap().unwrap(), packet);
 }
 
@@ -209,4 +211,114 @@ async fn host_on_the_ipv6_wildcard_accepts_ipv4_viewers() {
     .expect("an IPv4 viewer reaches a host on [::]");
     viewer.unwrap();
     assert_eq!(hosted.unwrap().peer().name, "ipv4-viewer");
+}
+
+async fn read_to_end(
+    stream: &mut dari_net::FileReceiver,
+) -> Result<Vec<u8>, dari_net::StreamError> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 256];
+    while let Some(read) = stream.read(&mut buffer).await? {
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    Ok(bytes)
+}
+
+async fn session_pair() -> (
+    HostEndpoint,
+    dari_net::AuthenticatedConnection,
+    dari_net::AuthenticatedConnection,
+) {
+    let mut host = host();
+    let password = AccessPassword::generate().unwrap();
+    host.set_password(Some(password.clone()));
+    let address = host.local_address().unwrap();
+    let (viewer, hosted) = tokio::join!(
+        connect(address, &password, "test-viewer".into()),
+        host.accept()
+    );
+    (host, viewer.unwrap(), hosted.unwrap())
+}
+
+#[tokio::test]
+async fn viewer_file_streams_need_credit_and_carry_their_id() {
+    let (_host, viewer, hosted) = session_pair().await;
+    let (viewer_link, _viewer_tx, _viewer_rx) = viewer.split();
+    let (host_link, _host_tx, _host_rx) = hosted.split();
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(300),
+        viewer_link.streams().open_file_sender(TransferId(1)),
+    )
+    .await;
+    assert!(blocked.is_err(), "viewers get no stream credit by default");
+
+    host_link.streams().allow_peer_streams(2);
+    let mut sender = viewer_link
+        .streams()
+        .open_file_sender(TransferId(7))
+        .await
+        .unwrap();
+    sender.write_all(b"hello file").await.unwrap();
+    sender.finish().unwrap();
+
+    let Ok(IncomingStream::File { id, mut stream }) = host_link.streams().accept().await else {
+        panic!("expected a file stream");
+    };
+    assert_eq!(id, TransferId(7));
+    assert_eq!(read_to_end(&mut stream).await.unwrap(), b"hello file");
+}
+
+#[tokio::test]
+async fn a_dropped_file_sender_resets_instead_of_finishing() {
+    let (_host, viewer, hosted) = session_pair().await;
+    let (viewer_link, _viewer_tx, _viewer_rx) = viewer.split();
+    let (host_link, _host_tx, _host_rx) = hosted.split();
+
+    let mut sender = host_link
+        .streams()
+        .open_file_sender(TransferId(2))
+        .await
+        .unwrap();
+    sender.write_all(b"partial").await.unwrap();
+    let Ok(IncomingStream::File { id, mut stream }) = viewer_link.streams().accept().await else {
+        panic!("expected a file stream");
+    };
+    assert_eq!(id, TransferId(2));
+    drop(sender);
+    assert!(read_to_end(&mut stream).await.is_err());
+}
+
+#[tokio::test]
+async fn a_stream_reset_before_its_header_is_skipped() {
+    let (_host, viewer, hosted) = session_pair().await;
+    let (viewer_link, _viewer_tx, _viewer_rx) = viewer.split();
+    let (host_link, _host_tx, _host_rx) = hosted.split();
+
+    let cancelled = host_link
+        .streams()
+        .open_file_sender(TransferId(2))
+        .await
+        .unwrap();
+    drop(cancelled);
+    let mut next = host_link
+        .streams()
+        .open_file_sender(TransferId(4))
+        .await
+        .unwrap();
+    next.write_all(b"x").await.unwrap();
+    next.finish().unwrap();
+
+    // The reset stream may or may not have delivered its header; either way the session's
+    // next stream still arrives.
+    let mut ids = Vec::new();
+    while !ids.contains(&TransferId(4)) {
+        match tokio::time::timeout(Duration::from_secs(5), viewer_link.streams().accept())
+            .await
+            .unwrap()
+        {
+            Ok(IncomingStream::File { id, .. }) => ids.push(id),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

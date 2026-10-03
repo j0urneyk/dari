@@ -9,6 +9,7 @@ mod handshake;
 mod input;
 mod relay;
 mod stream;
+mod transfer;
 mod validate;
 mod version;
 mod video;
@@ -32,6 +33,9 @@ pub use relay::{
     RELAY_TOKEN_LEN, RelayError, RelayRequest, RelayResponse,
 };
 pub use stream::StreamKind;
+pub use transfer::{
+    FileOffer, MAX_FILE_NAME_BYTES, TransferEnd, TransferId, sanitize_file_name, split_extension,
+};
 pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, sanitize_display_text};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};
 pub use video::VideoPacket;

@@ -19,7 +19,7 @@ dari-relay ──► dari-net, dari-proto
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
 | `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, paced capture thread | xcap, fast_image_resize, openh264 |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
-| `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard), viewer sessions | tokio, arboard |
+| `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
 | `dari` | `crates/app` | gpui-kit desktop app and the headless CLI (`host`, `connect`) | gpui-kit, clap, directories, toml |
 
@@ -69,7 +69,8 @@ end session) and receives state on a `HostEvent` channel (`PasswordChanged`, `Ap
    clipboard. Input that arrives is dropped.
 3. **Session start**: the host sends the display list and `HostStatus` and opens the capture stream. A video pump
    task lives for the whole session and writes packets from the capture stream to the unidirectional video stream.
-   If control is allowed, the input thread and clipboard sync start.
+   If control is allowed, the input thread and clipboard sync start, and with file transfer on the host grants the
+   viewer stream credit and starts accepting its file streams.
 4. **During the session**: control-stream messages are handled. `SelectDisplay` and `SetQuality` reopen only the
    capture stream (the new encoder starts with a keyframe); the video pump carries on and the input coordinate
    space follows the new display. `RequestKeyframe` asks the encoder for a keyframe.
@@ -126,6 +127,18 @@ and returns a `ViewerHandle` and a `ViewerEvent` channel.
   network falls behind, pointer moves can't fill the queue and cause key releases to be dropped.
 - A cleanly ended video stream doesn't end the session; the control stream decides when the session is over.
 - Clipboard sharing turns on only when the host allows control, and turns off if the host later reports view-only.
+- One task accepts every unidirectional stream the host opens for the whole session and routes it by its kind: the
+  video stream to the decoder, file streams to the session's transfers.
+
+## File transfer
+
+`transfer.rs` holds `Transfers`, one state machine shared by host and viewer sessions. The session task feeds it
+control messages (`FileOffer`, `FileAccept`, `FileDone`, `FileCancel`), incoming file streams, the local user's
+commands (send, accept, cancel), and results from its send and receive tasks, and sends whatever control message
+it returns. Each accepted file gets a task that copies between disk and its stream in 64 KiB chunks and reports
+progress at most every 200 ms. Snapshots (`Transfer`) reach the UI as `HostEvent::Transfer` and
+`ViewerEvent::Transfer`. The host accepts the viewer's files itself; the viewer waits for its user. Received files
+go to the user's Downloads folder (`config::downloads_directory`).
 
 ## Desktop app
 
@@ -138,6 +151,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `home.rs` | Home window: the "This device" card (addresses, password, relay ID, approval card, permission notice, settings) and the "Control a remote device" card (address and password, recent addresses, nearby devices) |
 | `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frames per second and round-trip latency, disconnect) |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
+| `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
 | `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |

@@ -12,6 +12,7 @@ mod runtime;
 mod settings;
 mod state;
 mod text;
+mod transfers;
 mod video_layout;
 mod viewer;
 

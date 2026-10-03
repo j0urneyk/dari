@@ -1,5 +1,6 @@
 //! Serving one authenticated viewer: approval, screen streaming, input, and clipboard.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -9,10 +10,14 @@ use dari_media::{
     CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError, StreamSettings,
     spawn_capture_stream,
 };
-use dari_net::{AuthenticatedConnection, MessageReceiver, MessageSender, PeerInfo, SessionLink};
+use dari_net::{
+    AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
+    PeerInfo, SessionLink, SessionStreams,
+};
 use dari_proto::{
     Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
-    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, VideoPacket, sanitize_display_text,
+    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, TransferId, VideoPacket,
+    sanitize_display_text,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -23,6 +28,9 @@ use crate::SessionEndReason;
 use crate::clipboard::ClipboardSync;
 use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent};
 use crate::platform::HostPlatform;
+use crate::transfer::{
+    PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
+};
 
 /// How long the host user has to allow or decline a viewer.
 pub(crate) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,12 +40,18 @@ const DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 const INPUT_QUEUE: usize = 256;
 
 /// How a host serves its viewers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct SessionOptions {
     pub(crate) stream: StreamSettings,
     pub(crate) require_approval: bool,
     pub(crate) clipboard: bool,
+    pub(crate) file_transfer: bool,
+    /// Where files from the viewer are saved.
+    pub(crate) downloads: Option<PathBuf>,
 }
+
+/// File streams the viewer opened, or why accepting them failed.
+type IncomingFiles = mpsc::Receiver<Result<(TransferId, FileReceiver), SessionEndReason>>;
 
 /// Stream settings for a viewer's quality request, capped by what the host allows.
 fn stream_settings(preset: QualityPreset, base: StreamSettings) -> StreamSettings {
@@ -59,10 +73,26 @@ pub(crate) async fn serve_viewer(
     platform: Arc<dyn HostPlatform>,
     options: SessionOptions,
     mut end: oneshot::Receiver<()>,
+    mut transfer_commands: mpsc::UnboundedReceiver<TransferCommand>,
     events: mpsc::UnboundedSender<HostEvent>,
 ) -> SessionEndReason {
     let (link, control_sender, mut control_receiver) = connection.split();
     let peer = link.peer().clone();
+    let transfer_events = events.clone();
+    let (transfers, mut transfer_steps) = Transfers::new(
+        true,
+        link.streams(),
+        TransferPolicy {
+            allowed: false,
+            receive_dir: options.downloads.clone(),
+            // The viewer already controls this machine; asking the host user adds nothing.
+            auto_accept: true,
+        },
+        Arc::new(move |transfer| {
+            let _sent = transfer_events.send(HostEvent::Transfer(transfer));
+        }),
+    );
+    let stream = options.stream;
     let mut session = HostSession {
         link,
         control: control_sender,
@@ -72,10 +102,12 @@ pub(crate) async fn serve_viewer(
         status: HostStatus {
             screen: Availability::Unavailable,
             input: Availability::Unavailable,
+            files: Availability::Unavailable,
         },
         displays: Vec::new(),
         active_display: None,
-        stream: options.stream,
+        stream,
+        transfers,
         input: None,
         capture: None,
         frames: None,
@@ -87,7 +119,17 @@ pub(crate) async fn serve_viewer(
         .await_approval(&peer, &mut control_receiver, &mut end)
         .await
     {
-        Ok(decision) => session.run(decision, &mut control_receiver, &mut end).await,
+        Ok(decision) => {
+            session
+                .run(
+                    decision,
+                    &mut control_receiver,
+                    &mut end,
+                    &mut transfer_commands,
+                    &mut transfer_steps,
+                )
+                .await
+        }
         Err(reason) => reason,
     };
     session.shut_down(&reason).await;
@@ -104,6 +146,7 @@ struct HostSession {
     displays: Vec<DisplayInfo>,
     active_display: Option<u32>,
     stream: StreamSettings,
+    transfers: Transfers,
     input: Option<InputQueue>,
     capture: Option<CaptureStream>,
     /// Feeds the video pump; each capture stream gets a clone.
@@ -165,21 +208,31 @@ impl HostSession {
         Ok(decision)
     }
 
+    async fn send_reply(&mut self, reply: Option<ControlMessage>) -> Result<(), SessionEndReason> {
+        match reply {
+            Some(message) => self.send(&message).await,
+            None => Ok(()),
+        }
+    }
+
     async fn run(
         &mut self,
         decision: ApprovalDecision,
         control: &mut MessageReceiver<ControlMessage>,
         end: &mut oneshot::Receiver<()>,
+        transfer_commands: &mut mpsc::UnboundedReceiver<TransferCommand>,
+        transfer_steps: &mut mpsc::UnboundedReceiver<TransferStep>,
     ) -> SessionEndReason {
         let control_allowed = decision == ApprovalDecision::AllowControl;
         let (status_updates, mut status_receiver) = mpsc::channel(4);
         let (clipboard_out, mut clipboard_changes) = mpsc::channel(4);
-        if let Err(reason) = self
+        let mut incoming_files = match self
             .start(control_allowed, status_updates, clipboard_out)
             .await
         {
-            return reason;
-        }
+            Ok(incoming_files) => incoming_files,
+            Err(reason) => return reason,
+        };
 
         loop {
             tokio::select! {
@@ -200,6 +253,30 @@ impl HostSession {
                         return reason;
                     }
                 }
+                command = transfer_commands.recv() => {
+                    let Some(command) = command else { continue };
+                    let reply = self.transfers.command(command).await;
+                    if let Err(reason) = self.send_reply(reply).await {
+                        return reason;
+                    }
+                }
+                step = transfer_steps.recv() => {
+                    let Some(step) = step else { continue };
+                    let reply = self.transfers.step(step).await;
+                    if let Err(reason) = self.send_reply(reply).await {
+                        return reason;
+                    }
+                }
+                file = async {
+                    match incoming_files.as_mut() {
+                        Some(files) => files.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match file {
+                    Some(Ok((id, stream))) => self.transfers.incoming_stream(id, stream),
+                    Some(Err(reason)) => return reason,
+                    None => incoming_files = None,
+                },
                 result = async {
                     match self.pump.as_mut() {
                         Some(pump) => pump.await,
@@ -224,13 +301,14 @@ impl HostSession {
         }
     }
 
-    /// Starts input, the video stream, and clipboard sync, and tells the viewer what it gets.
+    /// Starts input, the video stream, clipboard sync, and file transfer, and tells the viewer
+    /// what it gets. Returns the viewer's file streams when file transfer is allowed.
     async fn start(
         &mut self,
         control_allowed: bool,
         status_updates: mpsc::Sender<Availability>,
         clipboard_out: mpsc::Sender<String>,
-    ) -> Result<(), SessionEndReason> {
+    ) -> Result<Option<IncomingFiles>, SessionEndReason> {
         self.displays = match self.platform.displays() {
             Ok(mut displays) => {
                 displays.truncate(MAX_DISPLAYS);
@@ -258,6 +336,7 @@ impl HostSession {
 
             let video = self
                 .link
+                .streams()
                 .open_video_sender()
                 .await
                 .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
@@ -283,8 +362,25 @@ impl HostSession {
                 factory.and_then(|factory| ClipboardSync::start(factory, clipboard_out));
         }
 
+        let incoming_files = if !control_allowed {
+            self.status.files = Availability::NotAllowed;
+            None
+        } else if self.options.file_transfer && self.options.downloads.is_some() {
+            self.status.files = Availability::Available;
+            self.transfers.set_allowed(true);
+            let streams = self.link.streams();
+            streams.allow_peer_streams(PEER_FILE_STREAMS);
+            let (files, incoming) = mpsc::channel(PEER_FILE_STREAMS as usize);
+            tokio::spawn(accept_file_streams(streams, files));
+            Some(incoming)
+        } else {
+            self.status.files = Availability::Unavailable;
+            None
+        };
+
         self.publish_status().await?;
-        self.publish_displays().await
+        self.publish_displays().await?;
+        Ok(incoming_files)
     }
 
     async fn publish_status(&mut self) -> Result<(), SessionEndReason> {
@@ -379,6 +475,17 @@ impl HostSession {
                     clipboard.apply_remote(text);
                 }
             }
+            message @ (ControlMessage::FileOffer(_)
+            | ControlMessage::FileAccept(_)
+            | ControlMessage::FileDone(_)
+            | ControlMessage::FileCancel { .. }) => {
+                let reply = self
+                    .transfers
+                    .message(message)
+                    .await
+                    .map_err(SessionEndReason::ProtocolError)?;
+                self.send_reply(reply).await?;
+            }
             ControlMessage::Ping { token } => self.send(&ControlMessage::Pong { token }).await?,
             ControlMessage::Pong { .. } => {}
             ControlMessage::Disconnect => return Err(SessionEndReason::ViewerLeft),
@@ -405,6 +512,7 @@ impl HostSession {
         // Dropping the queue stops injection at once and releases every held key and button.
         drop(self.input.take());
         drop(self.clipboard.take());
+        self.transfers.shut_down().await;
         let _finished = self.control.close().await;
         if matches!(
             reason,
@@ -415,6 +523,31 @@ impl HostSession {
             let _closed = tokio::time::timeout(DISCONNECT_GRACE, self.link.closed()).await;
         }
         self.link.close();
+    }
+}
+
+/// Hands every file stream the viewer opens to the session until the connection ends. The
+/// viewer may open nothing else.
+async fn accept_file_streams(
+    streams: SessionStreams,
+    files: mpsc::Sender<Result<(TransferId, FileReceiver), SessionEndReason>>,
+) {
+    loop {
+        let item = match streams.accept().await {
+            Ok(IncomingStream::File { id, stream }) => Ok((id, stream)),
+            Ok(IncomingStream::Video(_)) => Err(SessionEndReason::ProtocolError(
+                "viewer opened a video stream".into(),
+            )),
+            Err(dari_net::StreamError::UnknownKind(kind)) => Err(SessionEndReason::ProtocolError(
+                format!("viewer opened a stream of unknown kind {kind}"),
+            )),
+            // The control stream reports a lost connection.
+            Err(_) => return,
+        };
+        let failed = item.is_err();
+        if files.send(item).await.is_err() || failed {
+            return;
+        }
     }
 }
 
