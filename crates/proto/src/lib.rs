@@ -36,7 +36,8 @@ pub use relay::{
 };
 pub use stream::StreamKind;
 pub use transfer::{
-    FileOffer, MAX_FILE_NAME_BYTES, TransferEnd, TransferId, sanitize_file_name, split_extension,
+    FileOffer, FolderFile, MAX_FILE_NAME_BYTES, MAX_FOLDER_DEPTH, MAX_FOLDER_FILES,
+    MAX_FOLDER_PATH_BYTES, TransferEnd, TransferId, sanitize_file_name, split_extension,
 };
 pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, sanitize_display_text};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};

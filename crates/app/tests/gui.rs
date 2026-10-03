@@ -714,6 +714,32 @@ mod macos {
             std::fs::read(&saved).is_ok_and(|bytes| bytes == b"dropped on the viewer")
         });
 
+        // A dropped folder arrives with its structure.
+        let folder = sources.path().join("앨범");
+        std::fs::create_dir_all(folder.join("2026")).unwrap();
+        std::fs::write(folder.join("2026/a.txt"), b"inside a folder").unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position: center,
+                    paths: ExternalPaths(vec![folder.clone()].into()),
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Submit { position: center }),
+                cx,
+            );
+        })
+        .unwrap();
+        let saved = host_downloads.path().join("앨범/2026/a.txt");
+        pump(&mut cx, Duration::from_secs(10), |_| {
+            while let Ok(event) = host_events.try_recv() {
+                drop(event);
+            }
+            std::fs::read(&saved).is_ok_and(|bytes| bytes == b"inside a folder")
+        });
+
         // The host offers a file; it waits for the viewer user.
         let offered = sources.path().join("from-host.bin");
         std::fs::write(&offered, vec![7u8; 200_000]).unwrap();

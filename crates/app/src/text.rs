@@ -130,6 +130,14 @@ impl Text {
         }
     }
 
+    pub(crate) fn folder_files(&self, files: usize) -> String {
+        match (self.korean, files) {
+            (true, _) => format!("폴더 · 파일 {files}개"),
+            (false, 1) => "folder · 1 file".into(),
+            (false, _) => format!("folder · {files} files"),
+        }
+    }
+
     pub(crate) fn connect_failed(&self, detail: &str) -> String {
         if self.korean {
             format!("접속하지 못했습니다: {detail}")
@@ -280,7 +288,7 @@ static KOREAN: Text = Text {
     cancel: "취소",
     show_in_folder: "폴더에서 보기",
     clear_finished: "완료 항목 지우기",
-    incoming_file_prompt: "상대 기기가 보내려는 파일입니다. 다운로드 폴더에 저장할까요?",
+    incoming_file_prompt: "상대 기기가 보내려고 합니다. 다운로드 폴더에 저장할까요?",
     waiting_for_answer: "상대방의 응답을 기다리는 중",
     sending: "보내는 중",
     receiving: "받는 중",
@@ -379,7 +387,7 @@ static ENGLISH: Text = Text {
     cancel: "Cancel",
     show_in_folder: "Show in folder",
     clear_finished: "Clear finished",
-    incoming_file_prompt: "The remote device wants to send this file. Save it to Downloads?",
+    incoming_file_prompt: "The remote device wants to send this. Save it to Downloads?",
     waiting_for_answer: "Waiting for the other side",
     sending: "Sending",
     receiving: "Receiving",
