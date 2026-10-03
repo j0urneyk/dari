@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Cross-device session checks between this Mac and a Windows machine reachable over SSH: a
-# local Windows 11 VM, or a GitHub Windows runner on the tailnet (see runner.sh). Each case runs
+# local Windows 11 VM, or a GitHub Windows runner on the tailnet (ci-driver.sh). Each case runs
 # `dari-check host` on one side and `dari-check view` on the other; both must pass.
 #
 # The Windows side needs scripts/crosscheck/windows/prepare-peer.ps1 (setup-vm.ps1 on a VM) and
-# a signed-in desktop session. This Mac's pointer moves and its clipboard changes during the
+# a signed-in desktop session. The Mac's pointer moves and its clipboard changes during the
 # run; the terminal running this needs Screen Recording and Accessibility.
 set -euo pipefail
 
