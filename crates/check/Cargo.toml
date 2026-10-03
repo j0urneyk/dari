@@ -1,0 +1,27 @@
+[package]
+name = "dari-check"
+description = "Cross-device session checks for dari: each side verifies what it can observe locally"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+dari-input.workspace = true
+dari-media.workspace = true
+dari-net.workspace = true
+dari-proto.workspace = true
+dari-session.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+enigo.workspace = true
+gethostname.workspace = true
+image = { workspace = true, features = ["png"] }
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

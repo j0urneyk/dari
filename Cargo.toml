@@ -44,6 +44,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+socket2 = "0.6"
 spake2 = "0.4"
 subtle = "2"
 sys-locale = "0.3"

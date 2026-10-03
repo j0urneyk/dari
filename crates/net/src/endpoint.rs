@@ -192,11 +192,31 @@ impl std::fmt::Debug for HostEndpoint {
     }
 }
 
+/// Binds the host's UDP socket. A wildcard IPv6 address also accepts IPv4: Windows makes IPv6
+/// sockets IPv6-only by default, which shut out every viewer connecting by an IPv4 address.
+fn bind_host_socket(address: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(address),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    if address.ip() == IpAddr::V6(Ipv6Addr::UNSPECIFIED) {
+        socket.set_only_v6(false)?;
+    }
+    socket.bind(&address.into())?;
+    Ok(socket.into())
+}
+
 impl HostEndpoint {
     /// Starts listening. Must be called within a Tokio runtime.
     pub fn bind(settings: HostSettings, identity: &DeviceIdentity) -> Result<Self, EndpointError> {
         let server_config = server_config(identity)?;
-        let endpoint = quinn::Endpoint::server(server_config.clone(), settings.bind_address)?;
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config.clone()),
+            bind_host_socket(settings.bind_address)?,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         let shared = Arc::new(HostShared {
             server_hello: ServerHello {
                 version: PROTOCOL_VERSION,

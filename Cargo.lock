@@ -1608,6 +1608,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dari-check"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dari-input",
+ "dari-media",
+ "dari-net",
+ "dari-proto",
+ "dari-session",
+ "enigo",
+ "gethostname",
+ "image",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dari-input"
 version = "0.0.1"
 dependencies = [
@@ -1647,6 +1665,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "sha2 0.10.9",
+ "socket2",
  "spake2",
  "subtle",
  "tempfile",
