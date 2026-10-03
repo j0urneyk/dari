@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::input::InputEvent;
-use crate::transfer::{FileOffer, TransferEnd, TransferId, validate_file_name};
+use crate::transfer::{FileOffer, TransferEnd, TransferId, validate_offer};
 use crate::validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, validate_display_text};
 
 /// Largest clipboard text either side sends, in bytes.
@@ -128,7 +128,7 @@ impl Validate for ControlMessage {
                     Ok(())
                 }
             }
-            ControlMessage::FileOffer(offer) => validate_file_name(&offer.name),
+            ControlMessage::FileOffer(offer) => validate_offer(offer),
             ControlMessage::SetFrameRate(rate) | ControlMessage::FrameRate(rate) => {
                 if (1..=MAX_FRAME_RATE).contains(rate) {
                     Ok(())
@@ -212,6 +212,7 @@ mod tests {
                 id: TransferId(1),
                 name: name.into(),
                 size: 10,
+                contents: None,
             })
         };
         assert!(offer("photo.jpg").validate().is_ok());

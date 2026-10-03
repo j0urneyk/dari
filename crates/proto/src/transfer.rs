@@ -1,7 +1,8 @@
 //! File transfer messages and file name rules.
 //!
-//! Either side offers a file on the control stream; the receiver accepts or declines it, and an
-//! accepted file's bytes travel on their own [`StreamKind::File`](crate::StreamKind) stream.
+//! Either side offers a file or a folder on the control stream; the receiver accepts or declines
+//! it, and an accepted offer's bytes travel on their own [`StreamKind::File`](crate::StreamKind)
+//! stream: one file's bytes, or every file of a folder one after another in the offer's order.
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -10,6 +11,14 @@ use crate::validate::{ValidationError, is_invisible_format};
 
 /// Longest file name a peer may offer, in UTF-8 bytes (the macOS and Windows component limit).
 pub const MAX_FILE_NAME_BYTES: usize = 255;
+/// Most files one folder offer may hold.
+pub const MAX_FOLDER_FILES: usize = 10_000;
+/// Deepest a file may sit inside an offered folder, in path components.
+pub const MAX_FOLDER_DEPTH: usize = 32;
+/// Most bytes all path components of one folder offer may add up to, keeping the offer well
+/// inside the control channel's frame limit.
+pub const MAX_FOLDER_PATH_BYTES: usize = 1024 * 1024;
+
 /// Longest name [`sanitize_file_name`] produces, leaving room for a ` (n)` suffix and `.part`.
 const SANITIZED_FILE_NAME_BYTES: usize = 200;
 
@@ -35,13 +44,55 @@ impl std::fmt::Display for TransferId {
     }
 }
 
-/// A file the sender would like to transfer.
+/// A file or folder the sender would like to transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileOffer {
     pub id: TransferId,
-    /// The file's name without any directory, NFC-normalized.
+    /// The file's or folder's name without any directory, NFC-normalized.
     pub name: String,
+    /// Bytes to transfer: the file's size, or the sum of the folder's files.
     pub size: u64,
+    /// `None` for a file; for a folder, its files in the order their bytes are sent. Empty
+    /// subfolders are not part of it.
+    pub contents: Option<Vec<FolderFile>>,
+}
+
+/// One file inside an offered folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderFile {
+    /// Path below the folder, one NFC-normalized name per component.
+    pub path: Vec<String>,
+    pub size: u64,
+}
+
+/// Checks an offer's names and, for a folder, its shape: every path component is a plain name,
+/// paths are 1..=[`MAX_FOLDER_DEPTH`] deep, and the sizes add up to `size`.
+pub(crate) fn validate_offer(offer: &FileOffer) -> Result<(), ValidationError> {
+    validate_file_name(&offer.name)?;
+    let Some(contents) = &offer.contents else {
+        return Ok(());
+    };
+    if contents.len() > MAX_FOLDER_FILES {
+        return Err(ValidationError::InvalidValue { field: "folder" });
+    }
+    let mut total = 0u64;
+    let mut path_bytes = 0usize;
+    for file in contents {
+        if file.path.is_empty() || file.path.len() > MAX_FOLDER_DEPTH {
+            return Err(ValidationError::InvalidValue { field: "folder" });
+        }
+        for component in &file.path {
+            validate_file_name(component)?;
+            path_bytes += component.len();
+        }
+        total = total
+            .checked_add(file.size)
+            .ok_or(ValidationError::InvalidValue { field: "folder" })?;
+    }
+    if path_bytes > MAX_FOLDER_PATH_BYTES || total != offer.size {
+        return Err(ValidationError::InvalidValue { field: "folder" });
+    }
+    Ok(())
 }
 
 /// Why a transfer stopped before completing.
@@ -174,6 +225,54 @@ mod tests {
         // Right-to-left override: "photo\u{202E}gnp.exe" renders as "photoexe.png".
         assert!(validate_file_name("photo\u{202E}gnp.exe").is_err());
         assert!(validate_file_name(&"a".repeat(MAX_FILE_NAME_BYTES + 1)).is_err());
+    }
+
+    fn folder(files: &[(&[&str], u64)]) -> FileOffer {
+        FileOffer {
+            id: TransferId(1),
+            name: "사진".into(),
+            size: files.iter().map(|(_, size)| size).sum(),
+            contents: Some(
+                files
+                    .iter()
+                    .map(|(path, size)| FolderFile {
+                        path: path.iter().map(|component| (*component).into()).collect(),
+                        size: *size,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn folder_offers_hold_only_plain_relative_paths() {
+        assert!(validate_offer(&folder(&[(&["a.jpg"], 3), (&["2026", "b.jpg"], 4)])).is_ok());
+        assert!(validate_offer(&folder(&[])).is_ok(), "an empty folder");
+        for bad in [&[".."][..], &["a", "..", "b"], &["a/b"], &["C:\\x"], &[]] {
+            assert!(validate_offer(&folder(&[(bad, 1)])).is_err(), "{bad:?}");
+        }
+        let deep = vec!["d"; MAX_FOLDER_DEPTH + 1];
+        assert!(validate_offer(&folder(&[(&deep, 1)])).is_err());
+    }
+
+    #[test]
+    fn folder_sizes_must_add_up() {
+        let mut offer = folder(&[(&["a"], 3), (&["b"], 4)]);
+        offer.size = 8;
+        assert!(validate_offer(&offer).is_err());
+        let overflowing = folder(&[(&["a"], u64::MAX)]);
+        let mut overflowing = FileOffer {
+            contents: overflowing.contents.map(|mut files| {
+                files.push(FolderFile {
+                    path: vec!["b".into()],
+                    size: 1,
+                });
+                files
+            }),
+            ..overflowing
+        };
+        overflowing.size = 0;
+        assert!(validate_offer(&overflowing).is_err());
     }
 
     #[test]

@@ -83,7 +83,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) fn pick_files(cx: &App) -> impl Future<Output = Vec<PathBuf>> + 'static {
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: true,
-        directories: false,
+        directories: true,
         multiple: true,
         prompt: Some(text().send_file.into()),
     });
