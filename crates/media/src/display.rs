@@ -1,10 +1,14 @@
-//! Physical displays and capturing them with xcap.
+//! Physical displays and capturing them: ScreenCaptureKit on macOS, xcap elsewhere.
+
+use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::frame::CapturedFrame;
+#[cfg(not(target_os = "macos"))]
 use crate::frame::RgbaFrame;
 use crate::permission::{PermissionState, screen_capture_access};
-use crate::stream::ScreenCapturer;
+use crate::stream::{ScreenCapturer, StreamSettings};
 
 #[derive(Debug, Error)]
 pub enum CaptureError {
@@ -38,6 +42,8 @@ pub struct DisplayInfo {
     pub height: u32,
     pub scale_factor: f32,
     pub is_primary: bool,
+    /// Refresh rate in hertz, or 0 if the OS does not report one.
+    pub refresh_rate: u32,
 }
 
 impl DisplayInfo {
@@ -51,7 +57,20 @@ impl DisplayInfo {
             height: monitor.height()?,
             scale_factor: monitor.scale_factor()?,
             is_primary: monitor.is_primary()?,
+            refresh_rate: monitor.frequency().map_or(0, round_hertz),
         })
+    }
+}
+
+/// Rounds a reported refresh rate such as 59.94 to whole hertz.
+fn round_hertz(frequency: f32) -> u32 {
+    if frequency.is_finite() && frequency > 0.0 {
+        // In range: refresh rates are a few hundred hertz at most.
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let hertz = frequency.round().min(1000.0) as u32;
+        hertz
+    } else {
+        0
     }
 }
 
@@ -68,8 +87,11 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>, CaptureError> {
 /// Captures one display. Create it on the thread that will capture: platform handles are not
 /// guaranteed to be `Send`.
 pub struct DisplayCapturer {
-    monitor: xcap::Monitor,
     info: DisplayInfo,
+    #[cfg(target_os = "macos")]
+    source: crate::apple::ScreenCaptureKitCapturer,
+    #[cfg(not(target_os = "macos"))]
+    source: xcap::Monitor,
 }
 
 impl std::fmt::Debug for DisplayCapturer {
@@ -81,8 +103,10 @@ impl std::fmt::Debug for DisplayCapturer {
 }
 
 impl DisplayCapturer {
-    /// Opens display `id`, or the primary display when `id` is `None`.
-    pub fn open(id: Option<u32>) -> Result<Self, CaptureError> {
+    /// Opens display `id`, or the primary display when `id` is `None`, for a stream with
+    /// `settings`. On macOS, ScreenCaptureKit itself scales to `settings.max_long_edge` and
+    /// limits the rate to `settings.max_fps`.
+    pub fn open(id: Option<u32>, settings: &StreamSettings) -> Result<Self, CaptureError> {
         if screen_capture_access() == PermissionState::Denied {
             return Err(CaptureError::PermissionDenied);
         }
@@ -103,7 +127,19 @@ impl DisplayCapturer {
                 .ok_or(CaptureError::NoDisplay)?
         };
         let info = DisplayInfo::from_monitor(&monitor)?;
-        Ok(Self { monitor, info })
+        #[cfg(target_os = "macos")]
+        let source = crate::apple::ScreenCaptureKitCapturer::open(
+            info.id,
+            settings.max_long_edge,
+            settings.max_fps,
+        )?;
+        #[cfg(not(target_os = "macos"))]
+        let source = {
+            // xcap captures whole frames on demand; the stream paces and scales them.
+            let _ = settings;
+            monitor
+        };
+        Ok(Self { info, source })
     }
 
     pub fn info(&self) -> &DisplayInfo {
@@ -112,10 +148,22 @@ impl DisplayCapturer {
 }
 
 impl ScreenCapturer for DisplayCapturer {
-    fn capture(&mut self) -> Result<RgbaFrame, CaptureError> {
-        let image = self.monitor.capture_image()?;
+    #[cfg(target_os = "macos")]
+    fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+        self.source.capture(timeout)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn paces_itself(&self) -> bool {
+        self.source.paces_itself()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn capture(&mut self, _timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+        let image = self.source.capture_image()?;
         let (width, height) = image.dimensions();
         RgbaFrame::new(width, height, image.into_raw())
+            .map(|frame| Some(frame.into()))
             .ok_or_else(|| CaptureError::Backend("captured image has an invalid size".into()))
     }
 }

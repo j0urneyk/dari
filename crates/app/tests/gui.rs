@@ -58,6 +58,7 @@ mod macos {
         height: 900,
         scale_factor: 1.0,
         is_primary: true,
+        refresh_rate: 60,
     };
 
     struct SyntheticPlatform {
@@ -98,7 +99,11 @@ mod macos {
         fn displays(&self) -> Result<Vec<DisplayInfo>, CaptureError> {
             Ok(vec![DISPLAY])
         }
-        fn open_capturer(&self, _display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+        fn open_capturer(
+            &self,
+            _display: u32,
+            _settings: StreamSettings,
+        ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
             Ok(Box::new(SyntheticCapturer::new(800, 450)))
         }
         fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
@@ -248,6 +253,7 @@ mod macos {
             client_name: "gui-test".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            frame_rate: Some(144),
             downloads: None,
             audio: None,
             play_audio: false,
@@ -266,6 +272,10 @@ mod macos {
         // The first decoded frame reaches the window.
         pump(&mut cx, Duration::from_secs(10), |cx| {
             cx.update(|cx| view.read(cx).has_frame())
+        });
+        // The viewer asked for 144 fps; the host's 60 Hz display caps it, and the toolbar says so.
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| view.read(cx).host_frame_rate() == Some(60))
         });
 
         // Real GPUI input events on the picture reach the host's input backend. The window is
@@ -659,6 +669,7 @@ mod macos {
             client_name: "gui-test".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            frame_rate: None,
             downloads: Some(viewer_downloads.path().to_owned()),
             audio: None,
             play_audio: false,

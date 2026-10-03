@@ -33,6 +33,40 @@ impl RgbaFrame {
     }
 }
 
+/// A captured screen image on its way to the encoder.
+#[derive(Debug, Clone)]
+pub enum CapturedFrame {
+    /// Pixels in memory at the display's size; the stream scales them to its size limit.
+    Rgba(RgbaFrame),
+    /// A ScreenCaptureKit frame in GPU memory, already at the stream's size.
+    #[cfg(target_os = "macos")]
+    Native(crate::apple::NativeFrame),
+}
+
+impl CapturedFrame {
+    pub fn width(&self) -> u32 {
+        match self {
+            CapturedFrame::Rgba(frame) => frame.width(),
+            #[cfg(target_os = "macos")]
+            CapturedFrame::Native(frame) => frame.width(),
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        match self {
+            CapturedFrame::Rgba(frame) => frame.height(),
+            #[cfg(target_os = "macos")]
+            CapturedFrame::Native(frame) => frame.height(),
+        }
+    }
+}
+
+impl From<RgbaFrame> for CapturedFrame {
+    fn from(frame: RgbaFrame) -> Self {
+        CapturedFrame::Rgba(frame)
+    }
+}
+
 impl std::fmt::Debug for RgbaFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RgbaFrame")

@@ -62,13 +62,21 @@ movement, clicks, the wheel, and key presses over the screen go to the remote de
 ⌘C/Ctrl+C go to the remote device too. Korean text is composed by the remote device's input method, so turn on the
 Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
 
-The toolbar, which is also the window's title bar, shows frames per second and round-trip latency (`30 fps · 12 ms`), and offers **Display** (choose
-among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. The dot before the device name is
+The toolbar, which is also the window's title bar, shows frames per second and round-trip latency (`60 fps · 12 ms`),
+and offers **Display** (choose among monitors), quality (**Speed / Balanced / Quality**), the frame rate, and
+**Disconnect**. The dot before the device name is
 green while the session runs, amber while the host is still deciding, and gray once the session is over; a finished
 session explains why and offers **Close**. Limits such as a view-only session appear as a notice at the top of the
 screen. Closing the window also ends the
 session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
 remote device.
+
+The frame rate menu caps how many frames per second the host sends: **Auto**, 30, 60, 90, 120, or 144. Auto follows
+the fastest display on your computer, so a 120 Hz screen asks for 120. The host never streams faster than its own
+display refreshes, and the button shows the rate it settled on (`Auto · 60 fps`). Higher rates use more bandwidth:
+the bitrate grows with the frame rate. A macOS host encodes in hardware and reaches 100–120 fps at the Balanced
+quality; a Windows host still captures and encodes on the CPU, so it reaches much less. The measured rate on the
+left is what actually arrives.
 
 When the remote computer shares its sound, **Sound on / Sound off** in the toolbar plays or mutes it; the choice is
 remembered for later sessions. Muting stops the remote side from recording its sound at all. Sound plays about a
@@ -135,8 +143,9 @@ dari connect 192.168.0.10 --relay relay.example.com
 
 `host` prints its addresses, device fingerprint, password (it changes every session), and relay ID, and waits
 until Ctrl+C. There's nobody to approve requests, so it gives control to any viewer that knows the password and
-turns off the clipboard and file transfer. `connect` asks for the password (it can also be piped in), connects, and prints received
-frames and bitrate every second.
+turns off the clipboard and file transfer. `connect` asks for the password (it can also be piped in), connects, and
+prints received frames and bitrate every second. `dari connect --fps 60` asks for at most 60 fps; without it,
+`connect` asks for this machine's display refresh rate (up to 144).
 
 Set the log level with the `RUST_LOG` environment variable (default `info`), for example
 `RUST_LOG=dari_net=debug dari host`.

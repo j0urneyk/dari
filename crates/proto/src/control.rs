@@ -8,6 +8,8 @@ use crate::validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, validate
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 /// Most displays a host announces.
 pub const MAX_DISPLAYS: usize = 16;
+/// Highest frame rate, in frames per second, either side may name.
+pub const MAX_FRAME_RATE: u16 = 240;
 
 /// Whether a host capability works right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +99,10 @@ pub enum ControlMessage {
         id: TransferId,
         reason: TransferEnd,
     },
+    /// Viewer → host: the highest frame rate the viewer wants, in frames per second.
+    SetFrameRate(u16),
+    /// Host → viewer: the frame rate the host now streams at, at most what the viewer asked for.
+    FrameRate(u16),
 }
 
 impl Validate for ControlMessage {
@@ -123,6 +129,15 @@ impl Validate for ControlMessage {
                 }
             }
             ControlMessage::FileOffer(offer) => validate_file_name(&offer.name),
+            ControlMessage::SetFrameRate(rate) | ControlMessage::FrameRate(rate) => {
+                if (1..=MAX_FRAME_RATE).contains(rate) {
+                    Ok(())
+                } else {
+                    Err(ValidationError::InvalidValue {
+                        field: "frame rate",
+                    })
+                }
+            }
             ControlMessage::Ping { .. }
             | ControlMessage::Pong { .. }
             | ControlMessage::Disconnect
@@ -176,6 +191,18 @@ mod tests {
             active: 1,
         };
         assert!(spoofed.validate().is_err());
+    }
+
+    #[test]
+    fn frame_rates_are_bounded() {
+        for rate in [1, 60, 144, MAX_FRAME_RATE] {
+            assert!(ControlMessage::SetFrameRate(rate).validate().is_ok());
+            assert!(ControlMessage::FrameRate(rate).validate().is_ok());
+        }
+        for rate in [0, MAX_FRAME_RATE + 1, u16::MAX] {
+            assert!(ControlMessage::SetFrameRate(rate).validate().is_err());
+            assert!(ControlMessage::FrameRate(rate).validate().is_err());
+        }
     }
 
     #[test]

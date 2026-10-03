@@ -3,7 +3,7 @@ use dari_input::{EnigoBackend, InjectError, InputBackend};
 use crate::clipboard::{ClipboardFactory, SystemClipboard};
 use dari_media::{
     AudioCapturer, AudioError, CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer,
-    SystemAudioCapturer, list_displays,
+    StreamSettings, SystemAudioCapturer, list_displays,
 };
 
 /// The host machine's screen and input devices.
@@ -12,8 +12,12 @@ use dari_media::{
 pub trait HostPlatform: Send + Sync + 'static {
     /// Connected displays, primary first.
     fn displays(&self) -> Result<Vec<DisplayInfo>, CaptureError>;
-    /// Opens a capturer for `display`. Called on the capture thread.
-    fn open_capturer(&self, display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError>;
+    /// Opens a capturer for `display` for a stream with `settings`. Called on the capture thread.
+    fn open_capturer(
+        &self,
+        display: u32,
+        settings: StreamSettings,
+    ) -> Result<Box<dyn ScreenCapturer>, CaptureError>;
     /// Opens the input backend. Called on the input thread.
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError>;
     /// The clipboard to synchronize, if any.
@@ -26,7 +30,8 @@ pub trait HostPlatform: Send + Sync + 'static {
     }
 }
 
-/// The real screen (xcap), input (enigo), and system audio (cpal loopback).
+/// The real screen (ScreenCaptureKit on macOS, xcap elsewhere), input (enigo), and system audio
+/// (cpal loopback).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemPlatform;
 
@@ -35,8 +40,12 @@ impl HostPlatform for SystemPlatform {
         list_displays()
     }
 
-    fn open_capturer(&self, display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
-        Ok(Box::new(DisplayCapturer::open(Some(display))?))
+    fn open_capturer(
+        &self,
+        display: u32,
+        settings: StreamSettings,
+    ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+        Ok(Box::new(DisplayCapturer::open(Some(display), &settings)?))
     }
 
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {

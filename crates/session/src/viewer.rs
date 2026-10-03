@@ -15,8 +15,8 @@ use dari_net::{
     SessionLink, SessionStreams, StreamError, connect, connect_via_relay,
 };
 use dari_proto::{
-    Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
-    QualityPreset, TransferId, VideoPacket,
+    Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent,
+    MAX_FRAME_RATE, Os, QualityPreset, TransferId, VideoPacket,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
@@ -45,6 +45,8 @@ pub struct ViewerConfig {
     pub map_shortcut_modifier: bool,
     /// Share clipboard text once the host allows control; `None` disables it.
     pub clipboard: Option<ClipboardFactory>,
+    /// The highest frame rate to ask the host for, or `None` to leave it to the host.
+    pub frame_rate: Option<u16>,
     /// Where files from the host are saved once the user accepts them; `None` declines them.
     pub downloads: Option<PathBuf>,
     /// Plays the host's system audio; `None` never asks the host for it.
@@ -63,6 +65,8 @@ pub enum ViewerEvent {
         displays: Vec<DisplayDescription>,
         active: u32,
     },
+    /// The frame rate the host streams at.
+    FrameRate(u16),
     /// A file transfer changed. Offers from the host wait in
     /// [`TransferState::Offered`](crate::TransferState::Offered) until
     /// [`ViewerHandle::accept_transfer`] or [`ViewerHandle::cancel_transfer`].
@@ -89,6 +93,7 @@ impl std::fmt::Debug for ViewerConfig {
             .field("client_name", &self.client_name)
             .field("map_shortcut_modifier", &self.map_shortcut_modifier)
             .field("clipboard", &self.clipboard.is_some())
+            .field("frame_rate", &self.frame_rate)
             .field("downloads", &self.downloads)
             .field("audio", &self.audio.is_some())
             .field("play_audio", &self.play_audio)
@@ -108,6 +113,7 @@ enum Outgoing {
     RequestKeyframe,
     SelectDisplay(u32),
     SetQuality(QualityPreset),
+    SetFrameRate(u16),
     Clipboard(String),
     /// A file transfer message.
     Transfer(ControlMessage),
@@ -136,6 +142,7 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::RequestKeyframe => "RequestKeyframe",
             Outgoing::SelectDisplay(_) => "SelectDisplay",
             Outgoing::SetQuality(_) => "SetQuality",
+            Outgoing::SetFrameRate(_) => "SetFrameRate",
             Outgoing::Clipboard(_) => "Clipboard",
             Outgoing::Transfer(_) => "Transfer",
             Outgoing::SetAudio(_) => "SetAudio",
@@ -166,6 +173,14 @@ impl ViewerHandle {
     /// Asks the host for a different stream quality.
     pub fn set_quality(&self, preset: QualityPreset) {
         let _sent = self.outgoing.try_send(Outgoing::SetQuality(preset));
+    }
+
+    /// Asks the host to stream at up to `rate` frames per second (1 to [`MAX_FRAME_RATE`]).
+    /// The host answers with [`ViewerEvent::FrameRate`].
+    pub fn set_frame_rate(&self, rate: u16) {
+        let _sent = self
+            .outgoing
+            .try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
     }
 
     /// The most recent decoded frame. Older frames are skipped, never queued.
@@ -246,6 +261,9 @@ pub async fn connect_viewer(
     let link = Arc::new(link);
 
     let (outgoing, outgoing_receiver) = mpsc::channel(INPUT_QUEUE);
+    if let Some(rate) = config.frame_rate {
+        let _sent = outgoing.try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
+    }
     let (frame_sender, frames) = watch::channel(None);
     let (events, event_receiver) = mpsc::unbounded_channel();
     let stats = Arc::new(ViewerStats::default());
@@ -418,6 +436,7 @@ async fn write_control(
             Outgoing::RequestKeyframe => ControlMessage::RequestKeyframe,
             Outgoing::SelectDisplay(id) => ControlMessage::SelectDisplay(id),
             Outgoing::SetQuality(preset) => ControlMessage::SetQuality(preset),
+            Outgoing::SetFrameRate(rate) => ControlMessage::SetFrameRate(rate),
             Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
             Outgoing::Transfer(message) => message,
             Outgoing::SetAudio(enabled) => ControlMessage::SetAudio(enabled),
@@ -525,6 +544,9 @@ impl ViewerSession {
             ControlMessage::Displays { displays, active } => {
                 let _sent = self.events.send(ViewerEvent::Displays { displays, active });
             }
+            ControlMessage::FrameRate(rate) => {
+                let _sent = self.events.send(ViewerEvent::FrameRate(rate));
+            }
             ControlMessage::Clipboard(text) => {
                 if let Some(clipboard) = &self.clipboard {
                     clipboard.apply_remote(text);
@@ -547,6 +569,7 @@ impl ViewerSession {
             | ControlMessage::RequestKeyframe
             | ControlMessage::SelectDisplay(_)
             | ControlMessage::SetQuality(_)
+            | ControlMessage::SetFrameRate(_)
             | ControlMessage::SetAudio(_) => {
                 return Err(SessionEndReason::ProtocolError(
                     "host sent a viewer message".into(),

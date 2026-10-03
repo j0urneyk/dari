@@ -28,7 +28,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backdrop;
-use crate::config::{device_name, downloads_directory, local_addresses, resolve_target};
+use crate::config::{
+    auto_frame_rate, device_name, downloads_directory, local_addresses, resolve_target,
+};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::settings::ThemePreference;
@@ -1586,6 +1588,7 @@ impl ConnectPanel {
                 client_name: device_name(),
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),
+                frame_rate: Some(auto_frame_rate()),
                 downloads: downloads_directory(),
                 audio: Some(SystemAudioOutput::factory()),
                 play_audio,

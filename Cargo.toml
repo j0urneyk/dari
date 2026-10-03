@@ -21,10 +21,12 @@ dari-session = { path = "crates/session" }
 
 anyhow = "1"
 arboard = { version = "3", default-features = false }
+block2 = "0.6"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 cpal = "0.18"
 directories = "6"
+dispatch2 = "0.3"
 enigo = "0.6"
 fast_image_resize = "5"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -38,7 +40,13 @@ image = { version = "0.25", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSAppearance", "NSResponder"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
+objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-video-toolbox = "0.3"
 openh264 = "0.9"
 opus-rs = "0.1"
 postcard = { version = "1", default-features = false, features = ["use-std"] }

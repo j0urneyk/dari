@@ -16,6 +16,7 @@ use dari_proto::{
 use dari_session::{SessionEndReason, ViewerEvent, ViewerHandle};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -26,6 +27,7 @@ use gpui_kit::*;
 use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
 
+use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
 use crate::style;
@@ -42,6 +44,23 @@ const MIN_WINDOW_SIZE: Size<Pixels> = Size {
     height: px(400.),
 };
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The viewer's frame rate choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameRateChoice {
+    /// As fast as this machine's displays refresh (see [`auto_frame_rate`]).
+    Auto,
+    Fixed(u16),
+}
+
+impl FrameRateChoice {
+    fn rate(self) -> u16 {
+        match self {
+            FrameRateChoice::Auto => auto_frame_rate(),
+            FrameRateChoice::Fixed(rate) => rate,
+        }
+    }
+}
 
 /// Key context of the remote screen while it has focus.
 const REMOTE_SCREEN_CONTEXT: &str = "RemoteScreen";
@@ -108,6 +127,9 @@ pub struct ViewerView {
     displays: Vec<DisplayDescription>,
     active_display: Option<u32>,
     quality: QualityPreset,
+    frame_rate: FrameRateChoice,
+    /// The frame rate the host reported streaming at.
+    host_frame_rate: Option<u16>,
     /// Whether the host's sound plays (saved as a setting).
     sound: bool,
     transfers: TransferList,
@@ -198,6 +220,8 @@ impl ViewerView {
             displays: Vec::new(),
             active_display: None,
             quality: QualityPreset::Balanced,
+            frame_rate: FrameRateChoice::Auto,
+            host_frame_rate: None,
             sound: AppState::settings(cx).play_audio,
             transfers: TransferList::default(),
             focus,
@@ -244,6 +268,11 @@ impl ViewerView {
     }
 
     #[doc(hidden)]
+    pub fn host_frame_rate(&self) -> Option<u16> {
+        self.host_frame_rate
+    }
+
+    #[doc(hidden)]
     pub fn can_send_files(&self) -> bool {
         self.files_available()
     }
@@ -264,6 +293,7 @@ impl ViewerView {
                 self.displays = displays;
                 self.active_display = Some(active);
             }
+            ViewerEvent::FrameRate(rate) => self.host_frame_rate = Some(rate),
             ViewerEvent::Transfer(transfer) => self.transfers.update(transfer),
             ViewerEvent::Ended(reason) => {
                 self.ended = Some(reason);
@@ -435,6 +465,54 @@ impl ViewerView {
             self.held_keys.retain(|held| *held != key);
         }
         self.send(InputEvent::Key { key, pressed });
+    }
+
+    fn set_frame_rate(&mut self, choice: FrameRateChoice, cx: &mut Context<Self>) {
+        self.frame_rate = choice;
+        if let Some(session) = &self.session {
+            session.set_frame_rate(choice.rate());
+        }
+        cx.notify();
+    }
+
+    /// The frame rate menu.
+    fn render_frame_rate_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        self.session.as_ref()?;
+        let label = match (self.frame_rate, self.host_frame_rate) {
+            (FrameRateChoice::Auto, Some(rate)) => {
+                format!("{} · {rate} fps", text().frame_rate_auto)
+            }
+            (FrameRateChoice::Auto, None) => text().frame_rate_auto.to_owned(),
+            (FrameRateChoice::Fixed(rate), _) => format!("{rate} fps"),
+        };
+        let current = self.frame_rate;
+        let view = cx.entity().downgrade();
+        Some(
+            Button::new("frame-rate")
+                .small()
+                .ghost()
+                .label(label)
+                .tooltip(text().frame_rate_title)
+                .dropdown_menu(move |menu, _, _| {
+                    let choices = std::iter::once(FrameRateChoice::Auto)
+                        .chain(FRAME_RATE_CHOICES.map(FrameRateChoice::Fixed));
+                    choices.fold(menu, |menu, choice| {
+                        let label = match choice {
+                            FrameRateChoice::Auto => text().frame_rate_auto.to_owned(),
+                            FrameRateChoice::Fixed(rate) => format!("{rate} fps"),
+                        };
+                        let view = view.clone();
+                        menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(choice == current)
+                                .on_click(move |_, _, cx| {
+                                    let _updated =
+                                        view.update(cx, |this, cx| this.set_frame_rate(choice, cx));
+                                }),
+                        )
+                    })
+                }),
+        )
     }
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
@@ -611,6 +689,13 @@ impl ViewerView {
                     }),
                     cx,
                 ))
+            })
+            .when(self.status.is_some(), |controls| {
+                // In the title bar, so clicking it must not start a window drag.
+                controls.children(
+                    self.render_frame_rate_menu(cx)
+                        .map(|menu| style::no_drag(div().child(menu))),
+                )
             })
     }
 

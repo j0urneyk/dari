@@ -120,6 +120,7 @@ mod tests {
             height: 1080,
             scale_factor: 1.5,
             is_primary: false,
+            refresh_rate: 60,
         };
         let geometry = DisplayGeometry {
             x: display.x,

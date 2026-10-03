@@ -37,6 +37,7 @@ const DISPLAY: DisplayInfo = DisplayInfo {
     height: 720,
     scale_factor: 1.0,
     is_primary: true,
+    refresh_rate: 120,
 };
 
 #[derive(Default)]
@@ -47,6 +48,8 @@ struct TestPlatform {
     clipboard: MemoryClipboard,
     /// Display ids opened by the capturer, in order.
     captured: Arc<Mutex<Vec<u32>>>,
+    /// The stream settings each capturer was opened with, in order.
+    opened: Arc<Mutex<Vec<StreamSettings>>>,
     /// Audio capturers open right now.
     audio_live: Arc<AtomicUsize>,
 }
@@ -137,8 +140,13 @@ impl HostPlatform for TestPlatform {
     fn clipboard(&self) -> Option<ClipboardFactory> {
         Some(self.clipboard.factory())
     }
-    fn open_capturer(&self, display: u32) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+    fn open_capturer(
+        &self,
+        display: u32,
+        settings: StreamSettings,
+    ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
         self.captured.lock().unwrap().push(display);
+        self.opened.lock().unwrap().push(settings);
         if self.deny_capture {
             return Err(CaptureError::PermissionDenied);
         }
@@ -168,6 +176,7 @@ const SECOND_DISPLAY: DisplayInfo = DisplayInfo {
     height: 1080,
     scale_factor: 1.0,
     is_primary: false,
+    refresh_rate: 60,
 };
 
 struct Host {
@@ -197,6 +206,7 @@ async fn start_host_with(
                 max_long_edge: 1920,
                 max_fps: 30,
                 bitrate_bps: 1_000_000,
+                hardware_encoder: true,
             },
             policy: HostPolicy {
                 require_approval,
@@ -228,6 +238,7 @@ fn viewer_config(host: &Host) -> ViewerConfig {
         client_name: "test-viewer".into(),
         map_shortcut_modifier: false,
         clipboard: None,
+        frame_rate: None,
         downloads: None,
         audio: None,
         play_audio: true,
@@ -409,6 +420,7 @@ async fn missing_capture_permission_keeps_the_session_and_says_why() {
             ViewerEvent::Ended(reason) => panic!("session ended: {reason}"),
             ViewerEvent::AwaitingApproval
             | ViewerEvent::Displays { .. }
+            | ViewerEvent::FrameRate(_)
             | ViewerEvent::Transfer(_) => {}
         }
     }
@@ -583,6 +595,66 @@ async fn viewer_can_switch_displays() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn frame_rate_follows_the_viewer_up_to_the_display_refresh() {
+    let platform = TestPlatform::default();
+    let opened = platform.opened.clone();
+    let host = start(platform).await;
+    let config = ViewerConfig {
+        frame_rate: Some(144),
+        ..viewer_config(&host)
+    };
+    let (viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
+    let wait_for_rate = async |events: &mut mpsc::UnboundedReceiver<ViewerEvent>, rate| {
+        wait_for_event(events, |event| *event == ViewerEvent::FrameRate(rate)).await;
+    };
+
+    // The first display refreshes at 120 Hz, so that is as fast as the stream goes.
+    wait_for_rate(&mut viewer_events, 120).await;
+    wait_until(|| opened.lock().unwrap().last().map(|stream| stream.max_fps) == Some(120)).await;
+    let fast = *opened.lock().unwrap().last().unwrap();
+    assert!(
+        fast.bitrate_bps > 1_000_000,
+        "a faster stream gets more bandwidth"
+    );
+    let frames = viewer.frames();
+    wait_until(|| frames.borrow().is_some()).await;
+
+    viewer.set_frame_rate(30);
+    wait_for_rate(&mut viewer_events, 30).await;
+    wait_until(|| opened.lock().unwrap().last().map(|stream| stream.max_fps) == Some(30)).await;
+
+    // The second display refreshes at 60 Hz.
+    viewer.set_frame_rate(144);
+    wait_for_rate(&mut viewer_events, 120).await;
+    viewer.select_display(SECOND_DISPLAY.id);
+    wait_for_rate(&mut viewer_events, 60).await;
+    wait_until(|| opened.lock().unwrap().last().map(|stream| stream.max_fps) == Some(60)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_rate_asked_for_before_approval_applies_from_the_start() {
+    let platform = TestPlatform::default();
+    let opened = platform.opened.clone();
+    let mut host = start_with(platform, true).await;
+    let config = ViewerConfig {
+        frame_rate: Some(60),
+        ..viewer_config(&host)
+    };
+    let (_viewer, mut viewer_events) = connect_viewer(config, &host.password).await.unwrap();
+    // The host user takes a moment to decide; the request has long arrived by then.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    approve(&mut host, ApprovalDecision::AllowControl).await;
+    wait_for_event(&mut viewer_events, |event| {
+        *event == ViewerEvent::FrameRate(60)
+    })
+    .await;
+    // One capture at the requested rate, not a default one restarted.
+    let opened = opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].max_fps, 60);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clipboard_text_flows_both_ways_when_control_is_allowed() {
     let platform = TestPlatform::default();
     let host_clipboard = platform.clipboard.clone();
@@ -664,6 +736,7 @@ async fn viewer_reaches_the_host_service_by_relay_id() {
             client_name: "remote".into(),
             map_shortcut_modifier: false,
             clipboard: None,
+            frame_rate: None,
             downloads: None,
             audio: None,
             play_audio: true,
