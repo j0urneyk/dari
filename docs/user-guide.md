@@ -2,7 +2,14 @@
 
 Installation and the basic flow are in the [README](../README.md#install). This guide covers each part of the
 screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
-when the system language is Korean, and in English otherwise.
+when the system language is Korean, and in English otherwise, and it follows the system's light or dark appearance.
+
+The home window has a sidebar and a page beside it. **This device** in the sidebar sums up its state (accepting
+connections, a pending connection request, a connected viewer, or remote access off) and opens the page for sharing
+this device; **Control a remote device** opens the connect form. Below them are **Nearby devices** and **Recent**.
+A connection request brings the **This device** page forward on its own, since it is declined after 30 seconds.
+**Settings** at the bottom of the sidebar opens the settings page. The window's content runs up under a
+transparent title bar.
 
 ## Home window
 
@@ -10,8 +17,8 @@ when the system language is Korean, and in English otherwise.
 
 | Item | Description |
 | --- | --- |
-| **Allow remote access** | When off, new connections are refused. A running session is not affected |
-| **Addresses** | The `IP:port` list that devices on the same network enter. The default port is UDP 47821 |
+| **Allow remote access** | The switch at the top right of the page. When off, new connections are refused. A running session is not affected |
+| **Addresses** | The `IP:port` that devices on the same network enter, with any further addresses under **Other addresses**. The default port is UDP 47821 |
 | **One-time password** | Ten characters, like `K7MXQ-3PTWA`. Copy, show/hide, and **New password**. It's gone once a connection uses it, and a new one is made when the session ends |
 | **My ID** | The nine-digit ID (`123 456 789`) shown when a relay server is set |
 | **Relay server** | Enter `server` or `server:port` and press Enter. Leave it empty to not use a relay |
@@ -33,11 +40,20 @@ In the address field, enter an IP address such as `192.168.0.10`, `192.168.0.10:
 hostname, or, when using a relay, a nine-digit ID. Without a port, 47821 is used. To connect by ID, your side needs
 the same relay server set too. The password ignores case, spaces, and `-`. Press Enter to connect right away.
 
-**Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the same network.
-Nearby-device information is an unauthenticated display hint; connecting always checks the password.
+In the sidebar, **Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the
+same network. Picking one opens this form with the address filled in and the cursor in the password field. Nearby-device information is an unauthenticated display hint; connecting always checks the password.
 
 **Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
 Windows, ⌘C arrives as Ctrl+C and copies as usual.
+
+### Settings
+
+| Item | Description |
+| --- | --- |
+| **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
+| **Translucent window** | On by default. What is behind the window shows through, blurred, through the background picture too. Viewer windows opened afterwards follow it too |
+| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It fills the top half of the window and fades out into the theme's own surface below. The page's panels and the sidebar show it as frosted glass, so text stays readable over any picture. Pictures taller than 3:2 show their middle. **Choose…** picks one, **Remove** goes back |
+| **Blur the picture** | Off by default. Blurs the whole picture, not just where it fades out |
 
 ## Viewer window
 
@@ -46,10 +62,14 @@ movement, clicks, the wheel, and key presses over the screen go to the remote de
 ⌘C/Ctrl+C go to the remote device too. Korean text is composed by the remote device's input method, so turn on the
 Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
 
-The toolbar shows frames per second and round-trip latency (`60 fps · 12 ms`), and offers **Display** (choose
-among monitors), quality (**Speed / Balanced / Quality**), the frame rate, and **Disconnect**. Closing the window also
-ends the session. When the window loses focus, every held key and button is released, so nothing stays pressed on
-the remote device.
+The toolbar, which is also the window's title bar, shows frames per second and round-trip latency (`60 fps · 12 ms`),
+and offers **Display** (choose among monitors), quality (**Speed / Balanced / Quality**), the frame rate, and
+**Disconnect**. The dot before the device name is
+green while the session runs, amber while the host is still deciding, and gray once the session is over; a finished
+session explains why and offers **Close**. Limits such as a view-only session appear as a notice at the top of the
+screen. Closing the window also ends the
+session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
+remote device.
 
 The frame rate menu caps how many frames per second the host sends: **Auto**, 30, 60, 90, 120, or 144. Auto follows
 the fastest display on your computer, so a 120 Hz screen asks for 120. The host never streams faster than its own
@@ -103,6 +123,10 @@ share_audio = true            # Share sound
 play_audio = true             # Play the remote device's sound
 lan_discovery = true          # Show this device on the local network
 relay_address = ""            # Relay server
+theme = "system"              # Theme: "system", "light", or "dark"
+translucent_window = true     # Let what is behind the windows show through
+blur_background = false       # Blur the background picture
+# background_image = "/path/to/picture.jpg"  # Background picture; absent shows the desktop
 ```
 
 ## Command line

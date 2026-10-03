@@ -36,6 +36,25 @@ pub struct Settings {
     /// Relay server (`host` or `host:port`) for reaching devices outside the local network;
     /// empty when not used.
     pub relay_address: String,
+    /// Light, dark, or following the system.
+    pub theme: ThemePreference,
+    /// Whether what is behind the windows shows through them, blurred.
+    pub translucent_window: bool,
+    /// A picture shown behind the home window, in place of what is behind the window.
+    pub background_image: Option<PathBuf>,
+    /// Whether the background picture is blurred, so text over it reads more easily.
+    pub blur_background: bool,
+}
+
+/// Which theme the app uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    /// Follow the system's light or dark appearance.
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Default for Settings {
@@ -52,6 +71,10 @@ impl Default for Settings {
             play_audio: true,
             lan_discovery: true,
             relay_address: String::new(),
+            theme: ThemePreference::System,
+            translucent_window: true,
+            background_image: None,
+            blur_background: false,
         }
     }
 }

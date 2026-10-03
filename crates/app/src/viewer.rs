@@ -14,9 +14,14 @@ use dari_proto::{
     PointerPosition, QualityPreset,
 };
 use dari_session::{SessionEndReason, ViewerEvent, ViewerHandle};
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Selectable as _, Sizable as _, StyledExt as _};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{
+    ActiveTheme, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
@@ -25,6 +30,7 @@ use tokio::sync::mpsc;
 use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
+use crate::style;
 use crate::text::text;
 use crate::transfers::{TransferAction, TransferActions, TransferList};
 use crate::video_layout::{ScrollAccumulator, letterbox, pointer_position};
@@ -33,7 +39,10 @@ const WINDOW_SIZE: Size<Pixels> = Size {
     width: px(1280.),
     height: px(800.),
 };
-const TOOLBAR_HEIGHT: Pixels = px(44.);
+const MIN_WINDOW_SIZE: Size<Pixels> = Size {
+    width: px(640.),
+    height: px(400.),
+};
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The viewer's frame rate choice.
@@ -61,7 +70,7 @@ const REMOTE_SCREEN_CONTEXT: &str = "RemoteScreen";
 /// gpui-kit's `Root` binds Tab, Shift-Tab, and the platform copy shortcut for focus navigation
 /// and copying. Inside the remote screen those keys belong to the remote machine, so they are
 /// unbound there and reach the screen's key listeners instead.
-pub fn init(cx: &mut App) {
+pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", NoAction, Some(REMOTE_SCREEN_CONTEXT)),
         KeyBinding::new("shift-tab", NoAction, Some(REMOTE_SCREEN_CONTEXT)),
@@ -97,14 +106,7 @@ pub fn open_viewer_window(
     cx: &mut App,
 ) -> anyhow::Result<(AnyWindowHandle, Entity<ViewerView>)> {
     let title = format!("{} — dari", viewer.peer().name);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let options = style::window_options(title, WINDOW_SIZE, Some(MIN_WINDOW_SIZE), cx);
     gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| ViewerView::new(viewer, events, window, cx))
     })
@@ -230,7 +232,7 @@ impl ViewerView {
             fps: 0.,
             rtt: Duration::ZERO,
             _tasks: vec![frame_task, event_task, stats_task],
-            _subscriptions: vec![activation],
+            _subscriptions: vec![activation, style::follow_appearance(window, cx)],
         }
     }
 
@@ -258,6 +260,11 @@ impl ViewerView {
     #[doc(hidden)]
     pub fn frames_shown(&self) -> u64 {
         self.frames_shown
+    }
+
+    #[doc(hidden)]
+    pub fn has_ended(&self) -> bool {
+        self.ended.is_some()
     }
 
     #[doc(hidden)]
@@ -369,7 +376,7 @@ impl ViewerView {
                 .py_2()
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().background)
+                .bg(style::content_surface(cx))
                 .child(list),
         )
     }
@@ -526,6 +533,11 @@ impl ViewerView {
                     Button::new("sound")
                         .small()
                         .ghost()
+                        .icon(if self.sound {
+                            AssetIcon::Volume2
+                        } else {
+                            AssetIcon::VolumeX
+                        })
                         .selected(self.sound)
                         .label(if self.sound {
                             text().sound_on
@@ -541,6 +553,7 @@ impl ViewerView {
                     Button::new("send-file")
                         .small()
                         .ghost()
+                        .icon(AssetIcon::FileUp)
                         .label(text().send_file)
                         .tooltip(text().drop_to_send)
                         .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
@@ -549,58 +562,110 @@ impl ViewerView {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let stats = if self.session.is_some() {
-            format!("{:.0} fps · {} ms", self.fps, self.rtt.as_millis())
+        let live = self.session.is_some();
+        let state = if !live {
+            cx.theme().muted_foreground
+        } else if self.awaiting_approval || self.status.is_none() {
+            cx.theme().warning
         } else {
-            String::new()
+            cx.theme().success
         };
-        div()
+        // The toolbar is the window's title bar, so the macOS traffic lights sit at its left.
+        let inset = if cfg!(target_os = "macos") {
+            px(84.)
+        } else {
+            px(16.)
+        };
+        let controls = div()
             .h_flex()
-            .h(TOOLBAR_HEIGHT)
-            .flex_none()
-            .px_3()
+            .w_full()
+            .min_w_0()
+            .pl(inset)
+            .pr_3()
             .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .child(style::status_dot(state))
             .child(
                 div()
+                    .min_w_0()
                     .text_sm()
                     .font_semibold()
+                    .truncate()
                     .child(self.peer_name.clone()),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(stats),
-            )
+            .when(live, |toolbar| {
+                toolbar.child(
+                    div()
+                        .h_flex()
+                        .flex_none()
+                        .gap_1p5()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_full()
+                        .bg(cx.theme().muted)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(Icon::new(AssetIcon::Gauge).xsmall())
+                        .child(format!("{:.0} fps · {} ms", self.fps, self.rtt.as_millis())),
+                )
+            })
             .child(div().flex_1())
-            .when(
-                self.session.is_some() && self.displays.len() > 1,
-                |toolbar| {
-                    toolbar.children(self.displays.iter().enumerate().map(|(index, display)| {
-                        let id = display.id;
-                        Button::new(SharedString::from(format!("display-{id}")))
+            .when(live, |toolbar| {
+                toolbar.child(self.render_stream_controls(cx))
+            })
+            .when(live, |toolbar| {
+                toolbar.child(style::no_drag(self.render_session_actions(cx)))
+            })
+            .when(live, |toolbar| {
+                toolbar.child(style::no_drag(
+                    div().child(
+                        Button::new("disconnect")
                             .small()
-                            .ghost()
-                            .selected(self.active_display == Some(id))
-                            .label(format!("{} {}", text().display, index + 1))
-                            .tooltip(format!(
-                                "{} · {}×{}",
-                                display.name, display.width, display.height
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(session) = &this.session {
-                                    session.select_display(id);
-                                }
-                                cx.notify();
-                            }))
-                    }))
-                },
-            )
-            .when(self.session.is_some() && self.status.is_some(), |toolbar| {
-                toolbar.children(
+                            .icon(AssetIcon::Unplug)
+                            .label(text().disconnect)
+                            .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                    ),
+                ))
+            });
+        div()
+            .flex_none()
+            .bg(style::content_surface(cx))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(style::title_bar().child(controls))
+    }
+
+    /// Display and quality switchers, once the host has said what it can stream.
+    fn render_stream_controls(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .h_flex()
+            .gap_3()
+            .when(self.displays.len() > 1, |controls| {
+                controls.child(style::segmented(
+                    self.displays.iter().enumerate().map(|(index, display)| {
+                        let id = display.id;
+                        let detail: SharedString =
+                            format!("{} · {}×{}", display.name, display.width, display.height)
+                                .into();
+                        style::segment(
+                            format!("display-{id}"),
+                            format!("{} {}", text().display, index + 1),
+                            self.active_display == Some(id),
+                            cx,
+                        )
+                        .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(session) = &this.session {
+                                session.select_display(id);
+                            }
+                            cx.notify();
+                        }))
+                    }),
+                    cx,
+                ))
+            })
+            .when(self.status.is_some(), |controls| {
+                controls.child(style::segmented(
                     [
                         (QualityPreset::Speed, text().quality_speed),
                         (QualityPreset::Balanced, text().quality_balanced),
@@ -608,63 +673,168 @@ impl ViewerView {
                     ]
                     .into_iter()
                     .map(|(preset, label)| {
-                        Button::new(SharedString::from(format!("quality-{preset:?}")))
-                            .small()
-                            .ghost()
-                            .selected(self.quality == preset)
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.quality = preset;
-                                if let Some(session) = &this.session {
-                                    session.set_quality(preset);
-                                }
-                                cx.notify();
-                            }))
+                        style::segment(
+                            format!("quality-{preset:?}"),
+                            label,
+                            self.quality == preset,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.quality = preset;
+                            if let Some(session) = &this.session {
+                                session.set_quality(preset);
+                            }
+                            cx.notify();
+                        }))
                     }),
-                )
+                    cx,
+                ))
             })
-            .when(self.status.is_some(), |toolbar| {
-                toolbar.children(self.render_frame_rate_menu(cx))
-            })
-            .child(self.render_session_actions(cx))
-            .when(self.session.is_some(), |toolbar| {
-                toolbar.child(
-                    Button::new("disconnect")
-                        .small()
-                        .danger()
-                        .label(text().disconnect)
-                        .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+            .when(self.status.is_some(), |controls| {
+                // In the title bar, so clicking it must not start a window drag.
+                controls.children(
+                    self.render_frame_rate_menu(cx)
+                        .map(|menu| style::no_drag(div().child(menu))),
                 )
             })
     }
 
-    fn notice(&self) -> Option<String> {
+    /// What the remote screen says about the session: a card that stops it, or a notice pill.
+    fn render_overlay(&self, cx: &App) -> Option<Div> {
+        Some(match self.notice()? {
+            Notice::Ended(reason) => centered().bg(gpui_kit::black().opacity(0.55)).child(
+                overlay_card(AssetIcon::Unplug, cx.theme().muted_foreground, cx)
+                    .child(
+                        div()
+                            .text_base()
+                            .font_semibold()
+                            .child(text().session_ended),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(reason),
+                    )
+                    .child(
+                        Button::new("close-viewer")
+                            .primary()
+                            .w_full()
+                            .label(text().close)
+                            .on_click(|_, window, _| window.remove_window()),
+                    ),
+            ),
+            Notice::AwaitingApproval => centered().child(
+                overlay_card(AssetIcon::ShieldCheck, cx.theme().primary, cx)
+                    .child(div().text_sm().child(text().waiting_for_approval))
+                    .child(Spinner::new().color(cx.theme().primary)),
+            ),
+            Notice::Info(message) => div()
+                .absolute()
+                .top_3()
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .max_w(px(640.))
+                        .px_3()
+                        .py_1p5()
+                        .rounded_full()
+                        .bg(gpui_kit::black().opacity(0.72))
+                        .text_xs()
+                        .text_color(gpui_kit::white())
+                        .child(Icon::new(IconName::Info).xsmall())
+                        .child(div().min_w_0().child(message)),
+                ),
+        })
+    }
+
+    /// A spinner until the first frame arrives.
+    fn render_loading(&self) -> Option<Div> {
+        if self.image.is_some() || self.ended.is_some() || self.awaiting_approval {
+            return None;
+        }
+        let dimmed = gpui_kit::white().opacity(0.7);
+        Some(
+            centered().child(
+                div()
+                    .v_flex()
+                    .items_center()
+                    .gap_3()
+                    .text_sm()
+                    .text_color(dimmed)
+                    .child(Spinner::new().color(dimmed))
+                    .child(text().waiting_for_screen),
+            ),
+        )
+    }
+
+    fn notice(&self) -> Option<Notice> {
         if let Some(reason) = &self.ended {
-            return Some(format!(
-                "{} — {}",
-                text().session_ended,
-                text().session_end_reason(reason)
-            ));
+            return Some(Notice::Ended(text().session_end_reason(reason)));
         }
         if self.awaiting_approval {
-            return Some(text().waiting_for_approval.into());
+            return Some(Notice::AwaitingApproval);
         }
         let status = self.status?;
         match status.screen {
-            Availability::PermissionDenied => return Some(text().remote_screen_permission.into()),
+            Availability::PermissionDenied => {
+                return Some(Notice::Info(text().remote_screen_permission));
+            }
             Availability::Unavailable | Availability::NotAllowed => {
-                return Some(text().remote_screen_unavailable.into());
+                return Some(Notice::Info(text().remote_screen_unavailable));
             }
             Availability::Available => {}
         }
         match status.input {
             Availability::Available => None,
-            Availability::NotAllowed => Some(text().view_only_session.into()),
+            Availability::NotAllowed => Some(Notice::Info(text().view_only_session)),
             Availability::PermissionDenied | Availability::Unavailable => {
-                Some(text().remote_input_unavailable.into())
+                Some(Notice::Info(text().remote_input_unavailable))
             }
         }
     }
+}
+
+/// What the viewer tells the user over the remote screen.
+enum Notice {
+    /// The session is over, and why.
+    Ended(String),
+    /// The host user has not answered the connection request yet.
+    AwaitingApproval,
+    /// The session runs with a limitation worth knowing.
+    Info(&'static str),
+}
+
+/// A layer over the whole remote screen that centers its child.
+fn centered() -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+}
+
+/// A centered card over the remote screen, for states that stop the session.
+fn overlay_card(icon: impl Into<Icon>, color: Hsla, cx: &App) -> Div {
+    div()
+        .v_flex()
+        .items_center()
+        .gap_3()
+        .w(px(360.))
+        .p_6()
+        .rounded(cx.theme().radius_lg)
+        .bg(style::surface(cx))
+        .border_1()
+        .border_color(cx.theme().border)
+        .shadow_lg()
+        .text_center()
+        .child(style::icon_badge(icon, color, px(44.)))
 }
 
 fn remote_button(button: MouseButton) -> RemoteButton {
@@ -680,7 +850,7 @@ fn remote_button(button: MouseButton) -> RemoteButton {
 impl Render for ViewerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen_canvas();
-        let mut surface = div()
+        let surface = div()
             .id("remote-screen")
             .key_context(REMOTE_SCREEN_CONTEXT)
             .relative()
@@ -721,50 +891,13 @@ impl Render for ViewerView {
                         style.border_2().border_color(cx.theme().primary)
                     })
             })
-            .child(screen);
-
-        if self.image.is_none() && self.ended.is_none() && !self.awaiting_approval {
-            surface = surface.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(gpui_kit::white())
-                    .child(text().waiting_for_screen),
-            );
-        }
-        if let Some(notice) = self.notice() {
-            let ended = self.ended.is_some();
-            surface = surface.child(
-                div()
-                    .absolute()
-                    .bottom_4()
-                    .left_4()
-                    .right_4()
-                    .v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().background.opacity(0.92))
-                    .text_sm()
-                    .child(notice)
-                    .when(ended, |notice| {
-                        notice.child(
-                            Button::new("close-viewer")
-                                .small()
-                                .label(text().close)
-                                .on_click(|_, window, _| window.remove_window()),
-                        )
-                    }),
-            );
-        }
+            .child(screen)
+            .children(self.render_loading())
+            .children(self.render_overlay(cx));
 
         div()
             .v_flex()
             .size_full()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_toolbar(cx))
             .children(self.render_transfers(cx))

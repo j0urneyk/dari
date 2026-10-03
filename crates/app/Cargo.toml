@@ -21,7 +21,7 @@ directories.workspace = true
 gethostname.workspace = true
 gpui-kit.workspace = true
 if-addrs.workspace = true
-image = { workspace = true, features = ["png"] }
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 rpassword.workspace = true
 serde.workspace = true
 sys-locale.workspace = true
@@ -29,6 +29,10 @@ tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
 
 [dev-dependencies]
 dari-relay.workspace = true

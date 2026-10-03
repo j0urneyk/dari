@@ -41,11 +41,12 @@ mod macos {
         HostConfig, HostEvent, HostPlatform, HostPolicy, TransferDirection, TransferState,
         ViewerConfig, ViewerTarget, connect_viewer, start_host,
     };
+    use gpui_kit::component::theme::ThemeMode;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::*;
 
     use dari::test_support::{
-        AppState, Home, Settings, TokioRuntime, init_viewer, open_viewer_window,
+        AppAssets, AppState, Home, Settings, TokioRuntime, apply_theme, open_viewer_window,
     };
 
     const DISPLAY: DisplayInfo = DisplayInfo {
@@ -118,14 +119,13 @@ mod macos {
     fn app(data_directory: &std::path::Path) -> HeadlessAppContext {
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
-            Arc::new(gpui_kit::assets::Assets),
+            Arc::new(AppAssets),
             gpui_kit::platform::current_headless_renderer,
         );
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let directory = data_directory.to_owned();
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            init_viewer(cx);
+            dari::test_support::init(cx);
             TokioRuntime::install(runtime, cx);
             AppState::install(directory, cx);
         });
@@ -184,7 +184,7 @@ mod macos {
         let mut cx = app(data.path());
         let (window, home) = cx
             .update(|cx| {
-                gpui_kit::open_window(window_options(960., 640.), cx, |window, cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
                     cx.new(|cx| Home::new(window, cx))
                 })
             })
@@ -193,6 +193,27 @@ mod macos {
             cx.update(|cx| home.read(cx).has_password(cx))
         });
         save(&mut cx, window, "home");
+
+        // A failed attempt explains itself inside the error box; long messages wrap, not spill.
+        cx.update_window(window, |_, window, cx| {
+            window.click("nav-connect", cx);
+            window.render_frame(cx);
+            window.click("connect", cx);
+            window.render_frame(cx);
+            let callout = window.find("connect-error").bounds();
+            let message = window.find("connect-error-text").bounds();
+            assert!(
+                message.right() <= callout.right(),
+                "the error text ends at {:?}, outside its box ending at {:?}",
+                message.right(),
+                callout.right()
+            );
+        })
+        .unwrap();
+        save(&mut cx, window, "home-error");
+
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-dark");
     }
 
     pub(super) fn viewer_window_shows_the_remote_screen_and_forwards_input() {
@@ -380,6 +401,13 @@ mod macos {
             growth < allowed,
             "replaced frames must be released; memory grew {growth:.1} MB over {shown} frames"
         );
+
+        // Ending the session on the host side tells the viewer why and offers to close.
+        host.end_session();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| view.read(cx).has_ended())
+        });
+        save(&mut cx, window, "viewer-ended");
         drop(host);
     }
 
@@ -441,7 +469,7 @@ mod macos {
         let mut cx = app(data.path());
         let (window, home) = cx
             .update(|cx| {
-                gpui_kit::open_window(window_options(960., 900.), cx, |window, cx| {
+                gpui_kit::open_window(window_options(1000., 900.), cx, |window, cx| {
                     cx.new(|cx| Home::new(window, cx))
                 })
             })
@@ -457,6 +485,8 @@ mod macos {
 
         // Connect by the nine-digit relay ID, not by address.
         cx.update_window(window, |_, window, cx| {
+            window.click("nav-connect", cx);
+            window.render_frame(cx);
             window.click("connect-address", cx);
             window.input(&relay_id, cx);
             window.click("connect-password", cx);
@@ -473,6 +503,12 @@ mod macos {
             cx.update(|cx| home.read(cx).admitted_session_status(cx))
                 .is_none()
         );
+        // The request brings the device page back, where it can be answered.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("approval-control").is_some());
+        })
+        .unwrap();
         save(&mut cx, window, "home-approval");
 
         cx.update_window(window, |_, window, cx| window.click("approval-control", cx))
@@ -484,6 +520,113 @@ mod macos {
         // A viewer window opened next to the home window.
         assert_eq!(cx.update(|cx| cx.windows().len()), 2);
         drop(relay);
+    }
+
+    /// A picture chosen as the background shows behind the home window's panels.
+    pub(super) fn home_window_shows_a_background_picture() {
+        let data = tempfile::tempdir().unwrap();
+        // A dusk sky over a sea: enough color and shape to judge the panels over it.
+        // Downloaded wallpapers often have long hashed names; the settings page must fit them.
+        let picture = data
+            .path()
+            .join("cd9d26942bf8076958de1b204dadffbbf713401976dee9e71fa3e2757969be.png");
+        image::RgbaImage::from_fn(1600, 1000, |x, y| {
+            let (fx, fy) = (x as f32 / 1600., y as f32 / 1000.);
+            if fy > 0.62 {
+                image::Rgba([20, (60. + 40. * fx) as u8, 110, 255])
+            } else if (fx - 0.7).hypot(fy - 0.35) < 0.08 {
+                image::Rgba([255, 214, 150, 255])
+            } else {
+                let glow = (1. - fy).powi(2);
+                image::Rgba([
+                    (70. + 160. * glow) as u8,
+                    (60. + 70. * glow) as u8,
+                    (140. - 30. * glow) as u8,
+                    255,
+                ])
+            }
+        })
+        .save(&picture)
+        .unwrap();
+        // To review the design over a real photo, point DARI_GUI_BACKGROUND at one.
+        let picture = std::env::var_os("DARI_GUI_BACKGROUND").map_or(picture, PathBuf::from);
+        Settings {
+            port: 0,
+            background_image: Some(picture),
+            ..Settings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let mut cx = app(data.path());
+        let (window, home) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
+                    cx.new(|cx| Home::new(window, cx))
+                })
+            })
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| home.read(cx).has_backdrop(cx) && home.read(cx).has_password(cx))
+        });
+        save(&mut cx, window, "home-background");
+        // The picture fills the window's top half behind the page; it does not push the page
+        // down.
+        cx.update_window(window, |_, window, _| {
+            let switch = window.find("hosting").bounds();
+            assert!(switch.top() < px(110.), "{switch:?}");
+        })
+        .unwrap();
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-background-dark");
+        cx.update_window(window, |_, window, cx| window.click("nav-settings", cx))
+            .unwrap();
+        save(&mut cx, window, "settings-background");
+        cx.update_window(window, |_, window, cx| window.click("nav-connect", cx))
+            .unwrap();
+        save(&mut cx, window, "connect-background");
+        cx.update(|cx| apply_theme(ThemeMode::Light, cx));
+        cx.update_window(window, |_, window, cx| {
+            window.click("nav-settings", cx);
+            window.render_frame(cx);
+            window.click("translucent-window", cx);
+            window.click("nav-device", cx);
+        })
+        .unwrap();
+        save(&mut cx, window, "home-background-opaque");
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-background-opaque-dark");
+    }
+
+    /// The settings page switches the theme and the window's translucency, and remembers both.
+    pub(super) fn settings_change_the_theme_and_translucency() {
+        let data = tempfile::tempdir().unwrap();
+        Settings {
+            port: 0,
+            ..Settings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let mut cx = app(data.path());
+        let (window, _home) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
+                    cx.new(|cx| Home::new(window, cx))
+                })
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.click("nav-settings", cx);
+            window.render_frame(cx);
+            window.click("theme-dark", cx);
+            window.click("translucent-window", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.update(|cx| gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
+        let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
+        assert!(saved.contains(r#"theme = "dark""#), "{saved}");
+        assert!(saved.contains("translucent_window = false"), "{saved}");
+        save(&mut cx, window, "settings");
     }
 
     /// Files dropped on the remote screen go to the host; files from the host wait in the
@@ -607,7 +750,7 @@ mod macos {
     }
 
     pub(super) fn run() {
-        let tests: [(&str, fn()); 4] = [
+        let tests: [(&str, fn()); 6] = [
             (
                 "files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save",
                 files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save,
@@ -619,6 +762,14 @@ mod macos {
             (
                 "home_window_shows_address_and_password",
                 home_window_shows_address_and_password,
+            ),
+            (
+                "home_window_shows_a_background_picture",
+                home_window_shows_a_background_picture,
+            ),
+            (
+                "settings_change_the_theme_and_translucency",
+                settings_change_the_theme_and_translucency,
             ),
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",

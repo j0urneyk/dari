@@ -24,6 +24,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The app has a new look. It uses Dari's blue throughout and follows the system's light or dark appearance. The
+  home window puts the one-time password and address up front, shows connection requests as a prominent card,
+  and lists nearby and recent devices as rows you can pick from. The viewer toolbar
+  has a session status dot and segmented display and quality controls, and waiting, approval, and session-ended
+  states appear as centered cards over the screen.
+- A new app icon: an arch bridge (다리, the app's name) with a remote pointer on its crown, replacing the generic
+  monitor. The home window's title bar shows the same icon.
+- The home window is now a sidebar beside one page at a time: this device's status, nearby devices, and recent
+  addresses sit in the sidebar, and picking a device opens the connect form ready for its password. The look is
+  quieter and denser, mostly in grays with blue kept for the main action, and both windows run their content up
+  under a transparent title bar with the desktop showing through blurred.
+- A new **Settings** page, at the bottom of the sidebar, chooses the theme (system, light, or dark; the blur behind the windows follows it), turns the
+  window's translucency on or off, and sets a background picture (PNG, JPEG, or WebP) behind the home window,
+  optionally blurred. The picture fills the top half of the window behind the page and fades out below
+  it into the theme's own surface. Each group of settings, the password and addresses, and every notice sit on a
+  panel of frosted glass, the picture blurred under a tint of the theme, so text and icons read the same over any
+  picture; the sidebar is frosted the same way. Without a picture the panels are a faint wash. They are saved in `settings.toml` as `theme`, `translucent_window`, `background_image`, and
+  `blur_background`. The device page's settings are now headed **Sharing**.
 - macOS hosts capture with ScreenCaptureKit and encode with VideoToolbox in hardware, instead of taking a full
   screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
   over 100 fps, and the host only sends frames when the screen changes. Windows hosts are unchanged.

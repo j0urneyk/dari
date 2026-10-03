@@ -198,8 +198,8 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | Module | Role |
 | --- | --- |
 | `lib.rs` | Logging setup and argument parsing. GUI without a subcommand, CLI with one |
-| `home.rs` | Home window: the "This device" card (addresses, password, relay ID, approval card, permission notice, settings) and the "Control a remote device" card (address and password, recent addresses, nearby devices) |
-| `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) |
+| `home.rs` | Home window: a sidebar (this device's status, nearby and recent devices) beside one page at a time. The "This device" page has the addresses, password, relay ID, approval card, permission notice, and settings; the "Control a remote device" page has the connect form. A connection request switches to the "This device" page |
+| `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) and the overlays for waiting, approval, and a finished session |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
 | `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |
@@ -207,6 +207,8 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
 | `permissions.rs` | Checking and requesting macOS Screen Recording and Accessibility permissions (refreshed every 3 seconds) |
 | `text.rs` | Korean and English UI strings (chosen by system locale) |
+| `backdrop.rs` | Prepares the background picture off the main thread: the picture, sharp at the top and softening and fading out towards the window's middle, a small blurred copy faded the same way for the sidebar, and the average color of the part that shows, which tints the veil and sets how much it covers; it also holds the loaded picture as a global, so every page's panels can frost it |
+| `style.rs` | Dari's mostly monochrome light and dark palette over gpui-kit's theme (follows the system appearance), the 14px rem that sets the app's density, window options (transparent title bar, blurred translucent background), the extra Lucide icons and app icon the app embeds, and shared building blocks such as frosted-glass panels, sidebar rows, setting rows, callouts, and the segmented control |
 | `cli.rs` | Headless `host`/`connect` |
 
 The viewer window creates a new `RenderImage` for every frame and releases the previous image from the GPU atlas

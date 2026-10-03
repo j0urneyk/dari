@@ -61,7 +61,7 @@ Forwarding ports are ephemeral, so running with `--network host` is the simplest
 
 ## Using it from the app
 
-- Host: in the "This device" card, enter `server` or `server:port` in **Relay server** and press Enter. Once
+- Host: on the "This device" page, enter `server` or `server:port` in **Relay server** and press Enter. Once
   registered, **My ID** appears.
 - Viewer: set the same relay server, then type the host's nine-digit ID in the address field and connect.
 - CLI: `dari host --relay server`, `dari connect 123456789 --relay server`.

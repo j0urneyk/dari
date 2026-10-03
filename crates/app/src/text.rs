@@ -7,7 +7,6 @@ use dari_proto::RejectReason;
 use dari_session::SessionEndReason;
 
 pub(crate) struct Text {
-    pub(crate) app_subtitle: &'static str,
     pub(crate) this_device: &'static str,
     pub(crate) allow_remote_access: &'static str,
     pub(crate) addresses: &'static str,
@@ -60,6 +59,29 @@ pub(crate) struct Text {
     pub(crate) relay_placeholder: &'static str,
     pub(crate) relay_connecting: &'static str,
     pub(crate) relay_required: &'static str,
+    pub(crate) connect_subtitle: &'static str,
+    pub(crate) hosting_on: &'static str,
+    pub(crate) hosting_off: &'static str,
+    pub(crate) not_accepting_hint: &'static str,
+    pub(crate) other_addresses: &'static str,
+    pub(crate) nearby_empty: &'static str,
+    pub(crate) approval_hint: &'static str,
+    pub(crate) background_unreadable: &'static str,
+    pub(crate) settings_title: &'static str,
+    pub(crate) settings_subtitle: &'static str,
+    pub(crate) appearance: &'static str,
+    pub(crate) theme: &'static str,
+    pub(crate) theme_system: &'static str,
+    pub(crate) theme_light: &'static str,
+    pub(crate) theme_dark: &'static str,
+    pub(crate) translucent_window: &'static str,
+    pub(crate) translucent_window_hint: &'static str,
+    pub(crate) background_picture: &'static str,
+    pub(crate) background_none: &'static str,
+    pub(crate) background_choose: &'static str,
+    pub(crate) background_remove: &'static str,
+    pub(crate) background_blur: &'static str,
+    pub(crate) sharing_settings: &'static str,
     pub(crate) file_transfer: &'static str,
     pub(crate) send_file: &'static str,
     pub(crate) save_file: &'static str,
@@ -94,11 +116,9 @@ impl Text {
 
     pub(crate) fn approval_prompt(&self, name: &str) -> String {
         if self.korean {
-            format!(
-                "{name}이(가) 이 기기에 접속하려고 합니다. 30초 안에 응답하지 않으면 거부됩니다."
-            )
+            format!("{name}이(가) 이 기기에 접속하려고 합니다.")
         } else {
-            format!("{name} wants to connect to this device. It is declined after 30 seconds.")
+            format!("{name} wants to connect to this device.")
         }
     }
 
@@ -179,7 +199,6 @@ impl Text {
 }
 
 static KOREAN: Text = Text {
-    app_subtitle: "macOS와 Windows를 위한 원격 데스크톱",
     this_device: "이 기기",
     allow_remote_access: "원격 접속 허용",
     addresses: "접속 주소",
@@ -232,6 +251,29 @@ static KOREAN: Text = Text {
     relay_placeholder: "다른 네트워크에서 접속하려면 릴레이 주소 입력 (선택)",
     relay_connecting: "릴레이에 연결하는 중…",
     relay_required: "ID로 접속하려면 먼저 릴레이 서버를 설정하세요",
+    connect_subtitle: "상대 기기에 표시된 주소와 비밀번호로 접속합니다",
+    hosting_on: "접속 가능",
+    hosting_off: "원격 접속 꺼짐",
+    not_accepting_hint: "켜면 이 기기의 접속 주소와 일회용 비밀번호가 표시됩니다.",
+    other_addresses: "다른 주소",
+    nearby_empty: "같은 네트워크에서 Dari를 켠 기기가 여기에 나타납니다",
+    approval_hint: "30초 안에 응답하지 않으면 자동으로 거부됩니다.",
+    background_unreadable: "이미지를 열 수 없습니다",
+    settings_title: "설정",
+    settings_subtitle: "Dari의 모양을 바꿉니다",
+    appearance: "모양",
+    theme: "테마",
+    theme_system: "시스템",
+    theme_light: "라이트",
+    theme_dark: "다크",
+    translucent_window: "창 투명 효과",
+    translucent_window_hint: "창 뒤가 흐릿하게 비쳐 보입니다. 배경 사진이 있으면 사진 너머로 비칩니다.",
+    background_picture: "배경 사진",
+    background_none: "없음",
+    background_choose: "사진 선택…",
+    background_remove: "제거",
+    background_blur: "배경 흐리게",
+    sharing_settings: "공유 설정",
     file_transfer: "파일 전송",
     send_file: "파일 보내기…",
     save_file: "저장",
@@ -256,7 +298,6 @@ static KOREAN: Text = Text {
 };
 
 static ENGLISH: Text = Text {
-    app_subtitle: "Remote desktop for macOS and Windows",
     this_device: "This device",
     allow_remote_access: "Allow remote access",
     addresses: "Addresses",
@@ -309,6 +350,29 @@ static ENGLISH: Text = Text {
     relay_placeholder: "Relay address for connecting across networks (optional)",
     relay_connecting: "Connecting to the relay…",
     relay_required: "Set a relay server to connect by ID",
+    connect_subtitle: "Use the address and password shown on the other device",
+    hosting_on: "Accepting connections",
+    hosting_off: "Remote access off",
+    not_accepting_hint: "Turn it on to show this device's address and one-time password.",
+    other_addresses: "Other addresses",
+    nearby_empty: "Devices running Dari on this network show up here",
+    approval_hint: "Declined automatically after 30 seconds without an answer.",
+    background_unreadable: "Can't open this picture",
+    settings_title: "Settings",
+    settings_subtitle: "Change how Dari looks",
+    appearance: "Appearance",
+    theme: "Theme",
+    theme_system: "System",
+    theme_light: "Light",
+    theme_dark: "Dark",
+    translucent_window: "Translucent window",
+    translucent_window_hint: "What is behind the window shows through, blurred, through the background picture too.",
+    background_picture: "Background picture",
+    background_none: "None",
+    background_choose: "Choose…",
+    background_remove: "Remove",
+    background_blur: "Blur the picture",
+    sharing_settings: "Sharing",
     file_transfer: "Exchange files",
     send_file: "Send file…",
     save_file: "Save",

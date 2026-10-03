@@ -3,6 +3,7 @@
 //! The binary calls [`run`]. The library form exists so the GUI can be tested headlessly
 //! (`tests/gui.rs`) through [`test_support`].
 
+mod backdrop;
 mod cli;
 mod config;
 mod home;
@@ -11,6 +12,7 @@ mod permissions;
 mod runtime;
 mod settings;
 mod state;
+mod style;
 mod text;
 mod transfers;
 mod video_layout;
@@ -22,7 +24,11 @@ use tracing_subscriber::EnvFilter;
 
 const WINDOW_SIZE: Size<Pixels> = Size {
     width: px(960.),
-    height: px(640.),
+    height: px(660.),
+};
+const MIN_WINDOW_SIZE: Size<Pixels> = Size {
+    width: px(720.),
+    height: px(480.),
 };
 
 #[derive(Debug, Parser)]
@@ -89,29 +95,31 @@ fn run_gui() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let data_directory = config::data_directory()?;
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(style::AppAssets)
         .run(move |cx| {
-            gpui_kit::init(cx);
-            viewer::init(cx);
+            init_ui(cx);
             runtime::TokioRuntime::install(runtime, cx);
             state::AppState::install(data_directory, cx);
+            style::sync_theme(cx);
 
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Dari".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
+            let options = style::window_options("Dari", WINDOW_SIZE, Some(MIN_WINDOW_SIZE), cx);
             if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| home::Home::new(window, cx))
             }) {
                 tracing::error!(%error, "failed to open the home window");
                 cx.quit();
             }
+            // Bring the window to the front, even when launched from a terminal.
+            cx.activate(true);
         });
     Ok(())
+}
+
+/// Initializes gpui-kit, Dari's theme, and the viewer's key bindings.
+fn init_ui(cx: &mut App) {
+    gpui_kit::init(cx);
+    style::init(cx);
+    viewer::init(cx);
 }
 
 /// Entry points for the headless GUI tests. Not a stable API.
@@ -121,7 +129,13 @@ pub mod test_support {
     pub use crate::runtime::TokioRuntime;
     pub use crate::settings::Settings;
     pub use crate::state::AppState;
-    pub use crate::viewer::{ViewerView, init as init_viewer, open_viewer_window};
+    pub use crate::style::{AppAssets, apply as apply_theme};
+    pub use crate::viewer::{ViewerView, open_viewer_window};
+
+    /// Everything the GUI needs before opening a window, as the app does at startup.
+    pub fn init(cx: &mut gpui_kit::App) {
+        crate::init_ui(cx);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
