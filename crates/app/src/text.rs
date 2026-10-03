@@ -65,6 +65,10 @@ pub(crate) struct Text {
     pub(crate) settings: &'static str,
     pub(crate) nearby_empty: &'static str,
     pub(crate) approval_hint: &'static str,
+    pub(crate) background: &'static str,
+    pub(crate) background_desktop: &'static str,
+    pub(crate) background_unreadable: &'static str,
+    pub(crate) background_clear: &'static str,
     korean: bool,
 }
 
@@ -220,6 +224,10 @@ static KOREAN: Text = Text {
     settings: "설정",
     nearby_empty: "같은 네트워크에서 Dari를 켠 기기가 여기에 나타납니다",
     approval_hint: "30초 안에 응답하지 않으면 자동으로 거부됩니다.",
+    background: "배경",
+    background_desktop: "바탕화면이 비쳐 보임",
+    background_unreadable: "이미지를 열 수 없습니다",
+    background_clear: "배경 이미지 지우기",
     korean: true,
 };
 
@@ -282,6 +290,10 @@ static ENGLISH: Text = Text {
     settings: "Settings",
     nearby_empty: "Devices running Dari on this network show up here",
     approval_hint: "Declined automatically after 30 seconds without an answer.",
+    background: "Background",
+    background_desktop: "Desktop shows through",
+    background_unreadable: "Can't open this picture",
+    background_clear: "Remove background picture",
     korean: false,
 };
 

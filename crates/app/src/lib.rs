@@ -3,6 +3,7 @@
 //! The binary calls [`run`]. The library form exists so the GUI can be tested headlessly
 //! (`tests/gui.rs`) through [`test_support`].
 
+mod backdrop;
 mod cli;
 mod config;
 mod home;

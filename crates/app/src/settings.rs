@@ -29,6 +29,8 @@ pub struct Settings {
     /// Relay server (`host` or `host:port`) for reaching devices outside the local network;
     /// empty when not used.
     pub relay_address: String,
+    /// A picture shown behind the home window; without one the desktop shows through.
+    pub background_image: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
             clipboard_sync: true,
             lan_discovery: true,
             relay_address: String::new(),
+            background_image: None,
         }
     }
 }

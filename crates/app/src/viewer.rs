@@ -391,7 +391,7 @@ impl ViewerView {
             });
         div()
             .flex_none()
-            .bg(style::content_surface(cx))
+            .bg(style::content_surface(false, cx))
             .border_b_1()
             .border_color(cx.theme().border)
             .child(style::title_bar().child(controls))

@@ -501,8 +501,54 @@ mod macos {
         drop(relay);
     }
 
+    /// A picture chosen as the background shows behind the home window's panels.
+    pub(super) fn home_window_shows_a_background_picture() {
+        let data = tempfile::tempdir().unwrap();
+        // A dusk sky over a sea: enough color and shape to judge the panels over it.
+        let picture = data.path().join("dusk.png");
+        image::RgbaImage::from_fn(1600, 1000, |x, y| {
+            let (fx, fy) = (x as f32 / 1600., y as f32 / 1000.);
+            if fy > 0.62 {
+                image::Rgba([20, (60. + 40. * fx) as u8, 110, 255])
+            } else if (fx - 0.7).hypot(fy - 0.35) < 0.08 {
+                image::Rgba([255, 214, 150, 255])
+            } else {
+                let glow = (1. - fy).powi(2);
+                image::Rgba([
+                    (70. + 160. * glow) as u8,
+                    (60. + 70. * glow) as u8,
+                    (140. - 30. * glow) as u8,
+                    255,
+                ])
+            }
+        })
+        .save(&picture)
+        .unwrap();
+        Settings {
+            port: 0,
+            background_image: Some(picture),
+            ..Settings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let mut cx = app(data.path());
+        let (window, home) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
+                    cx.new(|cx| Home::new(window, cx))
+                })
+            })
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| home.read(cx).has_backdrop() && home.read(cx).has_password(cx))
+        });
+        save(&mut cx, window, "home-background");
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-background-dark");
+    }
+
     pub(super) fn run() {
-        let tests: [(&str, fn()); 3] = [
+        let tests: [(&str, fn()); 4] = [
             (
                 "connecting_through_the_form_asks_the_host_user_first",
                 connecting_through_the_form_asks_the_host_user_first,
@@ -510,6 +556,10 @@ mod macos {
             (
                 "home_window_shows_address_and_password",
                 home_window_shows_address_and_password,
+            ),
+            (
+                "home_window_shows_a_background_picture",
+                home_window_shows_a_background_picture,
             ),
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",

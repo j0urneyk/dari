@@ -27,6 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::backdrop;
 use crate::config::{device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
@@ -53,6 +54,12 @@ pub struct Home {
     page: Page,
     /// Whether the host panel was waiting on the user's answer when it last changed.
     approval_pending: bool,
+    /// The background picture from the settings, softened, once it has loaded.
+    backdrop: Option<Arc<RenderImage>>,
+    /// Whether the background picture in the settings could not be read.
+    backdrop_unreadable: bool,
+    /// Loads the background picture; replacing it cancels the load.
+    backdrop_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -81,13 +88,80 @@ impl Home {
             }),
             cx.observe(&connect, |_, _, cx| cx.notify()),
         ];
-        Self {
+        let mut home = Self {
             host,
             connect,
             page: Page::Device,
             approval_pending: false,
+            backdrop: None,
+            backdrop_unreadable: false,
+            backdrop_task: None,
             _subscriptions: subscriptions,
+        };
+        home.load_backdrop(window, cx);
+        home
+    }
+
+    /// Loads the background picture named in the settings, replacing the current one.
+    fn load_backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.backdrop_unreadable = false;
+        let Some(path) = AppState::settings(cx).background_image.clone() else {
+            self.backdrop_task = None;
+            self.set_backdrop(None, window, cx);
+            return;
+        };
+        let prepared = cx.background_spawn(async move { backdrop::prepare(&path) });
+        self.backdrop_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let picture = prepared.await;
+            let _updated = this.update_in(cx, |this, window, cx| match picture {
+                Ok(picture) => this.set_backdrop(Some(Arc::new(picture)), window, cx),
+                Err(error) => {
+                    tracing::warn!("cannot show the background picture: {error:#}");
+                    this.backdrop_unreadable = true;
+                    this.set_backdrop(None, window, cx);
+                }
+            });
+        }));
+    }
+
+    fn set_backdrop(
+        &mut self,
+        picture: Option<Arc<RenderImage>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = std::mem::replace(&mut self.backdrop, picture) {
+            // Each picture is a GPU texture; release the one it replaces.
+            let _dropped = window.drop_image(previous);
         }
+        cx.notify();
+    }
+
+    fn choose_backdrop(window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _updated = this.update_in(cx, |this, window, cx| {
+                AppState::update_settings(cx, |settings| settings.background_image = Some(path));
+                this.load_backdrop(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn clear_backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        AppState::update_settings(cx, |settings| settings.background_image = None);
+        self.load_backdrop(window, cx);
     }
 }
 
@@ -124,6 +198,10 @@ impl Home {
     pub fn admitted_session_status(&self, cx: &App) -> Option<HostStatus> {
         self.host.read(cx).session_status
     }
+
+    pub fn has_backdrop(&self) -> bool {
+        self.backdrop.is_some()
+    }
 }
 
 impl Home {
@@ -159,22 +237,7 @@ impl Home {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (status_color, status) = self.device_status(cx);
-        let nearby: Vec<(String, String, String)> = self
-            .connect
-            .read(cx)
-            .nearby
-            .iter()
-            .map(|device| {
-                (
-                    format!("nearby-{}", device.id),
-                    device.name.clone(),
-                    nearby_address(device),
-                )
-            })
-            .collect();
-        let recent = AppState::settings(cx).recent_addresses.clone();
-
-        let mut sidebar = div()
+        let navigation = div()
             .v_flex()
             .gap_0p5()
             .child(
@@ -202,9 +265,52 @@ impl Home {
                 .on_click(cx.listener(|this, _, _, cx| this.show(Page::Connect, cx)))
                 .test_support(),
             )
+            .child(self.render_devices(cx));
+
+        div()
+            .v_flex()
+            .flex_none()
+            .w(style::SIDEBAR_WIDTH)
+            .h_full()
+            .pt(style::TITLE_BAR_HEIGHT)
+            .bg(style::sidebar_surface(self.backdrop.is_some(), cx))
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .id("sidebar")
+                    .flex_1()
+                    .min_h_0()
+                    .px_2()
+                    .overflow_y_scrollbar()
+                    .child(navigation),
+            )
+            .child(self.render_backdrop_row(cx))
+    }
+
+    /// Nearby and recent devices; picking one opens the connect page for it.
+    fn render_devices(&self, cx: &mut Context<Self>) -> Div {
+        let nearby: Vec<(String, String, String)> = self
+            .connect
+            .read(cx)
+            .nearby
+            .iter()
+            .map(|device| {
+                (
+                    format!("nearby-{}", device.id),
+                    device.name.clone(),
+                    nearby_address(device),
+                )
+            })
+            .collect();
+        let recent = AppState::settings(cx).recent_addresses.clone();
+
+        let mut devices = div()
+            .v_flex()
+            .gap_0p5()
             .child(style::sidebar_heading(text().nearby_devices, cx));
         if nearby.is_empty() {
-            sidebar = sidebar.child(
+            devices = devices.child(
                 div()
                     .px_2()
                     .py_1()
@@ -215,7 +321,7 @@ impl Home {
         }
         for (id, name, address) in nearby {
             let picked = address.clone();
-            sidebar = sidebar.child(
+            devices = devices.child(
                 style::sidebar_row(id, AssetIcon::Laptop, name, Some(address.into()), false, cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.connect_to(picked.clone(), window, cx);
@@ -223,11 +329,11 @@ impl Home {
             );
         }
         if !recent.is_empty() {
-            sidebar = sidebar.child(style::sidebar_heading(text().recent, cx));
+            devices = devices.child(style::sidebar_heading(text().recent, cx));
         }
         for address in recent {
             let picked = address.clone();
-            sidebar = sidebar.child(
+            devices = devices.child(
                 style::sidebar_row(
                     format!("recent-{address}"),
                     AssetIcon::Clock,
@@ -241,20 +347,53 @@ impl Home {
                 })),
             );
         }
+        devices
+    }
 
+    /// The sidebar's last row: choose or remove the background picture.
+    fn render_backdrop_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chosen = AppState::settings(cx).background_image.clone();
+        let detail: SharedString = match &chosen {
+            None => text().background_desktop.into(),
+            Some(_) if self.backdrop_unreadable => text().background_unreadable.into(),
+            Some(path) => path
+                .file_name()
+                .map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+                .into(),
+        };
         div()
-            .id("sidebar")
-            .flex_none()
-            .w(style::SIDEBAR_WIDTH)
-            .h_full()
-            .pt(style::TITLE_BAR_HEIGHT)
+            .h_flex()
+            .gap_1()
             .px_2()
+            .pt_2()
             .pb_3()
-            .bg(style::sidebar_surface(cx))
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .overflow_y_scrollbar()
-            .child(sidebar)
+            .child(
+                style::sidebar_row(
+                    "backdrop",
+                    AssetIcon::Image,
+                    text().background,
+                    Some(detail),
+                    false,
+                    cx,
+                )
+                .flex_1()
+                .on_click(cx.listener(|_, _, window, cx| Self::choose_backdrop(window, cx))),
+            )
+            .when(chosen.is_some(), |row| {
+                row.child(
+                    Button::new("backdrop-clear")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip(text().background_clear)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.clear_backdrop(window, cx)),
+                        ),
+                )
+            })
     }
 
     fn render_title_bar() -> impl IntoElement {
@@ -283,10 +422,18 @@ impl Render for Home {
             Page::Device => self.host.clone().into(),
             Page::Connect => self.connect.clone().into(),
         };
+        let over_picture = self.backdrop.is_some();
         div()
             .relative()
             .size_full()
             .text_color(cx.theme().foreground)
+            .children(self.backdrop.clone().map(|picture| {
+                img(picture)
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+            }))
             .child(
                 div()
                     .h_flex()
@@ -298,7 +445,7 @@ impl Render for Home {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .bg(style::content_surface(cx))
+                            .bg(style::content_surface(over_picture, cx))
                             .overflow_y_scrollbar()
                             .child(
                                 div()

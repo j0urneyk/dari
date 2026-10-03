@@ -23,6 +23,7 @@ gpui_kit::assets::icon_assets!(
         Clock,
         Command,
         Gauge,
+        Image,
         KeyRound,
         Laptop,
         Monitor,
@@ -180,18 +181,24 @@ fn paint(theme: &mut Theme, dark: bool) {
     }
 }
 
-/// The sidebar's surface: the most translucent, so the desktop shows through.
-pub(crate) fn sidebar_surface(cx: &App) -> Hsla {
-    if cx.theme().is_dark() {
-        hex(0x141518).opacity(0.72)
-    } else {
-        hex(0xEEEFF2).opacity(0.78)
+/// The sidebar's surface: the most translucent, so what is behind the window shows through.
+/// `over_picture` is true when the home window's background picture is behind it.
+pub(crate) fn sidebar_surface(over_picture: bool, cx: &App) -> Hsla {
+    // Gray text needs more cover on a light tint than on a dark one to stay readable.
+    match (cx.theme().is_dark(), over_picture) {
+        (true, true) => hex(0x141518).opacity(0.42),
+        (true, false) => hex(0x141518).opacity(0.55),
+        (false, true) => hex(0xEEEFF2).opacity(0.62),
+        (false, false) => hex(0xEEEFF2).opacity(0.6),
     }
 }
 
-/// The main content's surface: nearly opaque, so text stays crisp.
-pub(crate) fn content_surface(cx: &App) -> Hsla {
-    cx.theme().background.opacity(0.94)
+/// The main content's surface: translucent enough to show what is behind it, opaque enough
+/// that text stays crisp.
+pub(crate) fn content_surface(over_picture: bool, cx: &App) -> Hsla {
+    cx.theme()
+        .background
+        .opacity(if over_picture { 0.74 } else { 0.86 })
 }
 
 /// A wash for hovered rows; [`selected_fill`] is one step stronger.
