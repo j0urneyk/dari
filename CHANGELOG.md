@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A Windows host now accepts viewers that connect by an IPv4 address. It listened on IPv6 only, so connecting to a
+  Windows PC by its `192.168.x.x` address timed out; connecting through a relay was not affected.
+
 ### Changed
 
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
