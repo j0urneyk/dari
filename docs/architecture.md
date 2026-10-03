@@ -135,7 +135,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | Module | Role |
 | --- | --- |
 | `lib.rs` | Logging setup and argument parsing. GUI without a subcommand, CLI with one |
-| `home.rs` | Home window: the "This device" card (addresses, password, relay ID, approval card, permission notice, settings) and the "Control a remote device" card (address and password, recent addresses, nearby devices) |
+| `home.rs` | Home window: a sidebar (this device's status, nearby and recent devices) beside one page at a time. The "This device" page has the addresses, password, relay ID, approval card, permission notice, and settings; the "Control a remote device" page has the connect form. A connection request switches to the "This device" page |
 | `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frames per second and round-trip latency, disconnect) and the overlays for waiting, approval, and a finished session |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |
@@ -143,7 +143,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
 | `permissions.rs` | Checking and requesting macOS Screen Recording and Accessibility permissions (refreshed every 3 seconds) |
 | `text.rs` | Korean and English UI strings (chosen by system locale) |
-| `style.rs` | Dari's light and dark palette over gpui-kit's theme (follows the system appearance), the extra Lucide icons the app embeds, and shared building blocks such as cards, setting rows, callouts, and the segmented control |
+| `style.rs` | Dari's mostly monochrome light and dark palette over gpui-kit's theme (follows the system appearance), the 14px rem that sets the app's density, window options (transparent title bar, blurred translucent background), the extra Lucide icons and app icon the app embeds, and shared building blocks such as sidebar rows, setting rows, callouts, and the segmented control |
 | `cli.rs` | Headless `host`/`connect` |
 
 The viewer window creates a new `RenderImage` for every frame and releases the previous image from the GPU atlas

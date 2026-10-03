@@ -31,7 +31,10 @@ const WINDOW_SIZE: Size<Pixels> = Size {
     width: px(1280.),
     height: px(800.),
 };
-const TOOLBAR_HEIGHT: Pixels = px(44.);
+const MIN_WINDOW_SIZE: Size<Pixels> = Size {
+    width: px(640.),
+    height: px(400.),
+};
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Key context of the remote screen while it has focus.
@@ -58,14 +61,7 @@ pub fn open_viewer_window(
     cx: &mut App,
 ) -> anyhow::Result<(AnyWindowHandle, Entity<ViewerView>)> {
     let title = format!("{} — dari", viewer.peer().name);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let options = style::window_options(title, WINDOW_SIZE, Some(MIN_WINDOW_SIZE), cx);
     gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| ViewerView::new(viewer, events, window, cx))
     })
@@ -338,15 +334,19 @@ impl ViewerView {
         } else {
             cx.theme().success
         };
-        div()
+        // The toolbar is the window's title bar, so the macOS traffic lights sit at its left.
+        let inset = if cfg!(target_os = "macos") {
+            px(84.)
+        } else {
+            px(16.)
+        };
+        let controls = div()
             .h_flex()
-            .h(TOOLBAR_HEIGHT)
-            .flex_none()
-            .px_4()
+            .w_full()
+            .min_w_0()
+            .pl(inset)
+            .pr_3()
             .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
             .child(style::status_dot(state))
             .child(
                 div()
@@ -378,15 +378,23 @@ impl ViewerView {
                 toolbar.child(self.render_stream_controls(cx))
             })
             .when(live, |toolbar| {
-                toolbar.child(
-                    Button::new("disconnect")
-                        .small()
-                        .danger()
-                        .icon(AssetIcon::Unplug)
-                        .label(text().disconnect)
-                        .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
-                )
-            })
+                toolbar.child(style::no_drag(
+                    div().child(
+                        Button::new("disconnect")
+                            .small()
+                            .outline()
+                            .icon(AssetIcon::Unplug)
+                            .label(text().disconnect)
+                            .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                    ),
+                ))
+            });
+        div()
+            .flex_none()
+            .bg(style::content_surface(cx))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(style::title_bar().child(controls))
     }
 
     /// Display and quality switchers, once the host has said what it can stream.
@@ -595,7 +603,8 @@ fn remote_button(button: MouseButton) -> RemoteButton {
 }
 
 impl Render for ViewerView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(style::REM);
         let image = self.image.clone();
         let frame_size = self.frame_size;
         let picture = self.picture.clone();

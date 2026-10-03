@@ -21,12 +21,12 @@ use gpui_kit::*;
 use tracing_subscriber::EnvFilter;
 
 const WINDOW_SIZE: Size<Pixels> = Size {
-    width: px(1000.),
-    height: px(700.),
+    width: px(960.),
+    height: px(660.),
 };
 const MIN_WINDOW_SIZE: Size<Pixels> = Size {
-    width: px(760.),
-    height: px(520.),
+    width: px(720.),
+    height: px(480.),
 };
 
 #[derive(Debug, Parser)]
@@ -91,15 +91,7 @@ fn run_gui() -> anyhow::Result<()> {
             runtime::TokioRuntime::install(runtime, cx);
             state::AppState::install(data_directory, cx);
 
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
-                window_min_size: Some(MIN_WINDOW_SIZE),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Dari".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
+            let options = style::window_options("Dari", WINDOW_SIZE, Some(MIN_WINDOW_SIZE), cx);
             if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| home::Home::new(window, cx))
             }) {

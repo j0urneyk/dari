@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format follows
   states appear as centered cards over the screen.
 - A new app icon: an arch bridge (다리, the app's name) with a remote pointer on its crown, replacing the generic
   monitor. The home window's header shows the same icon.
+- The home window is now a sidebar beside one page at a time: this device's status, nearby devices, and recent
+  addresses sit in the sidebar, and picking a device opens the connect form ready for its password. The look is
+  quieter and denser, mostly in grays with blue kept for the main action, and both windows run their content up
+  under a transparent title bar with the desktop showing through blurred.
 
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.

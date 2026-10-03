@@ -4,8 +4,11 @@ Installation and the basic flow are in the [README](../README.md#install). This 
 screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
 when the system language is Korean, and in English otherwise, and it follows the system's light or dark appearance.
 
-The pill at the top right of the home window sums up this device: accepting connections, a pending connection
-request, a connected viewer, or remote access off.
+The home window has a sidebar and a page beside it. **This device** in the sidebar sums up its state (accepting
+connections, a pending connection request, a connected viewer, or remote access off) and opens the page for sharing
+this device; **Control a remote device** opens the connect form. Below them are **Nearby devices** and **Recent**.
+A connection request brings the **This device** page forward on its own, since it is declined after 30 seconds.
+The window's content runs up under a transparent title bar, and the desktop shows through the sidebar blurred.
 
 ## Home window
 
@@ -13,7 +16,7 @@ request, a connected viewer, or remote access off.
 
 | Item | Description |
 | --- | --- |
-| **Allow remote access** | The switch in the card's header. When off, new connections are refused. A running session is not affected |
+| **Allow remote access** | The switch at the top right of the page. When off, new connections are refused. A running session is not affected |
 | **Addresses** | The `IP:port` that devices on the same network enter, with any further addresses under **Other addresses**. The default port is UDP 47821 |
 | **One-time password** | Ten characters, like `K7MXQ-3PTWA`. Copy, show/hide, and **New password**. It's gone once a connection uses it, and a new one is made when the session ends |
 | **My ID** | The nine-digit ID (`123 456 789`) shown when a relay server is set |
@@ -33,8 +36,8 @@ In the address field, enter an IP address such as `192.168.0.10`, `192.168.0.10:
 hostname, or, when using a relay, a nine-digit ID. Without a port, 47821 is used. To connect by ID, your side needs
 the same relay server set too. The password ignores case, spaces, and `-`. Press Enter to connect right away.
 
-**Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the same network.
-Picking one fills in the address and moves to the password field. Nearby-device information is an unauthenticated display hint; connecting always checks the password.
+In the sidebar, **Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the
+same network. Picking one opens this form with the address filled in and the cursor in the password field. Nearby-device information is an unauthenticated display hint; connecting always checks the password.
 
 **Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
 Windows, ⌘C arrives as Ctrl+C and copies as usual.
@@ -46,7 +49,7 @@ movement, clicks, the wheel, and key presses over the screen go to the remote de
 ⌘C/Ctrl+C go to the remote device too. Korean text is composed by the remote device's input method, so turn on the
 Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
 
-The toolbar shows frames per second and round-trip latency (`30 fps · 12 ms`), and offers **Display** (choose
+The toolbar, which is also the window's title bar, shows frames per second and round-trip latency (`30 fps · 12 ms`), and offers **Display** (choose
 among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. The dot before the device name is
 green while the session runs, amber while the host is still deciding, and gray once the session is over; a finished
 session explains why and offers **Close**. Limits such as a view-only session appear as a notice at the top of the

@@ -47,7 +47,7 @@ SmartScreen warns you.
 ### macOS permissions
 
 A Mac that shares its screen needs these permissions, granted in System Settings → Privacy & Security. The app's
-"This device" card shows which are missing and has **Request permission** and **Open System Settings** buttons.
+"This device" page shows which are missing and has **Request permission** and **Open System Settings** buttons.
 
 - **Screen & System Audio Recording**: lets the viewer see the screen. Restart the app after granting it.
 - **Accessibility**: lets the viewer control the keyboard and mouse.
@@ -57,11 +57,12 @@ On Windows, allow private network access when the firewall asks on first launch.
 
 ## Quick start
 
-To share a screen, open the app on the host. The "This device" card shows the host's addresses (UDP port 47821 by
+To share a screen, open the app on the host. The "This device" page shows the host's addresses (UDP port 47821 by
 default) and a one-time password like `K7MXQ-3PTWA`. Give both to the person who will connect.
 
-To control that computer, open the app on the viewer. In "Control a remote device", enter the host's address and
-the password, then press **Connect**. Computers on the same network also appear under "Nearby devices".
+To control that computer, open the app on the viewer. Choose "Control a remote device" in the sidebar, enter the
+host's address and the password, then press **Connect**. Computers on the same network also appear under "Nearby
+devices" in the sidebar.
 
 The host user then sees a connection request and picks **Allow control**, **View only**, or **Decline**. If
 nobody answers within 30 seconds, the request is declined. Once allowed, the viewer window shows the remote

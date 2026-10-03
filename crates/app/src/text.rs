@@ -7,7 +7,6 @@ use dari_proto::RejectReason;
 use dari_session::SessionEndReason;
 
 pub(crate) struct Text {
-    pub(crate) app_subtitle: &'static str,
     pub(crate) this_device: &'static str,
     pub(crate) allow_remote_access: &'static str,
     pub(crate) addresses: &'static str,
@@ -163,7 +162,6 @@ impl Text {
 }
 
 static KOREAN: Text = Text {
-    app_subtitle: "macOS와 Windows를 위한 원격 데스크톱",
     this_device: "이 기기",
     allow_remote_access: "원격 접속 허용",
     addresses: "접속 주소",
@@ -226,7 +224,6 @@ static KOREAN: Text = Text {
 };
 
 static ENGLISH: Text = Text {
-    app_subtitle: "Remote desktop for macOS and Windows",
     this_device: "This device",
     allow_remote_access: "Allow remote access",
     addresses: "Addresses",

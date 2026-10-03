@@ -190,6 +190,8 @@ mod macos {
 
         // A failed attempt explains itself inside the error box; long messages wrap, not spill.
         cx.update_window(window, |_, window, cx| {
+            window.click("nav-connect", cx);
+            window.render_frame(cx);
             window.click("connect", cx);
             window.render_frame(cx);
             let callout = window.find("connect-error").bounds();
@@ -462,6 +464,8 @@ mod macos {
 
         // Connect by the nine-digit relay ID, not by address.
         cx.update_window(window, |_, window, cx| {
+            window.click("nav-connect", cx);
+            window.render_frame(cx);
             window.click("connect-address", cx);
             window.input(&relay_id, cx);
             window.click("connect-password", cx);
@@ -478,6 +482,12 @@ mod macos {
             cx.update(|cx| home.read(cx).admitted_session_status(cx))
                 .is_none()
         );
+        // The request brings the device page back, where it can be answered.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("approval-control").is_some());
+        })
+        .unwrap();
         save(&mut cx, window, "home-approval");
 
         cx.update_window(window, |_, window, cx| window.click("approval-control", cx))
