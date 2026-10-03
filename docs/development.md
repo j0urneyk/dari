@@ -133,9 +133,10 @@ with the installed `dari.exe`.
 
 ### Cross-device checks
 
-`scripts/crosscheck/crosscheck.sh` runs sessions between this Mac and a Windows machine it reaches over SSH, in both
-directions. The Windows machine is either a local Windows 11 VM (the everyday check) or an x64 GitHub Windows runner
-joined to your tailnet (to cover the architecture the release ships). Each case runs `dari-check host` on one side and
+`scripts/crosscheck/crosscheck.sh` runs sessions between a Mac and a Windows machine it reaches over SSH, in both
+directions. Every night and on pull requests that touch the crates, the **Cross-device check** workflow runs it between
+a macOS runner and an x64 Windows runner; before a release, run it from your Mac against a local Windows 11 VM, which
+adds what the runners can't have: the Korean input method, a second monitor, and 150% scaling. Each case runs `dari-check host` on one side and
 `dari-check view` on the other. `dari-check` (`crates/check`) is a test-only binary that isn't packaged. The two
 sides share nothing but the session, and each checks what it can observe on its own machine:
 
@@ -210,24 +211,29 @@ Don't remove the VM's CD drives: that moves the system disk to another PCI addre
 Scripts in `scripts/crosscheck/` that run on Windows are ASCII only, which CI checks: Windows PowerShell 5.1 reads
 a script without a byte order mark in the system code page, and on Korean Windows a single "…" broke parsing.
 
-#### x64 GitHub runner over Tailscale
+#### Every night: macOS and Windows runners
 
-`scripts/crosscheck/runner.sh` dispatches the **Cross-device check** workflow (`.github/workflows/crosscheck.yml`)
-with a fresh SSH key. The runner builds `dari-check`, allows SSH and UDP 47821 from tailnet addresses only, joins the
-tailnet as `dari-check-<run id>` (an ephemeral node), and waits. The script then runs `crosscheck.sh` against it and
-tells it to finish. The runner's logs and frames are uploaded as the `crosscheck-windows` artifact. The runner is
-Windows Server, not Windows 11; it covers the x64 build and a separate network path.
+`.github/workflows/crosscheck.yml` runs every night, on demand, and on pull requests from this repository that touch
+`crates/`, `Cargo.lock`, or `scripts/crosscheck/`. Hosted runners can't reach each other, so both join the tailnet as
+ephemeral `tag:ci` nodes through Tailscale workload identity federation. A first job makes an SSH key for the run; the
+Windows job builds `dari-check`, allows SSH and UDP 47821 from tailnet addresses only, joins as `dari-check-<run id>`,
+and waits; the macOS job joins as `dari-check-<run id>-mac` and runs `crosscheck.sh` against it with
+`scripts/crosscheck/ci-driver.sh`, then tells it to finish. Logs and frames are the `crosscheck-mac` and
+`crosscheck-windows` artifacts, and a failing nightly run sends GitHub's usual failed-workflow notification. The
+Windows runner is Windows Server in English with one display, so Hangul input, a second monitor, and scaling are left
+to the VM.
 
 One-time setup:
 
-1. In the Tailscale policy file, add the tag and keep the runner's reach narrow: it runs whatever code the
-   dispatched branch has, so it may only send Dari's UDP traffic to your devices (the Mac's host on 47831, the relay on
-   47822, and the relay's allocations on ephemeral ports), while your devices can still reach it over SSH:
+1. In the Tailscale policy file, add the tag and keep the runners' reach narrow: they run whatever code the branch
+   has, so they may reach each other but only send Dari's UDP traffic to your own devices (a Mac host on 47831, a relay
+   on 47822, and the relay's allocations on ephemeral ports):
 
    ```json
    "tagOwners": {"tag:ci": ["autogroup:admin"]},
    "grants": [
        {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+       {"src": ["tag:ci"], "dst": ["tag:ci"], "ip": ["*"]},
        {"src": ["tag:ci"], "dst": ["autogroup:member"], "ip": ["udp:47822", "udp:47831", "udp:49152-65535"]},
    ],
    ```
@@ -237,23 +243,18 @@ One-time setup:
    `*/.github/workflows/crosscheck.yml@*` (so only this workflow can use it), and only the writable `auth_keys` scope
    for `tag:ci`. GitHub puts the owner's and repository's numeric IDs in the subject, so a renamed or recreated
    repository can't take over the trust; a subject without them never matches (the credential's page shows the
-   subject it last received). The workflow signs in with
-   GitHub's OIDC token, so nothing secret is stored: the credential's client ID and audience aren't secrets and go in
-   the repository variables `TS_CLIENT_ID` and `TS_AUDIENCE`. If the tag isn't `tag:ci`, set `TS_TAGS` too.
-3. Run Tailscale on the Mac. The workflow file must be on the default branch before it can be dispatched.
+   subject it last received). The workflow signs in with GitHub's OIDC token, so nothing secret is stored: the
+   credential's client ID and audience aren't secrets and go in the repository variables `TS_CLIENT_ID` and
+   `TS_AUDIENCE`. If the tag isn't `tag:ci`, set `TS_TAGS` too.
+
+#### Before a release: the local VM
+
+With the VM running (`utmctl start dari-win11`, then `vm/wait-vm.sh`), check the release candidate's source and its
+packaged builds from your Mac:
 
 ```bash
-scripts/crosscheck/runner.sh --cases mac-host-direct,windows-host-direct
+scripts/crosscheck/crosscheck.sh --windows dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build --expect-windows-displays 2 --release vX.Y.Z
 ```
-
-#### Every night
-
-`scripts/crosscheck/vm/nightly.sh` checks the latest `main` against the VM: it updates its own clone in
-`~/.dari-check-vm/checkout`, starts the VM if it isn't running (and shuts it down again afterwards), runs
-`crosscheck.sh --build`, keeps two weeks of results in `~/.dari-check-vm/nightly/`, and posts a macOS notification
-when anything fails. When this Mac's screen is locked, the cases where the Mac hosts are skipped. It runs as a scheduled
-task in the Claude desktop app, because that app already has the Screen Recording, Accessibility, and Local Network
-access the checks need; the Mac has to be awake with the app open.
 
 #### Keeping the VM small
 
