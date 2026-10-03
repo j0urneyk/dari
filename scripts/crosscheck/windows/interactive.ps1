@@ -8,6 +8,7 @@ nothing and input injection fails. This starts them through a scheduled task tha
 the signed-in user's session instead, so a user must be signed in (autologon on a test VM).
 
   start -Name host -Exe C:\dari-check\dari-check.exe -Arguments 'host','--approve','allow' -Log C:\dari-check\logs\host.log
+  start -Name view -Exe ...\dari.exe -Arguments 'connect','10.0.0.2' -InputFile C:\dari-check\password.txt -Log ...
   wait  -Name host -TimeoutSeconds 180   # exits with the program's exit code
   stop  -Name host
 #>
@@ -21,6 +22,8 @@ param(
     [string] $Exe,
     [string[]] $Arguments = @(),
     [string] $Log,
+    # A file the program reads as its standard input.
+    [string] $InputFile,
     [int] $TimeoutSeconds = 300
 )
 
@@ -64,6 +67,7 @@ switch ($Action) {
         Remove-Item -Force -ErrorAction SilentlyContinue $Log
         Remove-Task
         $command = '"{0}" {1} > "{2}" 2>&1' -f $Exe, ($Arguments -join ' '), $Log
+        if ($InputFile) { $command += ' < "{0}"' -f $InputFile }
         $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$command`""
         $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)

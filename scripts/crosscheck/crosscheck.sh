@@ -24,15 +24,18 @@ Usage: scripts/crosscheck/crosscheck.sh --windows USER@HOST [options]
   --expect-mac-displays N    Fail unless this Mac offers N displays
   --cases LIST               Comma-separated subset of the cases below (default: all)
   --out DIR                  Where logs and frames go (default: target/crosscheck/<time>)
+  --release TAG              Also install that release's DMG and Windows installer and connect
+                             the installed apps to each other
 
 Cases: mac-host-direct, windows-host-direct, mac-host-relay, windows-host-relay,
-       mac-host-view-only, windows-host-view-only
+       mac-host-view-only, windows-host-view-only; with --release also installed-windows-host,
+       installed-mac-host
 EOF
 }
 
 windows='' windows_ip='' mac_ip='' identity='' known_hosts='' build=0
 target='x86_64-pc-windows-msvc' windows_bin='C:\dari-check\dari-check.exe'
-expect_windows='' expect_mac='' cases='' out=''
+expect_windows='' expect_mac='' cases='' out='' release=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --windows) windows=$2; shift 2 ;;
@@ -47,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --expect-mac-displays) expect_mac=$2; shift 2 ;;
     --cases) cases=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
+    --release) release=$2; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -94,6 +98,12 @@ ps_array() {
 
 echo "Windows peer $windows ($windows_ip), this Mac $mac_ip; output in $out"
 win "New-Item -ItemType Directory -Force -Path C:\\dari-check\\logs | Out-Null"
+# With a Korean input method on the peer, its host also checks the viewer's keys compose Hangul.
+windows_hangul=()
+if win "if ((Get-WinUserLanguageList).LanguageTag -contains 'ko') { 'korean' }" | grep -q korean; then
+  windows_hangul=(--expect-hangul)
+  echo "The peer has a Korean input method; its host checks Hangul input too."
+fi
 scp -q "${ssh_options[@]}" "$root/scripts/crosscheck/windows/interactive.ps1" "$windows:C:/dari-check/interactive.ps1"
 
 echo "Building dari-check and dari-relay for this Mac…"
@@ -202,7 +212,8 @@ run_case() {
     wait "$mac_host_pid" || host_code=$?
     mac_host_pid=''
   else
-    local host_args=(host --approve "$approve" --nonce "$nonce" ${relay_args[@]+"${relay_args[@]}"})
+    local host_args=(host --approve "$approve" --nonce "$nonce" ${relay_args[@]+"${relay_args[@]}"}
+      ${windows_hangul[@]+"${windows_hangul[@]}"})
     interactive start -Name host -Exe "'$windows_bin'" -Arguments "$(ps_array "${host_args[@]}")" \
       -Log "'C:\\dari-check\\logs\\$name-host.log'" || echo "the Windows host task did not start"
     local remote_log="C:/dari-check/logs/$name-host.log"
@@ -255,6 +266,105 @@ for entry in "${all_cases[@]}"; do
     run_case "$name" "$side" "$approve" "$via"
   fi
 done
+
+# The release as users get it: the DMG's app and the installer's app, connected with their own
+# headless `host` and `connect` commands. This catches packaging problems the source build can't.
+installed_ok() {
+  grep -q 'Connected to' "$1" && grep -q 'host screen: Available, host input: Available' "$1" &&
+    grep -Eq 'frame Some\(\([0-9]+, [0-9]+\)\)' "$1"
+}
+
+record_installed() {
+  local name=$1 view_log=$2
+  if installed_ok "$view_log"; then
+    summary+=("PASS $name")
+  else
+    summary+=("FAIL $name (see $view_log)")
+    failures=$((failures + 1))
+    tail -n 5 "$view_log" 2>/dev/null | sed 's/^/  /'
+  fi
+}
+
+run_installed() {
+  local dir="$out/release" mount mac_app windows_app password
+  local repo
+  repo=$(cd "$root" && gh repo view --json nameWithOwner --jq .nameWithOwner)
+  mkdir -p "$dir"
+  echo
+  echo "== installed $release: downloading and installing"
+  gh release download "$release" --repo "$repo" --pattern '*_macos_aarch64.dmg' --pattern '*-setup.exe' \
+    --dir "$dir" --clobber
+  mount=$(mktemp -d)
+  hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount" "$dir"/*.dmg
+  rm -rf "$dir/Dari.app"
+  cp -R "$mount/Dari.app" "$dir/"
+  hdiutil detach -quiet "$mount"
+  mac_app="$dir/Dari.app/Contents/MacOS/dari"
+  scp -q "${ssh_options[@]}" "$dir"/*-setup.exe "$windows:C:/dari-check/dari-setup.exe"
+  # The installer is per-user, so it installs for the account the checks run as. The release app
+  # gets the firewall treatment dari-check gets (prepare-peer.ps1): allowed up front, so Windows
+  # never asks and never adds block rules.
+  windows_app=$(win "\$ErrorActionPreference = 'Stop';
+    Start-Process C:\\dari-check\\dari-setup.exe -ArgumentList '/S' -Wait;
+    \$exe = (Get-ChildItem -Path \$env:LOCALAPPDATA -Filter dari.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName;
+    Get-NetFirewallApplicationFilter -Program \$exe -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object Action -eq 'Block' | Remove-NetFirewallRule;
+    Remove-NetFirewallRule -Name dari-release -ErrorAction SilentlyContinue;
+    New-NetFirewallRule -Name dari-release -DisplayName 'dari (release)' -Direction Inbound -Program \$exe -Action Allow -Profile Any | Out-Null;
+    \$exe" | tr -d '\r' | tail -n 1)
+  echo "installed: $windows_app"
+
+  # The release's Windows app is a GUI program: cmd.exe doesn't wait for it, so it is stopped by
+  # name rather than through its task.
+  local stop_windows_app="Get-Process dari -ErrorAction SilentlyContinue | Stop-Process -Force"
+
+  echo
+  echo "== installed-windows-host: the installed Windows app hosts, the DMG's app connects"
+  local host_log="$out/installed-windows-host-host.log" view_log="$out/installed-windows-host-view.log"
+  local remote_log='C:/dari-check/logs/installed-windows-host-host.log'
+  win "$stop_windows_app" || true
+  interactive start -Name host -Exe "'$windows_app'" -Arguments "$(ps_array host --port 47821)" \
+    -Log "'C:\\dari-check\\logs\\installed-windows-host-host.log'" || true
+  password=$(wait_for_remote_line "$remote_log" "$host_log" 'Access password' 60) || password=''
+  if [[ -n $password ]]; then
+    printf '%s\n' "$password" | "$mac_app" connect "$windows_ip:47821" >"$view_log" 2>&1 &
+    local viewer=$!
+    sleep 15
+    kill "$viewer" 2>/dev/null || true
+    wait "$viewer" 2>/dev/null || true
+  else
+    echo "the installed Windows app did not start hosting" >"$view_log"
+  fi
+  win "$stop_windows_app" || true
+  interactive stop -Name host >/dev/null 2>&1 || true
+  fetch "$remote_log" "$host_log" || true
+  record_installed installed-windows-host "$view_log"
+
+  echo
+  echo "== installed-mac-host: the DMG's app hosts, the installed Windows app connects"
+  host_log="$out/installed-mac-host-host.log"
+  view_log="$out/installed-mac-host-view.log"
+  "$mac_app" host --port 47832 >"$host_log" 2>&1 &
+  mac_host_pid=$!
+  password=$(wait_for_line "$host_log" 'Access password' 30) || password=''
+  if [[ -n $password ]]; then
+    win "Set-Content -Path C:\\dari-check\\password.txt -Value '$password'"
+    interactive start -Name view -Exe "'$windows_app'" -Arguments "$(ps_array connect "$mac_ip:47832")" \
+      -InputFile "'C:\\dari-check\\password.txt'" -Log "'C:\\dari-check\\logs\\installed-mac-host-view.log'" ||
+      true
+    sleep 15
+    win "$stop_windows_app" || true
+    interactive stop -Name view >/dev/null 2>&1 || true
+    fetch 'C:/dari-check/logs/installed-mac-host-view.log' "$view_log" || true
+  else
+    echo "the DMG's app did not start hosting" >"$view_log"
+  fi
+  kill "$mac_host_pid" 2>/dev/null || true
+  wait "$mac_host_pid" 2>/dev/null || true
+  mac_host_pid=''
+  record_installed installed-mac-host "$view_log"
+}
+
+[[ -n $release ]] && run_installed
 
 echo
 echo "== Summary ($out)"

@@ -129,11 +129,16 @@ sides share nothing but the session, and each checks what it can observe on its 
 | Side | Checks |
 | --- | --- |
 | Host | It is asked to approve once; screen and input report Available; for every display, each of the viewer's pointer targets lands there in the real OS pointer position, computed from the display's own bounds, so a scaling or multi-monitor coordinate mismatch shows up as a miss; the viewer's ⌘/Ctrl arrives as this OS's shortcut modifier; the viewer's clipboard text reaches the system clipboard |
+| Host's input window | `dari-check host` opens a window at the centre of the primary display and records what an app there receives: the viewer's click at the display's centre lands in it and focuses it, the wheel scrolls it, typed keys arrive as text, and the viewer's copy shortcut arrives as this OS's (⌘C or Ctrl+C). On a Windows host with Korean installed, the Korean input method must also compose 한 from the keys the viewer types after the Hangul key. On a Mac host the window types with an ASCII input source while it is open and then restores the user's |
 | Viewer | Status matches the approval; the expected number of displays; switching to each display; frames shaped like the display with real content (saved as PNGs); the host's clipboard reply arrives on this machine's clipboard |
 | View only | No input or clipboard text reaches the host, and nothing comes back |
 
 The cases are `mac-host-direct`, `windows-host-direct`, `mac-host-relay`, `windows-host-relay` (through a
-`dari-relay` the script runs on the Mac), `mac-host-view-only` and `windows-host-view-only`. In an allowed session the
+`dari-relay` the script runs on the Mac), `mac-host-view-only` and `windows-host-view-only`. With `--release TAG` it
+also downloads that release, installs the DMG's app here and the Windows installer on the peer, and connects the
+installed apps to each other in both directions with their own headless `host` and `connect` commands
+(`installed-windows-host`, `installed-mac-host`), which catches packaging problems a source build can't. In an allowed
+session the
 host ends the session after the clipboard round trip, and in a view-only session the viewer disconnects, which
 covers both disconnect directions. Logs and frames go to `target/crosscheck/<time>/`. Don't touch the Mac's mouse
 during a run: the host check reads the real pointer position, and the Mac's clipboard is overwritten and then
@@ -228,11 +233,30 @@ One-time setup:
 scripts/crosscheck/runner.sh --cases mac-host-direct,windows-host-direct
 ```
 
+#### Every night
+
+`scripts/crosscheck/vm/nightly.sh` checks the latest `main` against the VM: it updates its own clone in
+`~/.dari-check-vm/checkout`, starts the VM if it isn't running (and shuts it down again afterwards), runs
+`crosscheck.sh --build`, keeps two weeks of results in `~/.dari-check-vm/nightly/`, and posts a macOS notification
+when anything fails. When this Mac's screen is locked, the cases where the Mac hosts are skipped. It runs as a scheduled
+task in the Claude desktop app, because that app already has the Screen Recording, Accessibility, and Local Network
+access the checks need; the Mac has to be awake with the app open.
+
+#### Keeping the VM small
+
+The VM's disk is a qcow2 file that only grows: the 96 GB is its ceiling, not its size. To give space back, clean up
+inside Windows (`DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase`, the temp folders), fill its free
+space with zeros, shut it down, and rewrite the image; `qemu-img` (`brew install qemu`) leaves zeroed clusters out:
+
+```bash
+qemu-img convert -O qcow2 dari-win11.qcow2 compact.qcow2
+```
+
 #### Still manual
 
-Before a release, check on real hardware what the scripts don't cover: clicks, the wheel, and typing (including the
-Korean IME on the host) having the right effect in apps, ⌘C/Ctrl+C actually copying, a real x64 Windows 11 PC with
-physical monitors at mixed scaling, and the release builds installed from the DMG and installer.
+Before a release, check on real hardware what the scripts don't cover: a real x64 Windows 11 PC with physical monitors
+at mixed scaling, the Korean input method on a Mac host, and the release apps' GUI (pairing through the approval card
+and the viewer window).
 
 ## CI
 
