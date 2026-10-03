@@ -545,7 +545,7 @@ mod macos {
             })
             .unwrap();
         pump(&mut cx, Duration::from_secs(10), |cx| {
-            cx.update(|cx| home.read(cx).has_backdrop() && home.read(cx).has_password(cx))
+            cx.update(|cx| home.read(cx).has_backdrop(cx) && home.read(cx).has_password(cx))
         });
         save(&mut cx, window, "home-background");
         // The picture fills the window's top half behind the page; it does not push the page

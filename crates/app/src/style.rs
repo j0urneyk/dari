@@ -278,7 +278,7 @@ pub(crate) fn picture_opacity(cx: &App) -> f32 {
 /// further the picture is from the surface in lightness, the less of it shows, so the sidebar's
 /// gray text stays readable.
 pub(crate) fn frost_opacity(average: Hsla, cx: &App) -> f32 {
-    let opacity = (0.55 - 0.6 * contrast(average, cx)).max(0.2);
+    let opacity = (0.4 - 0.5 * contrast(average, cx)).max(0.12);
     if translucent(cx) {
         opacity * 0.8
     } else {
@@ -314,6 +314,80 @@ pub(crate) fn veil(average: Hsla, cx: &App) -> Background {
         linear_color_stop(color.opacity(cover), backdrop::FADE_FROM),
         linear_color_stop(color.opacity(0.), backdrop::FADE_TO),
     )
+}
+
+/// Frosted glass for a panel with corners of `radius`: over a background picture, the picture
+/// blurred and cut to the panel where it lies in the window, under a tint of the surface, so
+/// text on the panel reads the same over any picture. Without a picture, a faint wash.
+///
+/// Add it to a `relative` panel before the panel's content, which then draws over it.
+pub(crate) fn glass(radius: Pixels, cx: &App) -> Div {
+    let layer = div().absolute().inset_0().rounded(radius);
+    let Some(scenery) = backdrop::shown(cx) else {
+        return layer.bg(cx.theme().foreground.opacity(0.025));
+    };
+    let frost = scenery.frost.clone();
+    let blurred = canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            // Placed as the sidebar and the pages place the picture: covering the window.
+            let window_bounds = Bounds::new(Point::default(), window.viewport_size());
+            let picture = ObjectFit::Cover.get_bounds(window_bounds, frost.size(0));
+            let _painted = window.paint_image(
+                bounds,
+                picture,
+                Corners::all(radius),
+                frost.clone(),
+                0,
+                false,
+            );
+        },
+    )
+    .size_full();
+    let dark = cx.theme().is_dark();
+    let tint = surface(cx).mix_oklab(scenery.average, if dark { 0.86 } else { 0.9 });
+    let cover = (0.56 + 0.3 * contrast(scenery.average, cx)).min(0.8);
+    layer
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .opacity(picture_opacity(cx))
+                .child(blurred),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(radius)
+                .bg(tint.opacity(cover))
+                .border_1()
+                .border_color(
+                    cx.theme()
+                        .foreground
+                        .opacity(if dark { 0.08 } else { 0.06 }),
+                ),
+        )
+}
+
+/// A panel on [`glass`], for a group of content.
+pub(crate) fn panel(cx: &App) -> Div {
+    let radius = cx.theme().radius_lg;
+    div()
+        .relative()
+        .v_flex()
+        .rounded(radius)
+        .child(glass(radius, cx))
+}
+
+/// A titled group of rows on a [`panel`].
+pub(crate) fn section(title: impl Into<SharedString>, rows: impl IntoElement, cx: &App) -> Div {
+    panel(cx)
+        .pt_3()
+        .px_4()
+        .pb_1()
+        .child(eyebrow(title, cx))
+        .child(rows)
 }
 
 /// How far apart a picture's `average` color and the surface are in lightness, from 0 to 1.
@@ -405,7 +479,12 @@ pub(crate) fn page_header(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(cx.theme().muted_foreground)
+                        // Over a picture, gray text needs more weight to stand out.
+                        .text_color(if backdrop::shown(cx).is_some() {
+                            cx.theme().foreground.opacity(0.78)
+                        } else {
+                            cx.theme().muted_foreground
+                        })
                         .child(description.into()),
                 ),
         )
@@ -474,21 +553,24 @@ pub(crate) fn setting_row(
         .child(control)
 }
 
-/// A tinted message box, for warnings and errors.
+/// A tinted message box on [`glass`], for warnings and errors.
 pub(crate) fn callout(
     icon: impl Into<Icon>,
     color: Hsla,
     content: impl IntoElement,
     cx: &App,
 ) -> Div {
+    let radius = cx.theme().radius_lg;
     div()
+        .relative()
         .h_flex()
         .items_start()
         .gap_2p5()
         .px_3()
         .py_2p5()
-        .rounded(cx.theme().radius)
-        .bg(color.opacity(0.1))
+        .rounded(radius)
+        .child(glass(radius, cx))
+        .child(tint(color, radius))
         .child(
             div()
                 .flex_none()
@@ -499,6 +581,17 @@ pub(crate) fn callout(
         // A flex item is never narrower than its content unless told so; without
         // `min_w_0`, long messages run past the box instead of wrapping.
         .child(div().flex_1().min_w_0().child(content))
+}
+
+/// A wash of `color` over a [`glass`] panel with corners of `radius`, outlined in it.
+pub(crate) fn tint(color: Hsla, radius: Pixels) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(radius)
+        .bg(color.opacity(0.1))
+        .border_1()
+        .border_color(color.opacity(0.35))
 }
 
 /// A heading over a group of sidebar rows.

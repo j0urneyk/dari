@@ -21,9 +21,10 @@ All notable changes to this project are documented here. The format follows
   under a transparent title bar with the desktop showing through blurred.
 - A new **Settings** page, at the bottom of the sidebar, chooses the theme (system, light, or dark), turns the
   window's translucency on or off, and sets a background picture (PNG, JPEG, or WebP) behind the home window,
-  optionally blurred. The picture fills the top half of the window behind the page, under a veil that
-  thickens the further the picture is from the theme in lightness, and fades out below it into the theme's own
-  surface; the sidebar shows it as frosted glass. Text and controls stay readable over busy pictures. Buttons and text fields sit on frosted fills so they read on any background. They are saved in `settings.toml` as `theme`, `translucent_window`, `background_image`, and
+  optionally blurred. The picture fills the top half of the window behind the page and fades out below
+  it into the theme's own surface. Each group of settings, the password and addresses, and every notice sit on a
+  panel of frosted glass, the picture blurred under a tint of the theme, so text and icons read the same over any
+  picture; the sidebar is frosted the same way. Without a picture the panels are a faint wash. They are saved in `settings.toml` as `theme`, `translucent_window`, `background_image`, and
   `blur_background`. The device page's settings are now headed **Sharing**.
 
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay

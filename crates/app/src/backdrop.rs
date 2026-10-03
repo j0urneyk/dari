@@ -14,9 +14,10 @@
 //!   how much the veil has to cover for text to stay readable.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context as _;
-use gpui_kit::RenderImage;
+use gpui_kit::{App, Global, Hsla, RenderImage, rgb};
 use image::{DynamicImage, Frame, RgbaImage, imageops};
 
 /// The longest side the picture is decoded to: enough for a large window on a Retina display.
@@ -173,6 +174,44 @@ fn render_image(mut image: RgbaImage) -> RenderImage {
         pixel.0.swap(0, 2);
     }
     RenderImage::new(vec![Frame::new(image)])
+}
+
+/// The background picture's layers on the GPU, as every view draws them.
+#[derive(Clone)]
+pub(crate) struct Scenery {
+    pub(crate) picture: Arc<RenderImage>,
+    pub(crate) frost: Arc<RenderImage>,
+    /// The average color of the part of the picture that shows.
+    pub(crate) average: Hsla,
+}
+
+impl Scenery {
+    pub(crate) fn new(prepared: Backdrop) -> Self {
+        let [red, green, blue] = prepared.average;
+        Self {
+            picture: Arc::new(prepared.picture),
+            frost: Arc::new(prepared.frost),
+            average: rgb(u32::from_be_bytes([0, red, green, blue])).into(),
+        }
+    }
+}
+
+/// The picture shown behind the home window, if any. Global, so the panels of every page can
+/// frost it.
+struct Shown(Option<Scenery>);
+
+impl Global for Shown {}
+
+/// The picture shown behind the home window, if one has loaded.
+pub(crate) fn shown(cx: &App) -> Option<&Scenery> {
+    cx.try_global::<Shown>()?.0.as_ref()
+}
+
+/// Shows `scenery` behind the home window, returning the one it replaces.
+pub(crate) fn show(scenery: Option<Scenery>, cx: &mut App) -> Option<Scenery> {
+    let previous = cx.try_global::<Shown>().and_then(|shown| shown.0.clone());
+    cx.set_global(Shown(scenery));
+    previous
 }
 
 #[cfg(test)]

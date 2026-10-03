@@ -49,7 +49,7 @@ Windows, ⌘C arrives as Ctrl+C and copies as usual.
 | --- | --- |
 | **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
 | **Translucent window** | On by default. What is behind the window shows through, blurred, through the background picture too. Viewer windows opened afterwards follow it too |
-| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It fills the top half of the window and fades out into the theme's own surface below, and the sidebar shows it as frosted glass. A veil over it, thicker for a picture far from the theme in lightness, keeps text readable over any picture. Pictures taller than 3:2 show their middle. **Choose…** picks one, **Remove** goes back |
+| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It fills the top half of the window and fades out into the theme's own surface below. The page's panels and the sidebar show it as frosted glass, so text stays readable over any picture. Pictures taller than 3:2 show their middle. **Choose…** picks one, **Remove** goes back |
 | **Blur the picture** | Off by default. Blurs the whole picture, not just where it fades out |
 
 ## Viewer window

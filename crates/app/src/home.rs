@@ -57,8 +57,6 @@ pub struct Home {
     page: Page,
     /// Whether the host panel was waiting on the user's answer when it last changed.
     approval_pending: bool,
-    /// The background picture from the settings, softened, once it has loaded.
-    backdrop: Option<Scenery>,
     /// Whether the background picture in the settings could not be read.
     backdrop_unreadable: bool,
     /// Loads the background picture; replacing it cancels the load.
@@ -96,7 +94,6 @@ impl Home {
             connect,
             page: Page::Device,
             approval_pending: false,
-            backdrop: None,
             backdrop_unreadable: false,
             backdrop_task: None,
             _subscriptions: subscriptions,
@@ -110,7 +107,7 @@ impl Home {
         self.backdrop_unreadable = false;
         let Some(path) = AppState::settings(cx).background_image.clone() else {
             self.backdrop_task = None;
-            self.set_backdrop(None, window, cx);
+            Self::set_backdrop(None, window, cx);
             return;
         };
         let blur = AppState::settings(cx).blur_background;
@@ -118,23 +115,24 @@ impl Home {
         self.backdrop_task = Some(cx.spawn_in(window, async move |this, cx| {
             let picture = prepared.await;
             let _updated = this.update_in(cx, |this, window, cx| match picture {
-                Ok(prepared) => this.set_backdrop(Some(Scenery::new(prepared)), window, cx),
+                Ok(prepared) => {
+                    Self::set_backdrop(Some(backdrop::Scenery::new(prepared)), window, cx);
+                }
                 Err(error) => {
                     tracing::warn!("cannot show the background picture: {error:#}");
                     this.backdrop_unreadable = true;
-                    this.set_backdrop(None, window, cx);
+                    Self::set_backdrop(None, window, cx);
                 }
             });
         }));
     }
 
     fn set_backdrop(
-        &mut self,
-        scenery: Option<Scenery>,
+        scenery: Option<backdrop::Scenery>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(previous) = std::mem::replace(&mut self.backdrop, scenery) {
+        if let Some(previous) = backdrop::show(scenery, cx) {
             // Each layer is a GPU texture; release the ones being replaced.
             for layer in [previous.picture, previous.frost] {
                 let _dropped = window.drop_image(layer);
@@ -205,8 +203,8 @@ impl Home {
         self.host.read(cx).session_status
     }
 
-    pub fn has_backdrop(&self) -> bool {
-        self.backdrop.is_some()
+    pub fn has_backdrop(&self, cx: &App) -> bool {
+        backdrop::shown(cx).is_some()
     }
 }
 
@@ -275,7 +273,7 @@ impl Home {
 
         // The picture, blurred, drawn where it lies in the window: the sidebar reads as frosted
         // glass over it, and keeps its own surface where the picture fades out.
-        let frosted = self.backdrop.as_ref().map(|scenery| {
+        let frosted = backdrop::shown(cx).map(|scenery| {
             img(scenery.frost.clone())
                 .absolute()
                 .top_0()
@@ -462,17 +460,17 @@ impl Home {
                     .text_color(cx.theme().muted_foreground)
                     .child(text().translucent_window_hint),
             );
-        div()
-            .v_flex()
-            .gap_2()
-            .child(style::eyebrow(text().appearance, cx))
-            .child(style::row_list(
+        style::section(
+            text().appearance,
+            style::row_list(
                 [
                     style::setting_row(IconName::Palette, text().theme, theme_choice, cx),
                     translucency,
                 ],
                 cx,
-            ))
+            ),
+            cx,
+        )
     }
 
     /// The background picture: choose, remove, blur.
@@ -512,22 +510,25 @@ impl Home {
         div()
             .v_flex()
             .gap_2()
-            .child(style::eyebrow(text().background_picture, cx))
-            .child(style::row_list(
-                [
-                    style::setting_row(AssetIcon::Image, picture_name, buttons, cx),
-                    style::setting_row(
-                        AssetIcon::Droplet,
-                        text().background_blur,
-                        Switch::new("background-blur")
-                            .accessibility_label(text().background_blur)
-                            .checked(settings.blur_background)
-                            .on_change(cx.listener(|this, checked: &bool, window, cx| {
-                                this.set_blur(*checked, window, cx);
-                            })),
-                        cx,
-                    ),
-                ],
+            .child(style::section(
+                text().background_picture,
+                style::row_list(
+                    [
+                        style::setting_row(AssetIcon::Image, picture_name, buttons, cx),
+                        style::setting_row(
+                            AssetIcon::Droplet,
+                            text().background_blur,
+                            Switch::new("background-blur")
+                                .accessibility_label(text().background_blur)
+                                .checked(settings.blur_background)
+                                .on_change(cx.listener(|this, checked: &bool, window, cx| {
+                                    this.set_blur(*checked, window, cx);
+                                })),
+                            cx,
+                        ),
+                    ],
+                    cx,
+                ),
                 cx,
             ))
             .when(self.backdrop_unreadable, |section| {
@@ -567,7 +568,7 @@ impl Render for Home {
             Page::Connect => self.connect.clone().into_any_element(),
             Page::Settings => self.render_settings(cx).into_any_element(),
         };
-        let scenery = self.backdrop.as_ref().map(|scenery| {
+        let scenery = backdrop::shown(cx).map(|scenery| {
             // Only behind the pages: the sidebar draws its own frosted copy, and layering both
             // would hide what is behind the window there. The picture is still placed against
             // the whole window, so it lines up with the sidebar's copy.
@@ -614,7 +615,7 @@ impl Render for Home {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .when(self.backdrop.is_none(), |body| {
+                            .when(backdrop::shown(cx).is_none(), |body| {
                                 body.bg(style::content_surface(cx))
                             })
                             .overflow_y_scrollbar()
@@ -639,25 +640,6 @@ impl Render for Home {
                     .right_0()
                     .child(Self::render_title_bar()),
             )
-    }
-}
-
-/// The background picture's layers on the GPU (see [`backdrop`]).
-struct Scenery {
-    picture: Arc<RenderImage>,
-    frost: Arc<RenderImage>,
-    /// The picture's average color.
-    average: Hsla,
-}
-
-impl Scenery {
-    fn new(prepared: backdrop::Backdrop) -> Self {
-        let [red, green, blue] = prepared.average;
-        Self {
-            picture: Arc::new(prepared.picture),
-            frost: Arc::new(prepared.frost),
-            average: rgb(u32::from_be_bytes([0, red, green, blue])).into(),
-        }
     }
 }
 
@@ -894,15 +876,16 @@ impl HostPanel {
     fn render_approval(&self, cx: &mut Context<Self>) -> Option<Div> {
         let (peer, _) = self.approval.as_ref()?;
         let primary = cx.theme().primary;
+        let radius = cx.theme().radius_lg;
         Some(
             div()
+                .relative()
                 .v_flex()
                 .gap_4()
                 .p_4()
-                .rounded(cx.theme().radius_lg)
-                .bg(primary.opacity(0.07))
-                .border_1()
-                .border_color(primary.opacity(0.45))
+                .rounded(radius)
+                .child(style::glass(radius, cx))
+                .child(style::tint(primary, radius))
                 .child(
                     div()
                         .h_flex()
@@ -1117,11 +1100,28 @@ impl HostPanel {
             ));
         }
 
-        div()
-            .v_flex()
+        style::panel(cx)
             .gap_4()
+            .p_4()
             .children(self.render_password(cx))
             .child(details)
+            .children(self.render_waiting(cx))
+    }
+
+    /// Until a viewer connects, a line saying the device is waiting for one.
+    fn render_waiting(&self, cx: &mut Context<Self>) -> Option<Div> {
+        (self.viewer.is_none() && self.approval.is_none()).then(|| {
+            div()
+                .h_flex()
+                .gap_2()
+                .pt_4()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(style::status_dot(cx.theme().success))
+                .child(text().waiting_for_viewer)
+        })
     }
 
     fn render_permissions(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -1168,22 +1168,13 @@ impl HostPanel {
         ))
     }
 
+    /// The connected viewer, with a button to end the session.
     fn render_session(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.approval.is_some() {
             // The approval card speaks for the waiting viewer until the host user decides.
             return None;
         }
-        let Some(viewer) = &self.viewer else {
-            return Some(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(style::status_dot(cx.theme().success))
-                    .child(text().waiting_for_viewer),
-            );
-        };
+        let viewer = self.viewer.as_ref()?;
         let success = cx.theme().success;
         let mut about = div().v_flex().flex_1().min_w_0().gap_0p5().child(
             div()
@@ -1205,15 +1196,16 @@ impl HostPanel {
                 about = about.child(note(text().input_permission_missing));
             }
         }
+        let radius = cx.theme().radius_lg;
         Some(
             div()
+                .relative()
                 .h_flex()
                 .gap_3()
                 .p_3()
-                .rounded(cx.theme().radius_lg)
-                .bg(success.opacity(0.08))
-                .border_1()
-                .border_color(success.opacity(0.35))
+                .rounded(radius)
+                .child(style::glass(radius, cx))
+                .child(style::tint(success, radius))
                 .child(style::icon_badge(
                     AssetIcon::MonitorSmartphone,
                     success,
@@ -1272,11 +1264,9 @@ impl HostPanel {
             }
             Some(RelayStatus::Registered(_)) | None => {}
         }
-        div()
-            .v_flex()
-            .gap_2()
-            .child(style::eyebrow(text().sharing_settings, cx))
-            .child(style::row_list(
+        style::section(
+            text().sharing_settings,
+            style::row_list(
                 [
                     style::setting_row(
                         AssetIcon::ShieldCheck,
@@ -1317,7 +1307,9 @@ impl HostPanel {
                     relay,
                 ],
                 cx,
-            ))
+            ),
+            cx,
+        )
     }
 }
 
@@ -1360,9 +1352,9 @@ impl Render for HostPanel {
             .children(self.render_permissions(cx));
         page = match &self.hosting {
             Hosting::Off => page.child(
-                div()
-                    .v_flex()
+                style::panel(cx)
                     .gap_1()
+                    .p_4()
                     .child(div().text_sm().font_medium().child(text().not_accepting))
                     .child(
                         div()
@@ -1590,9 +1582,9 @@ impl Render for ConnectPanel {
                 cx,
             ))
             .child(
-                div()
-                    .v_flex()
+                style::panel(cx)
                     .gap_4()
+                    .p_4()
                     .child(field(
                         text().address,
                         Input::new(&self.address).id("connect-address").prefix(
@@ -1636,21 +1628,21 @@ impl Render for ConnectPanel {
                             .loading(self.connecting)
                             .disabled(self.connecting)
                             .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
-                    )
-                    .children(self.error.clone().map(|error| {
-                        style::callout(
-                            IconName::CircleX,
-                            cx.theme().danger,
-                            div()
-                                .id("connect-error-text")
-                                .text_sm()
-                                .child(error)
-                                .test_support(),
-                            cx,
-                        )
-                        .id("connect-error")
-                        .test_support()
-                    })),
+                    ),
             )
+            .children(self.error.clone().map(|error| {
+                style::callout(
+                    IconName::CircleX,
+                    cx.theme().danger,
+                    div()
+                        .id("connect-error-text")
+                        .text_sm()
+                        .child(error)
+                        .test_support(),
+                    cx,
+                )
+                .id("connect-error")
+                .test_support()
+            }))
     }
 }
