@@ -87,8 +87,7 @@ jobs:
           audience: ${{ vars.TS_AUDIENCE }}
           tags: ${{ vars.TS_TAGS || 'tag:ci' }}
           hostname: dari-check-${{ github.run_id }}
-          # Peers are found with `tailscale ip`; MagicDNS as the system resolver can't resolve
-          # GitHub's own hosts, which broke the artifact upload.
+          # Peers are found with `tailscale ip`, not MagicDNS; keep the runner's own resolver.
           args: --accept-dns=false
       - name: Wait for the macOS job to finish
         shell: powershell
@@ -131,6 +130,14 @@ jobs:
           tags: ${{ vars.TS_TAGS || 'tag:ci' }}
           hostname: dari-check-${{ github.run_id }}-mac
           args: --accept-dns=false
+      # On macOS the action points the Ethernet DNS at MagicDNS (100.100.100.100) regardless,
+      # which resolves nothing here, and GitHub's artifact host stopped resolving. Peers are found
+      # with `tailscale ip`, so give the runner its own DNS back.
+      - name: Restore the runner's DNS
+        run: |
+          sudo networksetup -setdnsservers Ethernet Empty
+          sudo networksetup -setsearchdomains Ethernet Empty
+          dscacheutil -q host -a name github.com | head -n 2
       - name: Run the cross-device checks against the Windows peer
         env:
           SSH_PRIVATE_KEY: ${{ needs.ssh-key.outputs.private }}
