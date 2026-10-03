@@ -9,6 +9,9 @@
 	<array>
 		<string>_dari._udp</string>
 	</array>
+	<!-- macOS 14.6+ asks before an app records the system's sound output (process tap). -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Dari lets the person connected to this device hear its sound during remote desktop sessions.</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>

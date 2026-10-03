@@ -31,9 +31,21 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
+/// Incoming datagram bytes a viewer buffers: about a second of audio packets.
+const VIEWER_DATAGRAM_BUFFER: usize = 64 * 1024;
+/// quinn can't send datagrams without a receive buffer, and it announces the buffer size as
+/// the largest datagram the peer may send. One byte lets the host send audio while no viewer
+/// datagram can ever fit.
+const HOST_DATAGRAM_BUFFER: usize = 1;
+
 /// Transport limits. Viewers open exactly one bidirectional stream (handshake, then control);
-/// hosts open unidirectional streams for media.
-fn transport(peer_bidi_streams: u32, peer_uni_streams: u32) -> Arc<TransportConfig> {
+/// hosts open unidirectional streams for media. Only hosts send datagrams (audio), so only
+/// viewers accept them.
+fn transport(
+    peer_bidi_streams: u32,
+    peer_uni_streams: u32,
+    datagram_receive_buffer: Option<usize>,
+) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();
     transport
         .max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
@@ -41,7 +53,8 @@ fn transport(peer_bidi_streams: u32, peer_uni_streams: u32) -> Arc<TransportConf
         ))))
         .keep_alive_interval(Some(KEEP_ALIVE))
         .max_concurrent_bidi_streams(VarInt::from_u32(peer_bidi_streams))
-        .max_concurrent_uni_streams(VarInt::from_u32(peer_uni_streams));
+        .max_concurrent_uni_streams(VarInt::from_u32(peer_uni_streams))
+        .datagram_receive_buffer_size(datagram_receive_buffer);
     Arc::new(transport)
 }
 
@@ -58,7 +71,7 @@ pub(crate) fn server_config(
     let crypto =
         QuicServerConfig::try_from(tls).map_err(|_| TlsConfigError::UnsupportedCipherSuite)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-    config.transport_config(transport(1, 0));
+    config.transport_config(transport(1, 0, Some(HOST_DATAGRAM_BUFFER)));
     Ok(config)
 }
 
@@ -73,7 +86,7 @@ pub(crate) fn client_config() -> Result<quinn::ClientConfig, TlsConfigError> {
     let crypto =
         QuicClientConfig::try_from(tls).map_err(|_| TlsConfigError::UnsupportedCipherSuite)?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    config.transport_config(transport(0, 4));
+    config.transport_config(transport(0, 4, Some(VIEWER_DATAGRAM_BUFFER)));
     Ok(config)
 }
 
@@ -92,7 +105,7 @@ pub fn relay_server_config(
     let crypto =
         QuicServerConfig::try_from(tls).map_err(|_| TlsConfigError::UnsupportedCipherSuite)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-    config.transport_config(transport(1, 0));
+    config.transport_config(transport(1, 0, None));
     Ok(config)
 }
 
@@ -119,7 +132,7 @@ pub(crate) fn relay_client_config(
     let crypto =
         QuicClientConfig::try_from(tls).map_err(|_| TlsConfigError::UnsupportedCipherSuite)?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
-    config.transport_config(transport(0, 0));
+    config.transport_config(transport(0, 0, None));
     Ok(config)
 }
 

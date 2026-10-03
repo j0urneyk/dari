@@ -9,14 +9,16 @@ mod clipboard;
 mod host;
 mod host_session;
 mod platform;
+mod transfer;
 mod viewer;
 
 pub use clipboard::{ClipboardAccess, ClipboardFactory, SystemClipboard};
 pub use host::{
-    ApprovalDecision, ApprovalRequest, HostConfig, HostError, HostEvent, HostHandle, RelayStatus,
-    start_host,
+    ApprovalDecision, ApprovalRequest, HostConfig, HostError, HostEvent, HostHandle, HostPolicy,
+    RelayStatus, start_host,
 };
 pub use platform::{HostPlatform, SystemPlatform};
+pub use transfer::{Transfer, TransferDirection, TransferState};
 pub use viewer::{
     ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, ViewerTarget, connect_viewer,
 };

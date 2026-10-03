@@ -23,6 +23,7 @@ anyhow = "1"
 arboard = { version = "3", default-features = false }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
+cpal = "0.18"
 directories = "6"
 enigo = "0.6"
 fast_image_resize = "5"
@@ -37,6 +38,7 @@ image = { version = "0.25", default-features = false }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
 objc2-core-graphics = "0.3"
 openh264 = "0.9"
+opus-rs = "0.1"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rpassword = "7"
@@ -49,10 +51,11 @@ spake2 = "0.4"
 subtle = "2"
 sys-locale = "0.3"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 toml = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
+unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows = "0.62"
 # Only dari-check's input window; macOS and Windows need no optional platform features.

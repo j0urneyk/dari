@@ -2,13 +2,17 @@
 
 Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
 `dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
-**1.0** (`PROTOCOL_VERSION`).
+**2.0** (`PROTOCOL_VERSION`).
 
 ## Version compatibility
 
 `ClientHello` and `ServerHello` in the handshake exchange a `ProtocolVersion { major, minor }`. Peers with the same
 `major` are compatible. A `minor` bump only adds messages, and a new message is never sent to a peer that didn't
 advertise support for it. The host refuses a different `major` with `Rejected(IncompatibleVersion)`.
+
+The ALPN stays `dari/1` across majors on purpose. The hello layout hasn't changed since 1.0, so a peer on another
+major still completes TLS, decodes the hello, and gets that readable rejection instead of a TLS failure. Version 2.0
+added the stream kind tag described below; 0.0.1 apps speak 1.0 and can't connect to newer ones.
 
 ## Framing
 
@@ -28,14 +32,33 @@ message is handed to the caller only after it passes `Validate`.
 | Handshake | `HandshakeMessage` | 4 KiB | Bidirectional stream opened by the viewer |
 | Control | `ControlMessage` | 2 MiB | The handshake stream, reused once authenticated |
 | Video | `VideoPacket` | 16 MiB | Unidirectional stream opened by the host |
+| Audio | `AudioPacket` | One QUIC datagram (no length prefix) | Datagrams from the host |
 | Relay control | `RelayRequest` / `RelayResponse` | 2 MiB | Bidirectional stream to the relay (ALPN `dari-relay/2`) |
 
 The control channel's 2 MiB limit leaves room for clipboard text of up to 1 MiB, which travels on the same channel.
 After authentication only the codec of the handshake stream is swapped (`map_decoder`/`map_encoder`) to turn it
 into the control stream, so control messages that arrived right after the handshake and are already buffered
 aren't lost. The QUIC transport configuration limits how many streams the peer may open: a viewer can open exactly
-one bidirectional stream (handshake, then control) and no unidirectional streams, and only the host opens
-unidirectional streams for media.
+one bidirectional stream (handshake, then control) and no unidirectional streams. Once a session that allows file
+transfer starts, the host raises the viewer's limit to 4 concurrent unidirectional streams, used only for files.
+The host may open up to 4 at a time (video plus files).
+
+### Stream kinds
+
+Every unidirectional stream starts with one byte naming what it carries (`StreamKind`), followed by that kind's
+framed messages. The receiver reads the tag before choosing a codec, so several kinds can share the connection
+without depending on the order streams are opened in. A tag the receiver doesn't know is a protocol error and ends
+the session; a new kind is only ever sent to a peer whose version defines it.
+
+| Tag | Kind | Direction | Contents |
+| --- | --- | --- | --- |
+| `1` | `Video` | Host → viewer | Framed `VideoPacket`s, one stream for the whole session |
+| `2` | `File` | Either | An 8-byte big-endian `TransferId`, then the raw bytes of one accepted file |
+
+A file stream is finished after its last byte, so a clean end with exactly the offered size means the whole file
+arrived. A cancelled file's stream is reset instead, never finished. File streams run at a lower priority than
+video and control, so a large file doesn't delay frames or input. A stream that is reset before its header arrives
+is skipped; it doesn't end the session.
 
 ## Handshake
 
@@ -80,10 +103,41 @@ that hasn't been sent yet.
 | `Displays { displays, active }` | Host → viewer | Displays that can be shown (at most 16) and the current one |
 | `SelectDisplay(id)` | Viewer → host | Switch to another display |
 | `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
+| `SetAudio(on)` | Viewer → host | Start or stop sending system audio. Hosts send none until asked |
 | `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
+| `FileOffer { id, name, size }` | Both | The sender would like to transfer a file (see below) |
+| `FileAccept(id)` | Both | The receiver accepted; the sender opens the file's stream |
+| `FileDone(id)` | Both | The receiver saved the whole file |
+| `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
 
-`Availability` is one of `Available`, `PermissionDenied` (macOS permission missing), `Unavailable`, or
-`NotAllowed` (input in a view-only session).
+`HostStatus` reports `screen`, `input`, `files`, and `audio`. `Availability` is one of `Available`, `PermissionDenied`
+(macOS permission missing), `Unavailable`, or `NotAllowed` (input and files in a view-only session).
+
+## File transfer
+
+```text
+sender                                         receiver
+  │── FileOffer {id, name, size} ─────────────►│  checks policy; asks its user (viewer) or accepts (host)
+  │◄─────────────────────────── FileAccept(id) ─│  (or FileCancel {Declined})
+  │══ File stream: id, bytes…, finish ════════►│  writes <name>.part, checks the size, renames
+  │◄───────────────────────────── FileDone(id) ─│  (or FileCancel {Failed})
+```
+
+- The offering side picks `id`: hosts use even numbers and viewers odd ones, so a message about an id is never
+  ambiguous. An offer with the receiver's own parity, or a repeated id, is a protocol error. Messages about an id
+  that already finished are ignored, because a cancel and an accept can cross.
+- Either side can send `FileCancel` at any time; the sender resets the stream and the receiver deletes the partial
+  file.
+- Files flow only while `HostStatus.files` is `Available`, which needs a session that allows control and a host
+  with file transfer on. Otherwise offers are declined.
+- `name` is a single path component of at most 255 UTF-8 bytes, without `/`, `\`, control characters,
+  bidirectional overrides, or zero-width characters, and not `.` or `..`. Senders NFC-normalize it (macOS stores
+  names decomposed, which Windows would show as separate jamo) and apply the same sanitizing as receivers.
+- Receivers map the name onto the file system with `sanitize_file_name`: Windows-forbidden characters become `_`,
+  trailing dots and spaces are dropped, reserved device names (`CON`, `NUL`, `COM1`, …) get a `_` prefix, and long
+  names are shortened to 200 bytes, keeping the extension. A file never replaces an existing one; it is saved as
+  `name (1).ext`, `name (2).ext`, and so on.
+- A receiver tracks at most 32 offers at once and declines the rest.
 
 ## Input events
 
@@ -105,6 +159,29 @@ Hanja only on Windows, so macOS hosts ignore them.
 The ⌘↔Ctrl mapping is applied by the viewer (`ModifierMapping`). When the two sides' shortcut modifiers differ
 (`Meta` on macOS, `Control` elsewhere) and the setting is on, the two keys are swapped. So ⌘C from a macOS viewer
 arrives on a Windows host as Ctrl+C, and Ctrl+C from a Windows viewer arrives on a macOS host as ⌘C.
+
+## Audio
+
+```text
+AudioPacket { sequence: u32, data: Vec<u8> }
+```
+
+`data` is one Opus packet (RFC 6716, at most 1,276 bytes) holding 20 ms of 48 kHz stereo at about 96 kbit/s. Each
+packet is postcard-encoded into one QUIC datagram, so a lost packet is never resent: the viewer conceals up to three
+missing packets in a row with Opus packet loss concealment and drops packets that arrive late. `sequence` grows by
+one per packet and wraps.
+
+Audio flows only after the viewer sends `SetAudio(true)` and only while `HostStatus.audio` is `Available`, which
+needs the host's **Share sound** setting on and a platform that can record its output (Windows, or macOS 14.6 and
+later). It's available in view-only sessions too, since sound is output like the screen. If capture fails to start,
+the host reports `audio: Unavailable`. `SetAudio(false)` stops capture on the host.
+
+Only hosts send datagrams. A viewer accepts up to 64 KiB of buffered datagrams; a host announces a one-byte limit, so
+no viewer datagram fits and the host never reads any.
+
+The viewer plays with a jitter buffer: it waits until 60 ms are buffered, keeps at most 200 ms (dropping the oldest
+beyond that so latency can't grow), and re-buffers after running dry. Audio isn't synchronized to video; each plays
+as soon as it can.
 
 ## Video
 
@@ -160,5 +237,8 @@ reply. A `DeviceId` is in the range 100000000..=999999999, displayed as
 | Handshake timeout, concurrent handshakes | 10 s, 8 | `crates/net/src/endpoint.rs` |
 | Approval wait | 30 s | `crates/session/src/host_session.rs` |
 | Clipboard polling interval | 250 ms | `crates/session/src/clipboard.rs` |
+| File streams the viewer may open, offers tracked | 4, 32 | `crates/session/src/transfer.rs` |
+| Audio frame, bitrate, jitter buffer | 20 ms, 96 kbit/s, 60–200 ms | `crates/media/src/audio.rs` |
+| Datagram buffer: viewer / host | 64 KiB / 1 byte | `crates/net/src/tls.rs` |
 | Viewer input queue / reserved for keys | 512 / 128 | `crates/session/src/viewer.rs` |
 | mDNS service | `_dari._udp.local.` | `crates/net/src/discovery.rs` |

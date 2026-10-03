@@ -15,8 +15,8 @@ use anyhow::Context as _;
 use dari_media::StreamSettings;
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_session::{
-    HostConfig, HostEvent, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent, connect_viewer,
-    start_host,
+    HostConfig, HostEvent, HostPolicy, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent,
+    connect_viewer, start_host,
 };
 
 use crate::config::{data_directory, device_name, local_addresses, resolve_target};
@@ -28,9 +28,15 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
-            // The headless host has no one to ask; anyone with the password gets control.
-            require_approval: false,
-            clipboard: false,
+            policy: HostPolicy {
+                // The headless host has no one to ask; anyone with the password gets control.
+                require_approval: false,
+                clipboard: false,
+                // Files would land on this machine without anyone choosing to accept them.
+                file_transfer: false,
+                audio: true,
+            },
+            downloads: None,
             relay,
         },
         identity.clone(),
@@ -76,6 +82,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
                 Some(HostEvent::SessionEnded { peer, reason }) => {
                     println!("{} left: {reason}", peer.name);
                 }
+                Some(HostEvent::Transfer(_)) => {}
             }
         }
     }
@@ -103,6 +110,9 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
             client_name: device_name(),
             map_shortcut_modifier: true,
             clipboard: None,
+            downloads: None,
+            audio: None,
+            play_audio: false,
         },
         &password,
     )
@@ -129,6 +139,7 @@ pub(crate) async fn connect(address: &str, relay: &str) -> anyhow::Result<()> {
                 Some(ViewerEvent::HostStatus(status)) => {
                     println!("host screen: {:?}, host input: {:?}", status.screen, status.input);
                 }
+                Some(ViewerEvent::Transfer(_)) => {}
                 Some(ViewerEvent::Ended(reason)) => {
                     println!("Session ended: {reason}");
                     break;
