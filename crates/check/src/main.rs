@@ -2,8 +2,9 @@
 //!
 //! Run `dari-check host` on one machine and `dari-check view` on another. Neither side needs a
 //! channel besides the session itself: the viewer follows a fixed scenario (every display, a few
-//! pointer targets, the shortcut modifier, a clipboard round trip), and each side checks what it
-//! can observe on its own machine. Each prints `PASS`/`FAIL` lines and exits non-zero on any
+//! pointer targets, then clicking, scrolling, typing, and copying in an input window the host
+//! opens, and a clipboard round trip), and each side checks what it can observe on its own
+//! machine. Each prints `PASS`/`FAIL` lines and exits non-zero on any
 //! failure. `scripts/crosscheck/crosscheck.sh` drives both sides from a Mac.
 
 #![allow(
@@ -12,6 +13,7 @@
 )]
 
 mod host;
+mod probe;
 mod scenario;
 mod viewer;
 
@@ -42,17 +44,11 @@ fn main() -> ExitCode {
         )
         .init();
     dari_input::prepare_process();
-    let cli = Cli::parse();
-    let outcome = tokio::runtime::Runtime::new()
-        .map_err(anyhow::Error::from)
-        .and_then(|runtime| {
-            runtime.block_on(async {
-                match cli.command {
-                    Command::Host(args) => host::run(args).await,
-                    Command::View(args) => viewer::run(args).await,
-                }
-            })
-        });
+    let outcome = match Cli::parse().command {
+        Command::Host(args) if args.wants_probe() => host_with_probe(args),
+        Command::Host(args) => block_on(host::run(args, None)),
+        Command::View(args) => block_on(viewer::run(args)),
+    };
     match outcome {
         Ok(code) => code,
         Err(error) => {
@@ -61,6 +57,28 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn block_on(check: impl Future<Output = anyhow::Result<ExitCode>>) -> anyhow::Result<ExitCode> {
+    tokio::runtime::Runtime::new()?.block_on(check)
+}
+
+/// Hosts with the input window open. Windows must be made on the main thread (macOS insists), so
+/// the window's event loop runs there and the host on another thread; the host ends the loop
+/// when it is done.
+fn host_with_probe(args: host::HostArgs) -> anyhow::Result<ExitCode> {
+    let event_loop = winit::event_loop::EventLoop::<probe::Finished>::with_user_event().build()?;
+    let proxy = event_loop.create_proxy();
+    let log = probe::SharedProbe::default();
+    let host_log = log.clone();
+    let host = std::thread::spawn(move || {
+        let outcome = block_on(host::run(args, Some(host_log)));
+        let _closing = proxy.send_event(probe::Finished);
+        outcome
+    });
+    event_loop.run_app(&mut probe::Probe::new(log))?;
+    host.join()
+        .map_err(|_panic| anyhow::anyhow!("the host thread panicked"))?
 }
 
 /// This machine's name as the other side sees it.

@@ -11,13 +11,17 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use dari_media::DecodedFrame;
 use dari_net::AccessPassword;
-use dari_proto::{Availability, DeviceId, DisplayDescription, HostStatus, InputEvent, KeyCode, Os};
+use dari_proto::{
+    Availability, DeviceId, DisplayDescription, HostStatus, InputEvent, KeyCode, MouseButton,
+    NamedKey, Os,
+};
 use dari_session::{
     ClipboardAccess as _, SessionEndReason, SystemClipboard, ViewerConfig, ViewerEvent,
     ViewerHandle, ViewerTarget, connect_viewer,
 };
 use tokio::sync::{mpsc, watch};
 
+use crate::probe::{HANGUL_KEYS, TYPED_TEXT, WHEEL_LINES};
 use crate::scenario::{
     Approval, POINTER_TARGETS, Verdict, host_token, pointer_position, shortcut_modifier,
     viewer_token,
@@ -26,6 +30,8 @@ use crate::scenario::{
 const DEFAULT_PORT: u16 = 47821;
 /// Pause between pointer moves, so the host reads each landing before the next move.
 const POINTER_PAUSE: Duration = Duration::from_millis(400);
+/// Pause between key events, so the host's input method sees each one.
+const KEY_PAUSE: Duration = Duration::from_millis(60);
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
@@ -234,16 +240,80 @@ async fn run_scenario(
         }
     }
 
-    // The host checks this arrives translated to its own shortcut modifier.
-    let modifier = KeyCode::Named(shortcut_modifier(Os::current()));
-    for pressed in [true, false] {
-        viewer.send_input(InputEvent::Key {
-            key: modifier,
-            pressed,
-        });
+    use_input_window(viewer, session, verdict).await;
+    clipboard_round_trip(args, session, verdict).await;
+}
+
+/// Clicks, scrolls, types, and copies in the host's input window, which sits at the centre of the
+/// host's primary display; the host checks what reached it. A view-only host must ignore it all.
+async fn use_input_window(viewer: &ViewerHandle, session: &mut Session, verdict: &mut Verdict) {
+    let primary = session
+        .displays
+        .iter()
+        .find(|display| display.primary)
+        .or_else(|| session.displays.first())
+        .map(|display| display.id);
+    let Some(primary) = primary else { return };
+    if session.active != Some(primary) {
+        viewer.select_display(primary);
+        let switched = session
+            .wait_until(Duration::from_secs(10), |session| {
+                session.active == Some(primary)
+            })
+            .await;
+        verdict.check(switched, "switching back to the primary display");
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    clipboard_round_trip(args, session, verdict).await;
+    viewer.send_input(InputEvent::PointerMove(pointer_position((0.5, 0.5))));
+    tokio::time::sleep(POINTER_PAUSE).await;
+    for pressed in [true, false] {
+        viewer.send_input(InputEvent::PointerButton {
+            button: MouseButton::Left,
+            pressed,
+        });
+        tokio::time::sleep(KEY_PAUSE).await;
+    }
+    // Let the click bring the window to the front before keys arrive.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    viewer.send_input(InputEvent::Scroll {
+        dx: 0,
+        dy: WHEEL_LINES,
+    });
+    tokio::time::sleep(POINTER_PAUSE).await;
+
+    type_keys(viewer, TYPED_TEXT).await;
+    // Only Windows has a Hangul key to switch its Korean input method with.
+    if viewer.peer().os == Os::Windows {
+        tap(viewer, KeyCode::Named(NamedKey::HangulMode)).await;
+        type_keys(viewer, HANGUL_KEYS).await;
+        tap(viewer, KeyCode::Named(NamedKey::Space)).await;
+        tap(viewer, KeyCode::Named(NamedKey::HangulMode)).await;
+    }
+
+    // This machine's copy shortcut; the session translates the modifier to the host's.
+    let modifier = KeyCode::Named(shortcut_modifier(Os::current()));
+    press(viewer, modifier, true).await;
+    tap(viewer, KeyCode::Character('c')).await;
+    press(viewer, modifier, false).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+async fn type_keys(viewer: &ViewerHandle, keys: &str) {
+    for character in keys.chars() {
+        tap(viewer, KeyCode::Character(character)).await;
+    }
+}
+
+async fn tap(viewer: &ViewerHandle, key: KeyCode) {
+    press(viewer, key, true).await;
+    press(viewer, key, false).await;
+}
+
+/// Sends one key event and gives the host's input method time to handle it.
+async fn press(viewer: &ViewerHandle, key: KeyCode, pressed: bool) {
+    viewer.send_input(InputEvent::Key { key, pressed });
+    tokio::time::sleep(KEY_PAUSE).await;
 }
 
 /// Copies text here; with control allowed the host answers with its own once it arrives
