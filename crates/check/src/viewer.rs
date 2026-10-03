@@ -131,7 +131,8 @@ pub(crate) async fn run(args: ViewArgs) -> anyhow::Result<ExitCode> {
             client_name: crate::device_name(),
             map_shortcut_modifier: true,
             clipboard: Some(SystemClipboard::factory()),
-            frame_rate: None,
+            // The host's default; the checks are about correctness, not speed.
+            frame_rate: 30,
             downloads: None,
             audio: None,
             play_audio: false,

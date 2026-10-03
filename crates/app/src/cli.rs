@@ -112,7 +112,7 @@ pub(crate) async fn connect(address: &str, relay: &str, fps: Option<u16>) -> any
             client_name: device_name(),
             map_shortcut_modifier: true,
             clipboard: None,
-            frame_rate: Some(fps.unwrap_or_else(auto_frame_rate)),
+            frame_rate: fps.unwrap_or_else(auto_frame_rate),
             downloads: None,
             audio: None,
             play_audio: false,
