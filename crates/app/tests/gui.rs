@@ -505,7 +505,10 @@ mod macos {
     pub(super) fn home_window_shows_a_background_picture() {
         let data = tempfile::tempdir().unwrap();
         // A dusk sky over a sea: enough color and shape to judge the panels over it.
-        let picture = data.path().join("dusk.png");
+        // Downloaded wallpapers often have long hashed names; the settings page must fit them.
+        let picture = data
+            .path()
+            .join("cd9d26942bf8076958de1b204dadffbbf713401976dee9e71fa3e2757969be.png");
         image::RgbaImage::from_fn(1600, 1000, |x, y| {
             let (fx, fy) = (x as f32 / 1600., y as f32 / 1000.);
             if fy > 0.62 {
@@ -545,10 +548,45 @@ mod macos {
         save(&mut cx, window, "home-background");
         cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
         save(&mut cx, window, "home-background-dark");
+        cx.update_window(window, |_, window, cx| window.click("nav-settings", cx))
+            .unwrap();
+        save(&mut cx, window, "settings-background");
+    }
+
+    /// The settings page switches the theme and the window's translucency, and remembers both.
+    pub(super) fn settings_change_the_theme_and_translucency() {
+        let data = tempfile::tempdir().unwrap();
+        Settings {
+            port: 0,
+            ..Settings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let mut cx = app(data.path());
+        let (window, _home) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
+                    cx.new(|cx| Home::new(window, cx))
+                })
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.click("nav-settings", cx);
+            window.render_frame(cx);
+            window.click("theme-dark", cx);
+            window.click("translucent-window", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(cx.update(|cx| gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
+        let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
+        assert!(saved.contains(r#"theme = "dark""#), "{saved}");
+        assert!(saved.contains("translucent_window = false"), "{saved}");
+        save(&mut cx, window, "settings");
     }
 
     pub(super) fn run() {
-        let tests: [(&str, fn()); 4] = [
+        let tests: [(&str, fn()); 5] = [
             (
                 "connecting_through_the_form_asks_the_host_user_first",
                 connecting_through_the_form_asks_the_host_user_first,
@@ -560,6 +598,10 @@ mod macos {
             (
                 "home_window_shows_a_background_picture",
                 home_window_shows_a_background_picture,
+            ),
+            (
+                "settings_change_the_theme_and_translucency",
+                settings_change_the_theme_and_translucency,
             ),
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",

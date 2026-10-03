@@ -8,9 +8,8 @@ The home window has a sidebar and a page beside it. **This device** in the sideb
 connections, a pending connection request, a connected viewer, or remote access off) and opens the page for sharing
 this device; **Control a remote device** opens the connect form. Below them are **Nearby devices** and **Recent**.
 A connection request brings the **This device** page forward on its own, since it is declined after 30 seconds.
-The window's content runs up under a transparent title bar, and what is behind the window shows through blurred.
-**Background** at the bottom of the sidebar picks a picture (PNG, JPEG, or WebP) to show behind the home window
-instead; it is softened so the text over it stays readable, and **×** goes back to the desktop.
+**Settings** at the bottom of the sidebar opens the settings page. The window's content runs up under a
+transparent title bar.
 
 ## Home window
 
@@ -43,6 +42,15 @@ same network. Picking one opens this form with the address filled in and the cur
 
 **Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
 Windows, ⌘C arrives as Ctrl+C and copies as usual.
+
+### Settings
+
+| Item | Description |
+| --- | --- |
+| **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
+| **Translucent window** | On by default. Without a background picture, what is behind the window shows through, blurred. Viewer windows opened afterwards follow it too |
+| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. **Choose…** picks one, **Remove** goes back |
+| **Blur the picture** | Off by default. Blurs the background picture so text over it reads more easily |
 
 ## Viewer window
 
@@ -92,6 +100,9 @@ require_approval = true       # Ask before each connection
 clipboard_sync = true         # Share clipboard
 lan_discovery = true          # Show this device on the local network
 relay_address = ""            # Relay server
+theme = "system"              # Theme: "system", "light", or "dark"
+translucent_window = true     # Let what is behind the windows show through
+blur_background = false       # Blur the background picture
 # background_image = "/path/to/picture.jpg"  # Background picture; absent shows the desktop
 ```
 

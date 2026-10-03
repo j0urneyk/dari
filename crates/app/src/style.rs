@@ -14,6 +14,9 @@ use std::borrow::Cow;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable as _, StyledExt as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
+
+use crate::settings::ThemePreference;
+use crate::state::AppState;
 use gpui_kit::*;
 
 gpui_kit::assets::icon_assets!(
@@ -22,9 +25,11 @@ gpui_kit::assets::icon_assets!(
         Clipboard,
         Clock,
         Command,
+        Droplet,
         Gauge,
         Image,
         KeyRound,
+        Layers,
         Laptop,
         Monitor,
         MonitorSmartphone,
@@ -77,14 +82,50 @@ pub(crate) fn init(cx: &mut App) {
     apply(cx.window_appearance().into(), cx);
 }
 
-/// Follows the system's light or dark appearance while `window` is open.
+/// The theme the settings ask for, given the system's current appearance.
+fn preferred_mode(system: WindowAppearance, cx: &App) -> ThemeMode {
+    let preference = if cx.has_global::<AppState>() {
+        AppState::settings(cx).theme
+    } else {
+        ThemePreference::System
+    };
+    match preference {
+        ThemePreference::System => system.into(),
+        ThemePreference::Light => ThemeMode::Light,
+        ThemePreference::Dark => ThemeMode::Dark,
+    }
+}
+
+/// Applies the theme the settings ask for. Call after the settings change.
+pub(crate) fn sync_theme(cx: &mut App) {
+    let mode = preferred_mode(cx.window_appearance(), cx);
+    apply(mode, cx);
+}
+
+/// Follows the system's light or dark appearance while `window` is open, when the settings
+/// leave the theme to the system.
 pub(crate) fn follow_appearance<V: 'static>(
     window: &mut Window,
     cx: &mut Context<V>,
 ) -> Subscription {
     cx.observe_window_appearance(window, |_, window, cx| {
-        apply(window.appearance().into(), cx);
+        let mode = preferred_mode(window.appearance(), cx);
+        apply(mode, cx);
     })
+}
+
+/// Whether the settings let what is behind the windows show through them.
+pub(crate) fn translucent(cx: &App) -> bool {
+    !cx.has_global::<AppState>() || AppState::settings(cx).translucent_window
+}
+
+/// How a window's background is drawn under the current settings.
+pub(crate) fn window_background(cx: &App) -> WindowBackgroundAppearance {
+    if translucent(cx) {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
 }
 
 /// Loads gpui-kit's theme for `mode`, then paints it with Dari's colors.
@@ -112,7 +153,7 @@ pub(crate) fn window_options(
             // Centers the macOS traffic lights in the title bar strip.
             traffic_light_position: Some(point(px(16.), px(15.))),
         }),
-        window_background: WindowBackgroundAppearance::Blurred,
+        window_background: window_background(cx),
         ..TitleBar::window_options()
     }
 }
@@ -198,19 +239,28 @@ fn paint(theme: &mut Theme, dark: bool) {
 /// The sidebar's surface: the most translucent, so what is behind the window shows through.
 /// `over_picture` is true when the home window's background picture is behind it.
 pub(crate) fn sidebar_surface(over_picture: bool, cx: &App) -> Hsla {
+    let dark = cx.theme().is_dark();
+    let tint = if dark { hex(0x141518) } else { hex(0xEEEFF2) };
     // Gray text needs more cover on a light tint than on a dark one to stay readable.
-    match (cx.theme().is_dark(), over_picture) {
-        (true, true) => hex(0x141518).opacity(0.42),
-        (true, false) => hex(0x141518).opacity(0.55),
-        (false, true) => hex(0xEEEFF2).opacity(0.62),
-        (false, false) => hex(0xEEEFF2).opacity(0.6),
-    }
+    let cover = match (over_picture, translucent(cx), dark) {
+        (true, _, true) => 0.42,
+        (true, _, false) => 0.62,
+        (false, true, true) => 0.55,
+        (false, true, false) => 0.6,
+        (false, false, _) => 1.,
+    };
+    tint.opacity(cover)
 }
 
 /// The main content's surface: translucent enough to show what is behind it, opaque enough
 /// that text stays crisp.
 pub(crate) fn content_surface(over_picture: bool, cx: &App) -> Hsla {
-    surface(cx).opacity(if over_picture { 0.74 } else { 0.86 })
+    let cover = match (over_picture, translucent(cx)) {
+        (true, _) => 0.74,
+        (false, true) => 0.86,
+        (false, false) => 1.,
+    };
+    surface(cx).opacity(cover)
 }
 
 /// A wash for hovered rows; [`selected_fill`] is one step stronger.
@@ -329,7 +379,14 @@ pub(crate) fn setting_row(
                 .text_color(cx.theme().muted_foreground)
                 .child(Icon::new(icon).small()),
         )
-        .child(div().flex_1().min_w_0().text_sm().child(label.into()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .truncate()
+                .child(label.into()),
+        )
         .child(control)
 }
 
@@ -426,7 +483,7 @@ pub(crate) fn sidebar_row(
 }
 
 /// A segmented control: a tray holding [`segment`]s, one of them selected.
-pub(crate) fn segmented(segments: impl IntoIterator<Item = Stateful<Div>>, cx: &App) -> Div {
+pub(crate) fn segmented(segments: impl IntoIterator<Item = impl IntoElement>, cx: &App) -> Div {
     div()
         .h_flex()
         .flex_none()

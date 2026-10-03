@@ -91,6 +91,7 @@ fn run_gui() -> anyhow::Result<()> {
             init_ui(cx);
             runtime::TokioRuntime::install(runtime, cx);
             state::AppState::install(data_directory, cx);
+            style::sync_theme(cx);
 
             let options = style::window_options("Dari", WINDOW_SIZE, Some(MIN_WINDOW_SIZE), cx);
             if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {

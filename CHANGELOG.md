@@ -19,9 +19,10 @@ All notable changes to this project are documented here. The format follows
   addresses sit in the sidebar, and picking a device opens the connect form ready for its password. The look is
   quieter and denser, mostly in grays with blue kept for the main action, and both windows run their content up
   under a transparent title bar with the desktop showing through blurred.
-- A picture can be set as the home window's background from the bottom of the sidebar (PNG, JPEG, or WebP). It is
-  softened behind translucent panels so text stays readable, and is remembered as `background_image` in
-  `settings.toml`.
+- A new **Settings** page, at the bottom of the sidebar, chooses the theme (system, light, or dark), turns the
+  window's translucency on or off, and sets a background picture (PNG, JPEG, or WebP) behind the home window,
+  optionally blurred. They are saved in `settings.toml` as `theme`, `translucent_window`, `background_image`, and
+  `blur_background`. The device page's settings are now headed **Sharing**.
 
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.

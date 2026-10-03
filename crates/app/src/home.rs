@@ -31,6 +31,7 @@ use crate::backdrop;
 use crate::config::{device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
+use crate::settings::ThemePreference;
 use crate::state::AppState;
 use crate::style;
 use crate::text::text;
@@ -46,6 +47,8 @@ enum Page {
     Device,
     /// The form for connecting to another device.
     Connect,
+    /// How Dari looks: theme, translucency, the background picture.
+    Settings,
 }
 
 pub struct Home {
@@ -110,7 +113,8 @@ impl Home {
             self.set_backdrop(None, window, cx);
             return;
         };
-        let prepared = cx.background_spawn(async move { backdrop::prepare(&path) });
+        let blur = AppState::settings(cx).blur_background;
+        let prepared = cx.background_spawn(async move { backdrop::prepare(&path, blur) });
         self.backdrop_task = Some(cx.spawn_in(window, async move |this, cx| {
             let picture = prepared.await;
             let _updated = this.update_in(cx, |this, window, cx| match picture {
@@ -285,7 +289,20 @@ impl Home {
                     .overflow_y_scrollbar()
                     .child(navigation),
             )
-            .child(self.render_backdrop_row(cx))
+            .child(
+                div().px_2().pt_2().pb_3().child(
+                    style::sidebar_row(
+                        "nav-settings",
+                        IconName::Settings,
+                        text().settings_title,
+                        None,
+                        self.page == Page::Settings,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.show(Page::Settings, cx)))
+                    .test_support(),
+                ),
+            )
     }
 
     /// Nearby and recent devices; picking one opens the connect page for it.
@@ -350,12 +367,93 @@ impl Home {
         devices
     }
 
-    /// The sidebar's last row: choose or remove the background picture.
-    fn render_backdrop_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let chosen = AppState::settings(cx).background_image.clone();
-        let detail: SharedString = match &chosen {
-            None => text().background_desktop.into(),
-            Some(_) if self.backdrop_unreadable => text().background_unreadable.into(),
+    fn set_theme(theme: ThemePreference, cx: &mut Context<Self>) {
+        AppState::update_settings(cx, |settings| settings.theme = theme);
+        style::sync_theme(cx);
+        cx.notify();
+    }
+
+    fn set_translucent(translucent: bool, window: &mut Window, cx: &mut Context<Self>) {
+        AppState::update_settings(cx, |settings| settings.translucent_window = translucent);
+        window.set_background_appearance(style::window_background(cx));
+        cx.notify();
+    }
+
+    fn set_blur(&mut self, blur: bool, window: &mut Window, cx: &mut Context<Self>) {
+        AppState::update_settings(cx, |settings| settings.blur_background = blur);
+        self.load_backdrop(window, cx);
+    }
+
+    /// The settings page: how Dari looks.
+    fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .v_flex()
+            .gap_7()
+            .child(style::page_header(
+                text().settings_title,
+                text().settings_subtitle,
+                div(),
+                cx,
+            ))
+            .child(Self::render_appearance(cx))
+            .child(self.render_picture_settings(cx))
+    }
+
+    /// Theme and window translucency.
+    fn render_appearance(cx: &mut Context<Self>) -> Div {
+        let settings = AppState::settings(cx).clone();
+        let themes = [
+            (ThemePreference::System, "theme-system", text().theme_system),
+            (ThemePreference::Light, "theme-light", text().theme_light),
+            (ThemePreference::Dark, "theme-dark", text().theme_dark),
+        ];
+        let theme_choice = style::segmented(
+            themes.into_iter().map(|(theme, id, label)| {
+                style::segment(id, label, settings.theme == theme, cx)
+                    .on_click(cx.listener(move |_, _, _, cx| Self::set_theme(theme, cx)))
+                    .test_support()
+            }),
+            cx,
+        );
+        let translucency = div()
+            .v_flex()
+            .gap_1()
+            .child(style::setting_row(
+                AssetIcon::Layers,
+                text().translucent_window,
+                Switch::new("translucent-window")
+                    .accessibility_label(text().translucent_window)
+                    .checked(settings.translucent_window)
+                    .on_change(cx.listener(|_, checked: &bool, window, cx| {
+                        Self::set_translucent(*checked, window, cx);
+                    })),
+                cx,
+            ))
+            .child(
+                div()
+                    .pl_7()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text().translucent_window_hint),
+            );
+        div()
+            .v_flex()
+            .gap_2()
+            .child(style::eyebrow(text().appearance, cx))
+            .child(style::row_list(
+                [
+                    style::setting_row(IconName::Palette, text().theme, theme_choice, cx),
+                    translucency,
+                ],
+                cx,
+            ))
+    }
+
+    /// The background picture: choose, remove, blur.
+    fn render_picture_settings(&self, cx: &mut Context<Self>) -> Div {
+        let settings = AppState::settings(cx).clone();
+        let picture_name: SharedString = match &settings.background_image {
+            None => text().background_none.into(),
             Some(path) => path
                 .file_name()
                 .map_or_else(
@@ -364,35 +462,56 @@ impl Home {
                 )
                 .into(),
         };
-        div()
+        let buttons = div()
             .h_flex()
+            .flex_none()
             .gap_1()
-            .px_2()
-            .pt_2()
-            .pb_3()
-            .child(
-                style::sidebar_row(
-                    "backdrop",
-                    AssetIcon::Image,
-                    text().background,
-                    Some(detail),
-                    false,
-                    cx,
-                )
-                .flex_1()
-                .on_click(cx.listener(|_, _, window, cx| Self::choose_backdrop(window, cx))),
-            )
-            .when(chosen.is_some(), |row| {
-                row.child(
-                    Button::new("backdrop-clear")
+            .when(settings.background_image.is_some(), |buttons| {
+                buttons.child(
+                    Button::new("background-remove")
                         .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip(text().background_clear)
+                        .small()
+                        .label(text().background_remove)
                         .on_click(
                             cx.listener(|this, _, window, cx| this.clear_backdrop(window, cx)),
                         ),
                 )
+            })
+            .child(
+                Button::new("background-choose")
+                    .outline()
+                    .small()
+                    .label(text().background_choose)
+                    .on_click(cx.listener(|_, _, window, cx| Self::choose_backdrop(window, cx))),
+            );
+        div()
+            .v_flex()
+            .gap_2()
+            .child(style::eyebrow(text().background_picture, cx))
+            .child(style::row_list(
+                [
+                    style::setting_row(AssetIcon::Image, picture_name, buttons, cx),
+                    style::setting_row(
+                        AssetIcon::Droplet,
+                        text().background_blur,
+                        Switch::new("background-blur")
+                            .accessibility_label(text().background_blur)
+                            .checked(settings.blur_background)
+                            .on_change(cx.listener(|this, checked: &bool, window, cx| {
+                                this.set_blur(*checked, window, cx);
+                            })),
+                        cx,
+                    ),
+                ],
+                cx,
+            ))
+            .when(self.backdrop_unreadable, |section| {
+                section.child(style::callout(
+                    IconName::TriangleAlert,
+                    cx.theme().warning,
+                    div().text_sm().child(text().background_unreadable),
+                    cx,
+                ))
             })
     }
 
@@ -417,9 +536,10 @@ impl Home {
 
 impl Render for Home {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let page: AnyView = match self.page {
-            Page::Device => self.host.clone().into(),
-            Page::Connect => self.connect.clone().into(),
+        let page = match self.page {
+            Page::Device => self.host.clone().into_any_element(),
+            Page::Connect => self.connect.clone().into_any_element(),
+            Page::Settings => self.render_settings(cx).into_any_element(),
         };
         let over_picture = self.backdrop.is_some();
         div()
@@ -1083,7 +1203,7 @@ impl HostPanel {
         div()
             .v_flex()
             .gap_2()
-            .child(style::eyebrow(text().settings, cx))
+            .child(style::eyebrow(text().sharing_settings, cx))
             .child(style::row_list(
                 [
                     style::setting_row(
