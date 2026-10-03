@@ -244,7 +244,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
 | `permissions.rs` | Checking and requesting macOS Screen Recording and Accessibility permissions (refreshed every 3 seconds) |
-| `text.rs` | Korean and English UI strings (chosen by system locale) |
+| `text.rs` | Korean and English UI strings (chosen in the settings, or by system locale) |
 | `backdrop.rs` | Prepares the background picture off the main thread: the picture, sharp at the top and softening and fading out towards the window's middle, a small blurred copy faded the same way for the sidebar, and the average color of the part that shows, which tints the veil and sets how much it covers; it also holds the loaded picture as a global, so every page's panels can frost it |
 | `style.rs` | Dari's mostly monochrome light and dark palette over gpui-kit's theme (follows the system appearance), the 14px rem that sets the app's density, window options (transparent title bar, blurred translucent background), the extra Lucide icons and app icon the app embeds, and shared building blocks such as frosted-glass panels, sidebar rows, setting rows, callouts, and the segmented control |
 | `cli.rs` | Headless `host`/`connect` |
