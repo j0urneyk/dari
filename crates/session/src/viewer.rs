@@ -1,16 +1,22 @@
-//! The viewer side: authenticate, decode the host's screen, and send input.
+//! The viewer side: authenticate, decode the host's screen, play its audio, and send input.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use dari_input::ModifierMapping;
-use dari_media::{DecodedFrame, VideoDecoder};
-use dari_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay};
+use dari_media::{AudioOutputFactory, AudioPlayer, DecodedFrame, VideoDecoder};
+use dari_net::{
+    AccessPassword, ConnectError, FileReceiver, IncomingStream, MessageReceiver, PeerInfo,
+    SessionLink, SessionStreams, StreamError, connect, connect_via_relay,
+};
 use dari_proto::{
     Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
-    QualityPreset, VideoPacket,
+    QualityPreset, TransferId, VideoPacket,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
@@ -19,6 +25,7 @@ use tracing::{debug, warn};
 
 use crate::SessionEndReason;
 use crate::clipboard::{ClipboardFactory, ClipboardSync};
+use crate::transfer::{Transfer, TransferCommand, TransferPolicy, TransferStep, Transfers};
 
 /// Input events buffered towards the host. Pointer moves arrive at display rate; anything
 /// beyond this means the network is stalled and dropping is better than lagging.
@@ -38,6 +45,12 @@ pub struct ViewerConfig {
     pub map_shortcut_modifier: bool,
     /// Share clipboard text once the host allows control; `None` disables it.
     pub clipboard: Option<ClipboardFactory>,
+    /// Where files from the host are saved once the user accepts them; `None` declines them.
+    pub downloads: Option<PathBuf>,
+    /// Plays the host's system audio; `None` never asks the host for it.
+    pub audio: Option<AudioOutputFactory>,
+    /// Whether audio plays from the start (see [`ViewerHandle::set_audio`]).
+    pub play_audio: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +63,10 @@ pub enum ViewerEvent {
         displays: Vec<DisplayDescription>,
         active: u32,
     },
+    /// A file transfer changed. Offers from the host wait in
+    /// [`TransferState::Offered`](crate::TransferState::Offered) until
+    /// [`ViewerHandle::accept_transfer`] or [`ViewerHandle::cancel_transfer`].
+    Transfer(Transfer),
     /// The session is over; no further events follow.
     Ended(SessionEndReason),
 }
@@ -72,6 +89,9 @@ impl std::fmt::Debug for ViewerConfig {
             .field("client_name", &self.client_name)
             .field("map_shortcut_modifier", &self.map_shortcut_modifier)
             .field("clipboard", &self.clipboard.is_some())
+            .field("downloads", &self.downloads)
+            .field("audio", &self.audio.is_some())
+            .field("play_audio", &self.play_audio)
             .finish()
     }
 }
@@ -89,6 +109,9 @@ enum Outgoing {
     SelectDisplay(u32),
     SetQuality(QualityPreset),
     Clipboard(String),
+    /// A file transfer message.
+    Transfer(ControlMessage),
+    SetAudio(bool),
     Disconnect,
 }
 
@@ -100,6 +123,9 @@ pub struct ViewerHandle {
     frames: watch::Receiver<Option<Arc<DecodedFrame>>>,
     stats: Arc<ViewerStats>,
     link: Arc<SessionLink>,
+    transfers: mpsc::UnboundedSender<TransferCommand>,
+    /// `None` when the viewer has no audio output.
+    audio_enabled: Option<Arc<AtomicBool>>,
     supervisor: JoinHandle<()>,
 }
 
@@ -111,6 +137,8 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::SelectDisplay(_) => "SelectDisplay",
             Outgoing::SetQuality(_) => "SetQuality",
             Outgoing::Clipboard(_) => "Clipboard",
+            Outgoing::Transfer(_) => "Transfer",
+            Outgoing::SetAudio(_) => "SetAudio",
             Outgoing::Disconnect => "Disconnect",
         })
     }
@@ -151,6 +179,29 @@ impl ViewerHandle {
 
     pub fn rtt(&self) -> Duration {
         self.link.rtt()
+    }
+
+    /// Offers a file to the host. Progress arrives as [`ViewerEvent::Transfer`].
+    pub fn send_file(&self, path: PathBuf) {
+        let _sent = self.transfers.send(TransferCommand::Send(path));
+    }
+
+    /// Accepts a file the host offered; it is saved to the configured downloads folder.
+    pub fn accept_transfer(&self, id: TransferId) {
+        let _sent = self.transfers.send(TransferCommand::Accept(id));
+    }
+
+    /// Declines an offer from the host, or stops a running transfer in either direction.
+    pub fn cancel_transfer(&self, id: TransferId) {
+        let _sent = self.transfers.send(TransferCommand::Cancel(id));
+    }
+
+    /// Turns the host's audio on or off. Off, the host stops capturing it altogether.
+    pub fn set_audio(&self, enabled: bool) {
+        if let Some(audio_enabled) = &self.audio_enabled {
+            audio_enabled.store(enabled, Ordering::Relaxed);
+            let _sent = self.outgoing.try_send(Outgoing::SetAudio(enabled));
+        }
     }
 
     /// Tells the host the session is over and closes the connection.
@@ -198,6 +249,12 @@ pub async fn connect_viewer(
     let (frame_sender, frames) = watch::channel(None);
     let (events, event_receiver) = mpsc::unbounded_channel();
     let stats = Arc::new(ViewerStats::default());
+    let (transfers, transfer_commands) = mpsc::unbounded_channel();
+    let audio = config.audio.map(|output| ViewerAudio {
+        output,
+        enabled: Arc::new(AtomicBool::new(config.play_audio)),
+    });
+    let audio_enabled = audio.as_ref().map(|audio| audio.enabled.clone());
 
     let supervisor = tokio::spawn(supervise(
         link.clone(),
@@ -210,6 +267,9 @@ pub async fn connect_viewer(
         stats.clone(),
         mapping,
         config.clipboard,
+        config.downloads,
+        transfer_commands,
+        audio,
     ));
     Ok((
         ViewerHandle {
@@ -218,6 +278,8 @@ pub async fn connect_viewer(
             frames,
             stats,
             link,
+            transfers,
+            audio_enabled,
             supervisor,
         },
         event_receiver,
@@ -239,60 +301,64 @@ async fn supervise(
     stats: Arc<ViewerStats>,
     mapping: Option<ModifierMapping>,
     clipboard_factory: Option<ClipboardFactory>,
+    downloads: Option<PathBuf>,
+    mut transfer_commands: mpsc::UnboundedReceiver<TransferCommand>,
+    audio: Option<ViewerAudio>,
 ) {
+    let audio_task = audio
+        .as_ref()
+        .map(|audio| tokio::spawn(receive_audio(link.streams(), audio.clone())));
     let mut writer = tokio::spawn(write_control(control_sender, outgoing_receiver, mapping));
-    let mut video = Some(tokio::spawn(receive_video(
-        link.clone(),
+    let (files, mut incoming_files) = mpsc::channel(4);
+    let mut streams = Some(tokio::spawn(receive_streams(
+        link.streams(),
         frames,
         outgoing.clone(),
         stats,
+        files,
     )));
     let (clipboard_out, mut clipboard_changes) = mpsc::channel(4);
-    let mut clipboard: Option<ClipboardSync> = None;
+    let (mut session, mut transfer_steps) = ViewerSession::new(
+        &link,
+        outgoing.clone(),
+        events.clone(),
+        clipboard_factory,
+        clipboard_out,
+        downloads,
+        audio,
+    );
 
     let reason = loop {
         tokio::select! {
             message = control_receiver.next() => match message {
                 None => break SessionEndReason::ConnectionLost("control stream closed".into()),
                 Some(Err(error)) => break SessionEndReason::from_control_error(&error),
-                Some(Ok(ControlMessage::HostStatus(status))) => {
-                    // Clipboard sharing follows the host user's "allow control" decision, which is
-                    // independent of whether input injection itself works on the host.
-                    if status.input == Availability::NotAllowed {
-                        clipboard = None;
-                    } else if clipboard.is_none() {
-                        clipboard = clipboard_factory
-                            .clone()
-                            .and_then(|factory| ClipboardSync::start(factory, clipboard_out.clone()));
+                Some(Ok(message)) => {
+                    if let Err(reason) = session.handle(message).await {
+                        break reason;
                     }
-                    let _sent = events.send(ViewerEvent::HostStatus(status));
-                }
-                Some(Ok(ControlMessage::AwaitingApproval)) => {
-                    let _sent = events.send(ViewerEvent::AwaitingApproval);
-                }
-                Some(Ok(ControlMessage::Declined)) => break SessionEndReason::Declined,
-                Some(Ok(ControlMessage::Displays { displays, active })) => {
-                    let _sent = events.send(ViewerEvent::Displays { displays, active });
-                }
-                Some(Ok(ControlMessage::Clipboard(text))) => {
-                    if let Some(clipboard) = &clipboard {
-                        clipboard.apply_remote(text);
-                    }
-                }
-                Some(Ok(ControlMessage::Disconnect)) => break SessionEndReason::HostEnded,
-                Some(Ok(ControlMessage::Pong { .. } | ControlMessage::Ping { .. })) => {}
-                Some(Ok(
-                    ControlMessage::Input(_)
-                    | ControlMessage::RequestKeyframe
-                    | ControlMessage::SelectDisplay(_)
-                    | ControlMessage::SetQuality(_),
-                )) => {
-                    break SessionEndReason::ProtocolError("host sent a viewer message".into());
                 }
             },
             text = clipboard_changes.recv() => {
                 if let Some(text) = text {
                     let _sent = outgoing.try_send(Outgoing::Clipboard(text));
+                }
+            }
+            command = transfer_commands.recv() => {
+                if let Some(command) = command {
+                    let reply = session.transfers.command(command).await;
+                    session.send_transfer_reply(reply).await;
+                }
+            }
+            step = transfer_steps.recv() => {
+                if let Some(step) = step {
+                    let reply = session.transfers.step(step).await;
+                    session.send_transfer_reply(reply).await;
+                }
+            }
+            file = incoming_files.recv() => {
+                if let Some((id, stream)) = file {
+                    session.transfers.incoming_stream(id, stream);
                 }
             }
             result = &mut writer => {
@@ -303,15 +369,13 @@ async fn supervise(
                 };
             }
             result = async {
-                match video.as_mut() {
-                    Some(video) => video.await,
+                match streams.as_mut() {
+                    Some(streams) => streams.await,
                     None => std::future::pending().await,
                 }
             } => {
-                video = None;
+                streams = None;
                 match result {
-                    // The host stopped streaming (e.g. capture permission revoked) but keeps the
-                    // session; its HostStatus explains why.
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => break error,
                     Err(error) => break SessionEndReason::ConnectionLost(error.to_string()),
@@ -324,9 +388,13 @@ async fn supervise(
         let _flushed = tokio::time::timeout(Duration::from_millis(500), &mut writer).await;
         writer.abort();
     }
-    if let Some(video) = video {
-        video.abort();
+    if let Some(streams) = streams {
+        streams.abort();
     }
+    if let Some(audio_task) = audio_task {
+        audio_task.abort();
+    }
+    session.transfers.shut_down().await;
     if reason == SessionEndReason::ViewerLeft {
         // Closing now would discard a Disconnect still in flight; the host closes the
         // connection once it has read it.
@@ -351,6 +419,8 @@ async fn write_control(
             Outgoing::SelectDisplay(id) => ControlMessage::SelectDisplay(id),
             Outgoing::SetQuality(preset) => ControlMessage::SetQuality(preset),
             Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
+            Outgoing::Transfer(message) => message,
+            Outgoing::SetAudio(enabled) => ControlMessage::SetAudio(enabled),
             Outgoing::Disconnect => {
                 let _sent = control.send(&ControlMessage::Disconnect).await;
                 let _closed = control.close().await;
@@ -365,16 +435,220 @@ async fn write_control(
     Ok(())
 }
 
+/// The viewer's side of the control conversation: everything that reacts to host messages.
+struct ViewerSession {
+    outgoing: mpsc::Sender<Outgoing>,
+    events: mpsc::UnboundedSender<ViewerEvent>,
+    clipboard: Option<ClipboardSync>,
+    clipboard_factory: Option<ClipboardFactory>,
+    clipboard_out: mpsc::Sender<String>,
+    transfers: Transfers,
+    audio: Option<ViewerAudio>,
+    /// Whether the host was already told whether to send audio.
+    audio_requested: bool,
+}
+
+/// The viewer's audio output and whether the user wants sound.
+#[derive(Clone)]
+struct ViewerAudio {
+    output: AudioOutputFactory,
+    enabled: Arc<AtomicBool>,
+}
+
+impl ViewerSession {
+    fn new(
+        link: &SessionLink,
+        outgoing: mpsc::Sender<Outgoing>,
+        events: mpsc::UnboundedSender<ViewerEvent>,
+        clipboard_factory: Option<ClipboardFactory>,
+        clipboard_out: mpsc::Sender<String>,
+        downloads: Option<PathBuf>,
+        audio: Option<ViewerAudio>,
+    ) -> (Self, mpsc::UnboundedReceiver<TransferStep>) {
+        let transfer_events = events.clone();
+        let (transfers, steps) = Transfers::new(
+            false,
+            link.streams(),
+            TransferPolicy {
+                // Until the host reports that this session may transfer files.
+                allowed: false,
+                receive_dir: downloads,
+                auto_accept: false,
+            },
+            Arc::new(move |transfer| {
+                let _sent = transfer_events.send(ViewerEvent::Transfer(transfer));
+            }),
+        );
+        let session = Self {
+            outgoing,
+            events,
+            clipboard: None,
+            clipboard_factory,
+            clipboard_out,
+            transfers,
+            audio,
+            audio_requested: false,
+        };
+        (session, steps)
+    }
+
+    async fn handle(&mut self, message: ControlMessage) -> Result<(), SessionEndReason> {
+        match message {
+            ControlMessage::HostStatus(status) => {
+                // Clipboard sharing follows the host user's "allow control" decision, which is
+                // independent of whether input injection itself works on the host.
+                self.transfers
+                    .set_allowed(status.files == Availability::Available);
+                if status.input == Availability::NotAllowed {
+                    self.clipboard = None;
+                } else if self.clipboard.is_none() {
+                    self.clipboard = self.clipboard_factory.clone().and_then(|factory| {
+                        ClipboardSync::start(factory, self.clipboard_out.clone())
+                    });
+                }
+                // Hosts capture audio only for viewers that ask, once they can share it.
+                if status.audio == Availability::Available
+                    && !self.audio_requested
+                    && let Some(audio) = &self.audio
+                {
+                    self.audio_requested = true;
+                    if audio.enabled.load(Ordering::Relaxed) {
+                        let _sent = self.outgoing.try_send(Outgoing::SetAudio(true));
+                    }
+                }
+                let _sent = self.events.send(ViewerEvent::HostStatus(status));
+            }
+            ControlMessage::AwaitingApproval => {
+                let _sent = self.events.send(ViewerEvent::AwaitingApproval);
+            }
+            ControlMessage::Declined => return Err(SessionEndReason::Declined),
+            ControlMessage::Displays { displays, active } => {
+                let _sent = self.events.send(ViewerEvent::Displays { displays, active });
+            }
+            ControlMessage::Clipboard(text) => {
+                if let Some(clipboard) = &self.clipboard {
+                    clipboard.apply_remote(text);
+                }
+            }
+            message @ (ControlMessage::FileOffer(_)
+            | ControlMessage::FileAccept(_)
+            | ControlMessage::FileDone(_)
+            | ControlMessage::FileCancel { .. }) => {
+                let reply = self
+                    .transfers
+                    .message(message)
+                    .await
+                    .map_err(SessionEndReason::ProtocolError)?;
+                self.send_transfer_reply(reply).await;
+            }
+            ControlMessage::Disconnect => return Err(SessionEndReason::HostEnded),
+            ControlMessage::Pong { .. } | ControlMessage::Ping { .. } => {}
+            ControlMessage::Input(_)
+            | ControlMessage::RequestKeyframe
+            | ControlMessage::SelectDisplay(_)
+            | ControlMessage::SetQuality(_)
+            | ControlMessage::SetAudio(_) => {
+                return Err(SessionEndReason::ProtocolError(
+                    "host sent a viewer message".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_transfer_reply(&self, reply: Option<ControlMessage>) {
+        if let Some(message) = reply {
+            // Waits for room rather than dropping: a lost answer would stall the transfer.
+            let _sent = self.outgoing.send(Outgoing::Transfer(message)).await;
+        }
+    }
+}
+
+/// Plays the host's audio datagrams for the whole session, dropping them while muted. The
+/// output device opens with the first packet, so sessions without sound never hold it.
+async fn receive_audio(streams: SessionStreams, audio: ViewerAudio) {
+    let mut player = None;
+    while let Ok(packet) = streams.receive_audio().await {
+        if !audio.enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+        if player.is_none() {
+            match AudioPlayer::start(audio.output.clone()) {
+                Ok(started) => player = Some(started),
+                Err(error) => {
+                    warn!(%error, "cannot start audio playback");
+                    return;
+                }
+            }
+        }
+        if let Some(player) = &player {
+            player.push(packet.sequence, packet.data);
+        }
+    }
+    // Dropping joins the playback thread.
+    let _joined = tokio::task::spawn_blocking(move || drop(player)).await;
+}
+
+type VideoTask = Pin<Box<dyn Future<Output = Result<(), SessionEndReason>> + Send>>;
+
+/// Accepts the host's streams for the whole session: the video stream goes to the decoder,
+/// file streams to the session's transfers. Ends with an error only if the session should.
+async fn receive_streams(
+    streams: SessionStreams,
+    frames: watch::Sender<Option<Arc<DecodedFrame>>>,
+    outgoing: mpsc::Sender<Outgoing>,
+    stats: Arc<ViewerStats>,
+    files: mpsc::Sender<(TransferId, FileReceiver)>,
+) -> Result<(), SessionEndReason> {
+    let mut frames = Some(frames);
+    let mut video: Option<VideoTask> = None;
+    loop {
+        tokio::select! {
+            incoming = streams.accept() => match incoming {
+                Ok(IncomingStream::Video(stream)) => {
+                    let Some(frames) = frames.take() else {
+                        return Err(SessionEndReason::ProtocolError(
+                            "host opened a second video stream".into(),
+                        ));
+                    };
+                    video = Some(Box::pin(receive_video(
+                        stream,
+                        frames,
+                        outgoing.clone(),
+                        stats.clone(),
+                    )));
+                }
+                Ok(IncomingStream::File { id, stream }) => {
+                    if files.send((id, stream)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                Err(error @ StreamError::UnknownKind(_)) => {
+                    return Err(SessionEndReason::ProtocolError(error.to_string()));
+                }
+                Err(error) => return Err(SessionEndReason::ConnectionLost(error.to_string())),
+            },
+            result = async {
+                match video.as_mut() {
+                    Some(video) => video.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                video = None;
+                // A cleanly ended video stream means the host stopped streaming (e.g. capture
+                // permission revoked) but keeps the session; its HostStatus explains why.
+                result?;
+            }
+        }
+    }
+}
+
 async fn receive_video(
-    link: Arc<SessionLink>,
+    mut video: MessageReceiver<VideoPacket>,
     frames: watch::Sender<Option<Arc<DecodedFrame>>>,
     outgoing: mpsc::Sender<Outgoing>,
     stats: Arc<ViewerStats>,
 ) -> Result<(), SessionEndReason> {
-    let mut video = link
-        .accept_video_receiver()
-        .await
-        .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
     let (packets, packet_receiver) = mpsc::channel(DECODE_QUEUE);
     let decode_stats = stats.clone();
     let decoder = std::thread::Builder::new()

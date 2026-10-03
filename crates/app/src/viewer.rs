@@ -1,6 +1,8 @@
 //! A window showing one remote screen and forwarding keyboard and pointer input to it.
 
 use std::cell::Cell;
+use std::future::Future;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,15 +18,19 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    ActiveTheme, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
 
 use crate::keymap::{key_code, modifier_changes};
+use crate::state::AppState;
 use crate::style;
 use crate::text::text;
+use crate::transfers::{TransferAction, TransferActions, TransferList};
 use crate::video_layout::{ScrollAccumulator, letterbox, pointer_position};
 
 const WINDOW_SIZE: Size<Pixels> = Size {
@@ -52,6 +58,26 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-c", NoAction, Some(REMOTE_SCREEN_CONTEXT)),
         KeyBinding::new("ctrl-c", NoAction, Some(REMOTE_SCREEN_CONTEXT)),
     ]);
+}
+
+/// Asks the user for files to send; resolves to nothing if they cancel.
+pub(crate) fn pick_files(cx: &App) -> impl Future<Output = Vec<PathBuf>> + 'static {
+    let prompt = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: true,
+        prompt: Some(text().send_file.into()),
+    });
+    async move {
+        match prompt.await {
+            Ok(Ok(Some(paths))) => paths,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot open the file picker");
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Opens a viewer window for an established session.
@@ -82,6 +108,9 @@ pub struct ViewerView {
     displays: Vec<DisplayDescription>,
     active_display: Option<u32>,
     quality: QualityPreset,
+    /// Whether the host's sound plays (saved as a setting).
+    sound: bool,
+    transfers: TransferList,
     focus: FocusHandle,
     modifiers: Modifiers,
     held_keys: Vec<KeyCode>,
@@ -169,6 +198,8 @@ impl ViewerView {
             displays: Vec::new(),
             active_display: None,
             quality: QualityPreset::Balanced,
+            sound: AppState::settings(cx).play_audio,
+            transfers: TransferList::default(),
             focus,
             modifiers: Modifiers::default(),
             held_keys: Vec::new(),
@@ -212,6 +243,16 @@ impl ViewerView {
         self.ended.is_some()
     }
 
+    #[doc(hidden)]
+    pub fn can_send_files(&self) -> bool {
+        self.files_available()
+    }
+
+    #[doc(hidden)]
+    pub fn transfers(&self) -> Vec<dari_session::Transfer> {
+        self.transfers.transfers().to_vec()
+    }
+
     fn on_event(&mut self, event: ViewerEvent, cx: &mut Context<Self>) {
         match event {
             ViewerEvent::AwaitingApproval => self.awaiting_approval = true,
@@ -223,12 +264,91 @@ impl ViewerView {
                 self.displays = displays;
                 self.active_display = Some(active);
             }
+            ViewerEvent::Transfer(transfer) => self.transfers.update(transfer),
             ViewerEvent::Ended(reason) => {
                 self.ended = Some(reason);
                 self.session = None;
             }
         }
         cx.notify();
+    }
+
+    /// Whether the host can share its sound in this session.
+    fn audio_available(&self) -> bool {
+        self.session.is_some()
+            && self
+                .status
+                .is_some_and(|status| status.audio == Availability::Available)
+    }
+
+    fn toggle_sound(&mut self, cx: &mut Context<Self>) {
+        self.sound = !self.sound;
+        if let Some(session) = &self.session {
+            session.set_audio(self.sound);
+        }
+        let sound = self.sound;
+        AppState::update_settings(cx, |settings| settings.play_audio = sound);
+        cx.notify();
+    }
+
+    /// Whether the host lets this session exchange files right now.
+    fn files_available(&self) -> bool {
+        self.session.is_some()
+            && self
+                .status
+                .is_some_and(|status| status.files == Availability::Available)
+    }
+
+    fn send_files(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Some(session) = &self.session {
+            for path in paths {
+                session.send_file(path);
+            }
+        }
+    }
+
+    fn choose_files(cx: &mut Context<Self>) {
+        let picked = pick_files(cx);
+        cx.spawn(async move |this, cx| {
+            let paths = picked.await;
+            let _updated = this.update(cx, |this, _| this.send_files(paths));
+        })
+        .detach();
+    }
+
+    /// Paints the latest frame letterboxed, remembering where for pointer mapping.
+    fn screen_canvas(&self) -> impl IntoElement {
+        let image = self.image.clone();
+        let frame_size = self.frame_size;
+        let picture = self.picture.clone();
+        canvas(
+            move |bounds, _, _| {
+                let rect = letterbox(bounds, frame_size);
+                picture.set(Some(rect));
+                rect
+            },
+            move |_, rect, window, _| {
+                if let Some(image) = image {
+                    let _painted =
+                        window.paint_image(rect, rect, Corners::default(), image, 0, false);
+                }
+            },
+        )
+        .size_full()
+    }
+
+    fn render_transfers(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let list = self.transfers.render(cx)?;
+        Some(
+            div()
+                .flex_none()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .bg(style::content_surface(cx))
+                .child(list),
+        )
     }
 
     fn send(&mut self, event: InputEvent) {
@@ -325,6 +445,44 @@ impl ViewerView {
         cx.notify();
     }
 
+    /// The sound and file buttons, shown when the host offers them.
+    fn render_session_actions(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .h_flex()
+            .gap_3()
+            .when(self.audio_available(), |actions| {
+                actions.child(
+                    Button::new("sound")
+                        .small()
+                        .ghost()
+                        .icon(if self.sound {
+                            AssetIcon::Volume2
+                        } else {
+                            AssetIcon::VolumeX
+                        })
+                        .selected(self.sound)
+                        .label(if self.sound {
+                            text().sound_on
+                        } else {
+                            text().sound_off
+                        })
+                        .tooltip(text().toggle_sound)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_sound(cx))),
+                )
+            })
+            .when(self.files_available(), |actions| {
+                actions.child(
+                    Button::new("send-file")
+                        .small()
+                        .ghost()
+                        .icon(AssetIcon::FileUp)
+                        .label(text().send_file)
+                        .tooltip(text().drop_to_send)
+                        .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
+                )
+            })
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let live = self.session.is_some();
         let state = if !live {
@@ -376,6 +534,9 @@ impl ViewerView {
             .child(div().flex_1())
             .when(live, |toolbar| {
                 toolbar.child(self.render_stream_controls(cx))
+            })
+            .when(live, |toolbar| {
+                toolbar.child(style::no_drag(self.render_session_actions(cx)))
             })
             .when(live, |toolbar| {
                 toolbar.child(style::no_drag(
@@ -603,24 +764,7 @@ fn remote_button(button: MouseButton) -> RemoteButton {
 
 impl Render for ViewerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let image = self.image.clone();
-        let frame_size = self.frame_size;
-        let picture = self.picture.clone();
-        let screen = canvas(
-            move |bounds, _, _| {
-                let rect = letterbox(bounds, frame_size);
-                picture.set(Some(rect));
-                rect
-            },
-            move |_, rect, window, _| {
-                if let Some(image) = image {
-                    let _painted =
-                        window.paint_image(rect, rect, Corners::default(), image, 0, false);
-                }
-            },
-        )
-        .size_full();
-
+        let screen = self.screen_canvas();
         let surface = div()
             .id("remote-screen")
             .key_context(REMOTE_SCREEN_CONTEXT)
@@ -653,6 +797,15 @@ impl Render for ViewerView {
                 this.on_key(&event.keystroke, false);
                 cx.stop_propagation();
             }))
+            .when(self.files_available(), |surface| {
+                surface
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
+                        this.send_files(paths.0.iter().cloned());
+                    }))
+                    .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                        style.border_2().border_color(cx.theme().primary)
+                    })
+            })
             .child(screen)
             .children(self.render_loading())
             .children(self.render_overlay(cx));
@@ -662,6 +815,21 @@ impl Render for ViewerView {
             .size_full()
             .text_color(cx.theme().foreground)
             .child(self.render_toolbar(cx))
+            .children(self.render_transfers(cx))
             .child(surface)
+    }
+}
+
+impl TransferActions for ViewerView {
+    fn transfer_action(&mut self, action: TransferAction, cx: &mut Context<Self>) {
+        let action = self.transfers.apply(action, cx);
+        if let Some(session) = &self.session {
+            match action {
+                Some(TransferAction::Accept(id)) => session.accept_transfer(id),
+                Some(TransferAction::Cancel(id)) => session.cancel_transfer(id),
+                Some(TransferAction::Reveal(_) | TransferAction::ClearFinished) | None => {}
+            }
+        }
+        cx.notify();
     }
 }

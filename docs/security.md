@@ -13,7 +13,7 @@ attackers that goal holds against, how, and what it doesn't cover.
 | Active man in the middle (fake host, fake viewer, relaying) | Tampers with packets, impersonates either side | SPAKE2 confirmations are bound to the TLS exporter and the hello transcript. Splicing two TLS sessions yields different exporters and fails |
 | Online password guesser | Repeated connection attempts | 50-bit one-time password, per-source and global attempt throttling, password discarded after success |
 | Malicious viewer (knows the password) | Sends malformed messages | Message length limits and validation, host-user approval, view-only mode |
-| Malicious host | Sends malformed data to the viewer | Frame and decode size limits, display-string validation, clipboard limit |
+| Malicious host | Sends malformed data to the viewer, or files nobody asked for | Frame and decode size limits, display-string validation, clipboard limit; files from the host are saved only after the viewer user accepts them |
 | Relay operator or fake relay | Observes or tampers with relayed traffic | The session is end-to-end QUIC + SPAKE2; the relay only sees ciphertext |
 | mDNS spoofer on the same LAN | Advertises fake "nearby devices" | Advertisements are display hints only; connecting always uses PAKE authentication |
 
@@ -86,11 +86,39 @@ With connection approval on (the default), even a viewer that proved the passwor
 user decides. Capture, the input thread, the clipboard, and the display list are all created after the decision,
 and input that arrives while waiting is dropped. No answer within 30 seconds means decline.
 
-A **view-only** session never creates the input thread or clipboard sync, and reports
-`HostStatus.input = NotAllowed`. When the viewer receives this, it stops its own clipboard sharing too.
+A **view-only** session never creates the input thread or clipboard sync, never grants the viewer stream credit,
+and reports `HostStatus.input = NotAllowed` and `HostStatus.files = NotAllowed`. When the viewer receives this, it
+stops its own clipboard sharing and refuses to send or accept files too.
 
 The headless CLI host (`dari host`) has nobody to approve requests, so it gives control to any viewer that knows the
-password and turns off the clipboard. Use it only on servers or for testing.
+password and turns off the clipboard and file transfer. Use it only on servers or for testing.
+
+## Audio
+
+System audio can carry private sound (calls, notifications), so the host shares it only while **Share sound** is on,
+and only after the session was approved and the viewer asked with `SetAudio(true)`. Nothing is recorded while the
+host user decides. View-only viewers hear the host too, the same way they see its screen; turn **Share sound** off
+to prevent that. Audio travels as datagrams from host to viewer only: hosts announce a one-byte datagram limit, so a
+viewer can't send them any. Each datagram is decoded and validated (at most 1,276 bytes of Opus) before playback.
+
+## File transfer safety
+
+- **Who may transfer:** files flow only in sessions that allow control, with file transfer on at the host. A viewer
+  with control can already do anything the host user can, so the host saves its files to Downloads without asking.
+  Files from the host are different: the viewer user sees each offer (name and size) and saves or declines it, so a
+  host can't fill the viewer's disk unasked.
+- **Stream credit:** the QUIC limit on unidirectional streams a viewer may open stays at zero through the handshake
+  and approval, and in view-only sessions. The host raises it to 4 only when it enables file transfer, so an
+  unauthenticated or view-only peer can't push streams at all.
+- **Names:** a peer's file name is rejected unless it is a single component without separators, control
+  characters, bidirectional overrides, or zero-width characters (an `exe` disguised as `photo‮gnp.exe` is
+  refused). The receiver then makes it safe for both macOS and Windows and never overwrites an existing file. Files
+  are only ever written inside the downloads folder.
+- **Integrity and cleanup:** a file is written as `<name>.part` and renamed only when exactly the offered number of
+  bytes arrived on a cleanly finished stream. A reset stream, a short or long stream, a cancel from either side,
+  or the session ending deletes the partial file. QUIC already authenticates every byte end to end.
+- **Limits:** at most 32 offers are tracked per session; more are declined. File streams run below video and
+  control priority.
 
 ## Input and clipboard safety
 

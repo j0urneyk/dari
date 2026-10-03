@@ -14,6 +14,7 @@ mod settings;
 mod state;
 mod style;
 mod text;
+mod transfers;
 mod video_layout;
 mod viewer;
 
@@ -126,5 +127,26 @@ pub mod test_support {
     /// Everything the GUI needs before opening a window, as the app does at startup.
     pub fn init(cx: &mut gpui_kit::App) {
         crate::init_ui(cx);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod link_tests {
+    /// The app must keep launching on macOS 12 and 13 although cpal references Core Audio
+    /// functions that only exist from 14.2; `build.rs` weak-links the framework for that.
+    #[test]
+    fn core_audio_is_weakly_linked() {
+        let binary = std::env::current_exe().unwrap();
+        let output = std::process::Command::new("otool")
+            .arg("-L")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        let libraries = String::from_utf8_lossy(&output.stdout);
+        let core_audio = libraries
+            .lines()
+            .find(|line| line.contains("CoreAudio.framework"))
+            .expect("the app links Core Audio");
+        assert!(core_audio.contains("weak"), "{core_audio}");
     }
 }

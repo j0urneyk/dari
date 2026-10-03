@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dari_media::StreamSettings;
+use dari_media::{StreamSettings, SystemAudioOutput};
 use dari_net::{
     AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
     NearbyDevice, PeerInfo, fingerprint_hint,
@@ -28,14 +28,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backdrop;
-use crate::config::{device_name, local_addresses, resolve_target};
+use crate::config::{device_name, downloads_directory, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::settings::ThemePreference;
 use crate::state::AppState;
 use crate::style;
 use crate::text::text;
-use crate::viewer::open_viewer_window;
+use crate::transfers::{TransferAction, TransferActions, TransferList};
+use crate::viewer::{open_viewer_window, pick_files};
 
 /// How often permissions and network addresses are re-read while the window is open.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -205,6 +206,10 @@ impl Home {
 
     pub fn has_backdrop(&self, cx: &App) -> bool {
         backdrop::shown(cx).is_some()
+    }
+
+    pub fn host_transfers(&self, cx: &App) -> Vec<dari_session::Transfer> {
+        self.host.read(cx).transfers.transfers().to_vec()
     }
 }
 
@@ -661,6 +666,7 @@ pub(crate) struct HostPanel {
     /// A viewer waiting for the host user's decision.
     approval: Option<(PeerInfo, ApprovalRequest)>,
     relay: Option<RelayStatus>,
+    transfers: TransferList,
     relay_input: Entity<InputState>,
     advertisement: Option<Advertisement>,
     _relay_subscription: Subscription,
@@ -700,6 +706,7 @@ impl HostPanel {
             permissions: LocalPermissions::check(),
             approval: None,
             relay: None,
+            transfers: TransferList::default(),
             relay_input,
             _relay_subscription: relay_subscription,
             advertisement: None,
@@ -741,8 +748,8 @@ impl HostPanel {
             bind_address: (std::net::Ipv6Addr::UNSPECIFIED, AppState::settings(cx).port).into(),
             host_name: device_name(),
             stream: StreamSettings::default(),
-            require_approval: AppState::settings(cx).require_approval,
-            clipboard: AppState::settings(cx).clipboard_sync,
+            policy: AppState::settings(cx).host_policy(),
+            downloads: downloads_directory(),
             relay: Some(AppState::settings(cx).relay_address.clone())
                 .filter(|relay| !relay.is_empty()),
         };
@@ -779,6 +786,7 @@ impl HostPanel {
         self.password = None;
         self.viewer = None;
         self.session_status = None;
+        self.transfers.clear();
     }
 
     fn set_hosting(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -797,6 +805,7 @@ impl HostPanel {
             HostEvent::SessionStarted(peer) => {
                 self.viewer = Some(peer);
                 self.session_status = None;
+                self.transfers.clear();
                 // Authenticating consumed the one-time password; a new one is issued when the
                 // session ends, so showing the old one would only mislead.
                 self.password = None;
@@ -807,6 +816,7 @@ impl HostPanel {
                 self.session_status = Some(status);
             }
             HostEvent::Relay(status) => self.relay = Some(status),
+            HostEvent::Transfer(transfer) => self.transfers.update(transfer),
             HostEvent::SessionEnded { .. } => {
                 self.approval = None;
                 self.viewer = None;
@@ -866,7 +876,7 @@ impl HostPanel {
         AppState::update_settings(cx, change);
         let settings = AppState::settings(cx).clone();
         if let Hosting::Running(handle) = &self.hosting {
-            handle.set_policy(settings.require_approval, settings.clipboard_sync);
+            handle.set_policy(settings.host_policy());
             let port = handle.local_address().port();
             self.update_advertisement(port, cx);
         }
@@ -1196,39 +1206,77 @@ impl HostPanel {
                 about = about.child(note(text().input_permission_missing));
             }
         }
+        let files = self
+            .session_status
+            .is_some_and(|status| status.files == Availability::Available);
         let radius = cx.theme().radius_lg;
-        Some(
-            div()
-                .relative()
-                .h_flex()
-                .gap_3()
-                .p_3()
-                .rounded(radius)
-                .child(style::glass(radius, cx))
-                .child(style::tint(success, radius))
-                .child(style::icon_badge(
-                    AssetIcon::MonitorSmartphone,
-                    success,
-                    px(36.),
-                ))
-                .child(about)
-                .child(
-                    Button::new("session-end")
-                        .danger()
-                        .small()
-                        .icon(AssetIcon::Unplug)
-                        .label(text().end_session)
-                        .on_click(cx.listener(|this, _, _, _| {
-                            if let Hosting::Running(handle) = &this.hosting {
-                                handle.end_session();
-                            }
-                        })),
-                ),
-        )
+        let card = div()
+            .relative()
+            .h_flex()
+            .gap_3()
+            .p_3()
+            .rounded(radius)
+            .child(style::glass(radius, cx))
+            .child(style::tint(success, radius))
+            .child(style::icon_badge(
+                AssetIcon::MonitorSmartphone,
+                success,
+                px(36.),
+            ))
+            .child(about)
+            .child(
+                div()
+                    .h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .when(files, |buttons| {
+                        buttons.child(
+                            Button::new("session-send-file")
+                                .small()
+                                .icon(AssetIcon::FileUp)
+                                .label(text().send_file)
+                                .on_click(cx.listener(|_, _, _, cx| Self::choose_files(cx))),
+                        )
+                    })
+                    .child(
+                        Button::new("session-end")
+                            .danger()
+                            .small()
+                            .icon(AssetIcon::Unplug)
+                            .label(text().end_session)
+                            .on_click(cx.listener(|this, _, _, _| {
+                                if let Hosting::Running(handle) = &this.hosting {
+                                    handle.end_session();
+                                }
+                            })),
+                    ),
+            );
+        // Files sent either way during the session, under the card.
+        let transfers = self
+            .transfers
+            .render(cx)
+            .map(|list| style::panel(cx).p_4().child(list));
+        Some(div().v_flex().gap_3().child(card).children(transfers))
     }
 
-    fn render_settings(&self, cx: &mut Context<Self>) -> Div {
-        let settings = AppState::settings(cx).clone();
+    /// Asks for files and offers them to the connected viewer.
+    fn choose_files(cx: &mut Context<Self>) {
+        let picked = pick_files(cx);
+        cx.spawn(async move |this, cx| {
+            let paths = picked.await;
+            let _updated = this.update(cx, |this, _| {
+                if let Hosting::Running(handle) = &this.hosting {
+                    for path in paths {
+                        handle.send_file(path);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The relay server: its status and the field for its address.
+    fn render_relay(&self, cx: &mut Context<Self>) -> Div {
         let relay_state = match &self.relay {
             Some(RelayStatus::Registered(_)) => Some(cx.theme().success),
             Some(RelayStatus::Connecting) => Some(cx.theme().warning),
@@ -1246,70 +1294,105 @@ impl HostPanel {
             cx,
         ));
         match &self.relay {
-            Some(RelayStatus::Connecting) => {
-                relay = relay.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(text().relay_connecting),
-                );
-            }
-            Some(RelayStatus::Unavailable(error)) => {
-                relay = relay.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(text().relay_unavailable(error)),
-                );
-            }
-            Some(RelayStatus::Registered(_)) | None => {}
-        }
-        style::section(
-            text().sharing_settings,
-            style::row_list(
-                [
-                    style::setting_row(
-                        AssetIcon::ShieldCheck,
-                        text().require_approval,
-                        Switch::new("policy-approval")
-                            .accessibility_label(text().require_approval)
-                            .checked(settings.require_approval)
-                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                this.set_policy(|settings| settings.require_approval = checked, cx);
-                            })),
-                        cx,
-                    ),
-                    style::setting_row(
-                        AssetIcon::Clipboard,
-                        text().clipboard_sync,
-                        Switch::new("policy-clipboard")
-                            .accessibility_label(text().clipboard_sync)
-                            .checked(settings.clipboard_sync)
-                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                this.set_policy(|settings| settings.clipboard_sync = checked, cx);
-                            })),
-                        cx,
-                    ),
-                    style::setting_row(
-                        AssetIcon::Radar,
-                        text().lan_discovery,
-                        Switch::new("policy-discovery")
-                            .accessibility_label(text().lan_discovery)
-                            .checked(settings.lan_discovery)
-                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                this.set_policy(|settings| settings.lan_discovery = checked, cx);
-                            })),
-                        cx,
-                    ),
-                    relay,
-                ],
-                cx,
+            Some(RelayStatus::Connecting) => relay.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text().relay_connecting),
             ),
+            Some(RelayStatus::Unavailable(error)) => relay.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(text().relay_unavailable(error)),
+            ),
+            Some(RelayStatus::Registered(_)) | None => relay,
+        }
+    }
+
+    /// A switch for one sharing policy, saved through `update`.
+    fn policy_row(
+        id: &'static str,
+        icon: AssetIcon,
+        label: &'static str,
+        checked: bool,
+        update: fn(&mut crate::settings::Settings, bool),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        style::setting_row(
+            icon,
+            label,
+            Switch::new(id)
+                .accessibility_label(label)
+                .checked(checked)
+                .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                    let checked = *checked;
+                    this.set_policy(|settings| update(settings, checked), cx);
+                })),
             cx,
         )
+    }
+
+    fn render_settings(&self, cx: &mut Context<Self>) -> Div {
+        let settings = AppState::settings(cx).clone();
+        let text = text();
+        let rows = [
+            Self::policy_row(
+                "policy-approval",
+                AssetIcon::ShieldCheck,
+                text.require_approval,
+                settings.require_approval,
+                |settings, on| settings.require_approval = on,
+                cx,
+            ),
+            Self::policy_row(
+                "policy-clipboard",
+                AssetIcon::Clipboard,
+                text.clipboard_sync,
+                settings.clipboard_sync,
+                |settings, on| settings.clipboard_sync = on,
+                cx,
+            ),
+            Self::policy_row(
+                "policy-files",
+                AssetIcon::ArrowLeftRight,
+                text.file_transfer,
+                settings.file_transfer,
+                |settings, on| settings.file_transfer = on,
+                cx,
+            ),
+            Self::policy_row(
+                "policy-audio",
+                AssetIcon::Volume2,
+                text.share_audio,
+                settings.share_audio,
+                |settings, on| settings.share_audio = on,
+                cx,
+            ),
+            Self::policy_row(
+                "policy-discovery",
+                AssetIcon::Radar,
+                text.lan_discovery,
+                settings.lan_discovery,
+                |settings, on| settings.lan_discovery = on,
+                cx,
+            ),
+            self.render_relay(cx),
+        ];
+        style::section(text.sharing_settings, style::row_list(rows, cx), cx)
+    }
+}
+
+impl TransferActions for HostPanel {
+    fn transfer_action(&mut self, action: TransferAction, cx: &mut Context<Self>) {
+        let action = self.transfers.apply(action, cx);
+        if let (Some(TransferAction::Cancel(id)), Hosting::Running(handle)) =
+            (action, &self.hosting)
+        {
+            // The host saves the viewer's files without asking, so there is nothing to accept.
+            handle.cancel_transfer(id);
+        }
+        cx.notify();
     }
 }
 
@@ -1491,6 +1574,7 @@ impl ConnectPanel {
 
         let map_shortcut_modifier = AppState::settings(cx).map_shortcut_modifier;
         let clipboard_sync = AppState::settings(cx).clipboard_sync;
+        let play_audio = AppState::settings(cx).play_audio;
         let relay = AppState::settings(cx).relay_address.clone();
         let target = address_text.clone();
         let attempt = TokioRuntime::spawn(cx, async move {
@@ -1502,6 +1586,9 @@ impl ConnectPanel {
                 client_name: device_name(),
                 map_shortcut_modifier,
                 clipboard: clipboard_sync.then(SystemClipboard::factory),
+                downloads: downloads_directory(),
+                audio: Some(SystemAudioOutput::factory()),
+                play_audio,
             };
             connect_viewer(config, &password)
                 .await

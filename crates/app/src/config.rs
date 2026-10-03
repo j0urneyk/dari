@@ -17,6 +17,12 @@ pub(crate) fn data_directory() -> anyhow::Result<PathBuf> {
         .context("cannot determine the user's application data directory")
 }
 
+/// Where received files are saved: the user's Downloads folder.
+pub(crate) fn downloads_directory() -> Option<PathBuf> {
+    directories::UserDirs::new()
+        .and_then(|directories| directories.download_dir().map(PathBuf::from))
+}
+
 /// This computer's name as shown to the other side, made safe for the protocol's limits.
 pub(crate) fn device_name() -> String {
     let raw = gethostname::gethostname().to_string_lossy().into_owned();

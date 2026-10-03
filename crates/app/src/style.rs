@@ -25,10 +25,12 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
+        ArrowLeftRight,
         Clipboard,
         Clock,
         Command,
         Droplet,
+        FileUp,
         Gauge,
         Image,
         KeyRound,
@@ -40,6 +42,8 @@ gpui_kit::assets::icon_assets!(
         Radar,
         ShieldCheck,
         Unplug,
+        Volume2,
+        VolumeX,
         Waypoints,
     ]
 );

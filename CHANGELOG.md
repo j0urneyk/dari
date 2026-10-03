@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- File transfer in both directions for sessions that allow control. Drop files on the remote screen or use
+  **Send file…** in the viewer toolbar or the host's session card. The host saves the viewer's files to Downloads;
+  files from the host wait until the viewer user chooses **Save**. Names are normalized (no more separated Korean
+  jamo from macOS), made safe for Windows, and never overwrite an existing file; cancelled or failed transfers
+  leave no partial file. Turn it off with **Exchange files** on the host.
+- Sound from the remote computer. The host records what it plays (WASAPI loopback on Windows, a Core Audio process
+  tap on macOS 14.6 and later) and sends 20 ms Opus packets as QUIC datagrams; the viewer plays them through a small
+  jitter buffer and conceals lost packets. **Sound on / Sound off** in the viewer toolbar mutes it, which also stops
+  recording on the host. Hosts turn it off with **Share sound**. View-only viewers hear the host too.
+
 ### Fixed
 
 - A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
@@ -42,6 +54,9 @@ All notable changes to this project are documented here. The format follows
   of per relay, so one viewer's guesses no longer lock out everyone else using the same relay.
 - The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
   the new versions.
+- The session protocol is now version 2.0: every unidirectional stream starts with a byte naming its kind, so file
+  streams share the connection with video, and audio travels as datagrams. 0.0.1 apps are refused with a
+  clear "incompatible version" message; update both computers.
 
 ## [0.0.1] - 2026-10-03
 
