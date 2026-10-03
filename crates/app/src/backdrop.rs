@@ -4,11 +4,12 @@
 //! and softens into a calm surface below, where the UI sits. GPUI cannot blur what is behind an
 //! element, so the blurred layers are made here, ahead of time:
 //!
-//! - `picture`: the picture itself, or a blurred copy when the user asks for one.
+//! - `picture`: sharp across the top, crossfading into a heavily blurred copy further down, so
+//!   the lower part of the window shows only the picture's colors, not its detail. It is one
+//!   image because GPUI fades each layer separately: a sharp layer under a blurred one would
+//!   show through as soon as the picture is drawn translucent.
 //! - `frost`: a small, heavily blurred copy. Panels draw it under their tint, aligned with the
 //!   window, so they read as frosted glass over the picture.
-//! - `glow`: `frost` fading in from transparent at the top, laid over the picture so the lower
-//!   part of the window shows only the picture's colors, not its detail.
 //! - `average`: the picture's average color, which tints the veil over it so the surface
 //!   belongs to the picture instead of sitting on it.
 
@@ -27,20 +28,20 @@ const SOFT_SIDE: u32 = 480;
 /// How far the blurred layers are blurred, in pixels of the small picture.
 const FROST_SIGMA: f32 = 14.;
 
-/// Where `glow` starts and finishes fading in, as fractions of the picture's height.
-const GLOW_FROM: f32 = 0.08;
-const GLOW_TO: f32 = 0.28;
+/// Where `picture` starts and finishes crossfading into its blurred copy, as fractions of its
+/// height.
+const SOFTEN_FROM: f32 = 0.08;
+const SOFTEN_TO: f32 = 0.28;
 
 /// The layers made from the user's picture, ready to draw.
 pub(crate) struct Backdrop {
     pub(crate) picture: RenderImage,
     pub(crate) frost: RenderImage,
-    pub(crate) glow: RenderImage,
     /// The picture's average color, as sRGB bytes.
     pub(crate) average: [u8; 3],
 }
 
-/// Decodes the picture at `path` and makes its layers; `blur` blurs the picture itself too.
+/// Decodes the picture at `path` and makes its layers; `blur` blurs the top of the picture too.
 ///
 /// Slow for large photos; call it off the main thread.
 pub(crate) fn prepare(path: &Path, blur: bool) -> anyhow::Result<Backdrop> {
@@ -52,22 +53,24 @@ pub(crate) fn prepare(path: &Path, blur: bool) -> anyhow::Result<Backdrop> {
 
     let frost = imageops::fast_blur(&shrink(&decoded, SOFT_SIDE), FROST_SIGMA);
     let average = average(&frost);
-    let mut glow = frost.clone();
-    let height = glow.height().max(1);
-    for (_, y, pixel) in glow.enumerate_pixels_mut() {
-        #[expect(clippy::cast_precision_loss, reason = "pixel rows are small")]
-        let fraction = y as f32 / height as f32;
-        pixel.0[3] = alpha(smoothstep(GLOW_FROM, GLOW_TO, fraction));
-    }
+    let sharp = shrink(&decoded, MAX_SIDE);
+    let (width, height) = sharp.dimensions();
+    let soft = imageops::resize(&frost, width, height, imageops::FilterType::Triangle);
     let picture = if blur {
-        frost.clone()
+        soft
     } else {
-        shrink(&decoded, MAX_SIDE)
+        let mut picture = sharp;
+        let rows = height.max(1);
+        for (x, y, pixel) in picture.enumerate_pixels_mut() {
+            #[expect(clippy::cast_precision_loss, reason = "pixel rows are small")]
+            let blend = smoothstep(SOFTEN_FROM, SOFTEN_TO, y as f32 / rows as f32);
+            pixel.0 = mix(pixel.0, soft.get_pixel(x, y).0, blend);
+        }
+        picture
     };
     Ok(Backdrop {
         picture: render_image(picture),
         frost: render_image(frost),
-        glow: render_image(glow),
         average,
     })
 }
@@ -97,14 +100,20 @@ fn smoothstep(from: f32, to: f32, value: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
-fn alpha(fraction: f32) -> u8 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 0..=255 first"
-    )]
-    let alpha = (fraction * 255.).round().clamp(0., 255.) as u8;
-    alpha
+/// `from` moved `amount` of the way toward `to`, channel by channel.
+fn mix(from: [u8; 4], to: [u8; 4], amount: f32) -> [u8; 4] {
+    let mut mixed = from;
+    for (channel, (start, end)) in mixed.iter_mut().zip(from.into_iter().zip(to)) {
+        let value = f32::from(start) + (f32::from(end) - f32::from(start)) * amount;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between two bytes, so within 0..=255"
+        )]
+        let byte = value.round() as u8;
+        *channel = byte;
+    }
+    mixed
 }
 
 fn render_image(mut image: RgbaImage) -> RenderImage {
@@ -134,14 +143,13 @@ mod tests {
     }
 
     #[test]
-    fn a_large_photo_is_downscaled_and_its_soft_layers_are_small() {
+    fn a_large_photo_is_downscaled_and_its_frost_is_small() {
         let (_directory, path) = save(3000, 1500, [10, 20, 30, 255]);
         let sharp = prepare(&path, false).unwrap();
         assert_eq!(size(&sharp.picture), (2560, 1280));
         assert_eq!(size(&sharp.frost), (480, 240));
-        assert_eq!(size(&sharp.glow), (480, 240));
         let blurred = prepare(&path, true).unwrap();
-        assert_eq!(size(&blurred.picture), (480, 240));
+        assert_eq!(size(&blurred.picture), (2560, 1280));
     }
 
     #[test]
@@ -157,13 +165,24 @@ mod tests {
     }
 
     #[test]
-    fn the_glow_is_clear_at_the_top_and_solid_at_the_bottom() {
-        let (_directory, path) = save(64, 64, [200, 100, 50, 255]);
-        let glow = prepare(&path, false).unwrap().glow;
-        let bytes = glow.as_bytes(0).unwrap();
-        let alpha_at = |row: usize| bytes[row * 64 * 4 + 3];
-        assert_eq!(alpha_at(0), 0);
-        assert_eq!(alpha_at(63), 255);
+    fn the_picture_is_sharp_at_the_top_and_soft_at_the_bottom() {
+        // Stripes one pixel wide: sharp, neighbors differ; blurred, they all turn gray.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stripes.png");
+        RgbaImage::from_fn(200, 200, |x, _| {
+            let value = if x % 2 == 0 { 0 } else { 255 };
+            image::Rgba([value, value, value, 255])
+        })
+        .save(&path)
+        .unwrap();
+        let picture = prepare(&path, false).unwrap().picture;
+        let bytes = picture.as_bytes(0).unwrap();
+        let contrast = |row: usize| {
+            let at = |x: usize| i32::from(bytes[(row * 200 + x) * 4]);
+            (at(100) - at(101)).abs()
+        };
+        assert_eq!(contrast(0), 255);
+        assert!(contrast(199) < 20, "{}", contrast(199));
     }
 
     #[test]

@@ -136,7 +136,7 @@ impl Home {
     ) {
         if let Some(previous) = std::mem::replace(&mut self.backdrop, scenery) {
             // Each layer is a GPU texture; release the ones being replaced.
-            for layer in [previous.picture, previous.frost, previous.glow] {
+            for layer in [previous.picture, previous.frost] {
                 let _dropped = window.drop_image(layer);
             }
         }
@@ -279,7 +279,6 @@ impl Home {
             div()
                 .absolute()
                 .inset_0()
-                .opacity(style::picture_opacity(cx))
                 .child(
                     img(scenery.frost.clone())
                         .absolute()
@@ -287,7 +286,8 @@ impl Home {
                         .left_0()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .object_fit(ObjectFit::Cover),
+                        .object_fit(ObjectFit::Cover)
+                        .opacity(style::picture_opacity(cx)),
                 )
                 .child(
                     div()
@@ -578,19 +578,19 @@ impl Render for Home {
             None => style::TITLE_BAR_HEIGHT + px(16.),
         };
         let scenery = self.backdrop.as_ref().map(|scenery| {
-            let layer = |picture: Arc<RenderImage>| {
-                img(picture)
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .object_fit(ObjectFit::Cover)
-            };
             div()
                 .absolute()
                 .inset_0()
-                .opacity(style::picture_opacity(cx))
-                .child(layer(scenery.picture.clone()))
-                .child(layer(scenery.glow.clone()))
+                .child(
+                    // GPUI fades each primitive on its own, so only the picture is faded: the
+                    // veil keeps its cover and the pages stay readable.
+                    img(scenery.picture.clone())
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .opacity(style::picture_opacity(cx)),
+                )
                 .child(
                     div()
                         .absolute()
@@ -646,7 +646,6 @@ impl Render for Home {
 struct Scenery {
     picture: Arc<RenderImage>,
     frost: Arc<RenderImage>,
-    glow: Arc<RenderImage>,
     /// The picture's average color.
     average: Hsla,
 }
@@ -657,7 +656,6 @@ impl Scenery {
         Self {
             picture: Arc::new(prepared.picture),
             frost: Arc::new(prepared.frost),
-            glow: Arc::new(prepared.glow),
             average: rgb(u32::from_be_bytes([0, red, green, blue])).into(),
         }
     }
