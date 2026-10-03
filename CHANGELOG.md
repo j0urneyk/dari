@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   of per relay, so one viewer's guesses no longer lock out everyone else using the same relay.
 - The relay protocol is now `dari-relay/2`. Update relays and apps together; 0.0.1 apps and relays can't talk to
   the new versions.
+- The session protocol is now version 2.0: every unidirectional stream starts with a byte naming its kind, which
+  lets future audio and file-transfer streams share the connection with video. 0.0.1 apps are refused with a
+  clear "incompatible version" message; update both computers.
 
 ## [0.0.1] - 2026-10-03
 

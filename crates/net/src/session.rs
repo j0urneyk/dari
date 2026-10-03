@@ -6,8 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dari_proto::{
-    CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, VIDEO_FRAME_LIMIT, VideoPacket,
+    CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, StreamKind, VIDEO_FRAME_LIMIT,
+    VideoPacket,
 };
+use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 use crate::handshake::HandshakeChannel;
@@ -108,25 +111,29 @@ impl SessionLink {
     }
 
     /// Host side: opens the stream that carries encoded video to the viewer.
-    pub async fn open_video_sender(
-        &self,
-    ) -> Result<MessageSender<VideoPacket>, quinn::ConnectionError> {
-        let stream = self.connection.open_uni().await?;
+    pub async fn open_video_sender(&self) -> Result<MessageSender<VideoPacket>, StreamError> {
+        let stream = self.open_stream(StreamKind::Video).await?;
         Ok(FramedWrite::new(
             stream,
             MessageCodec::new(VIDEO_FRAME_LIMIT),
         ))
     }
 
-    /// Viewer side: waits for the host's video stream.
-    pub async fn accept_video_receiver(
-        &self,
-    ) -> Result<MessageReceiver<VideoPacket>, quinn::ConnectionError> {
-        let stream = self.connection.accept_uni().await?;
-        Ok(FramedRead::new(
-            stream,
-            MessageCodec::new(VIDEO_FRAME_LIMIT),
-        ))
+    /// Waits for the next unidirectional stream the peer opens and reads its kind.
+    pub async fn accept_stream(&self) -> Result<IncomingStream, StreamError> {
+        let mut stream = self.connection.accept_uni().await?;
+        match read_stream_kind(&mut stream).await? {
+            StreamKind::Video => Ok(IncomingStream::Video(FramedRead::new(
+                stream,
+                MessageCodec::new(VIDEO_FRAME_LIMIT),
+            ))),
+        }
+    }
+
+    async fn open_stream(&self, kind: StreamKind) -> Result<quinn::SendStream, StreamError> {
+        let mut stream = self.connection.open_uni().await?;
+        stream.write_u8(kind.tag()).await?;
+        Ok(stream)
     }
 
     /// Current smoothed round-trip time estimate.
@@ -156,6 +163,28 @@ impl Drop for SessionLink {
     }
 }
 
+/// A unidirectional stream the peer opened, ready to read with the codec its kind calls for.
+#[derive(Debug)]
+pub enum IncomingStream {
+    Video(MessageReceiver<VideoPacket>),
+}
+
+#[derive(Debug, Error)]
+pub enum StreamError {
+    #[error("connection lost: {0}")]
+    Connection(#[from] quinn::ConnectionError),
+    #[error("stream i/o failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// The peer opened a stream whose kind this protocol version doesn't define.
+    #[error("the peer opened a stream of unknown kind {0}")]
+    UnknownKind(u8),
+}
+
+async fn read_stream_kind<R: AsyncRead + Unpin>(stream: &mut R) -> Result<StreamKind, StreamError> {
+    let tag = stream.read_u8().await?;
+    StreamKind::from_tag(tag).ok_or(StreamError::UnknownKind(tag))
+}
+
 /// Application close codes.
 struct VarIntCode(u32);
 
@@ -166,5 +195,38 @@ impl VarIntCode {
 impl From<VarIntCode> for quinn::VarInt {
     fn from(code: VarIntCode) -> Self {
         quinn::VarInt::from_u32(code.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stream_kind_is_read_from_the_first_byte() {
+        let mut stream: &[u8] = &[StreamKind::Video.tag(), 0xaa];
+        assert_eq!(
+            read_stream_kind(&mut stream).await.ok(),
+            Some(StreamKind::Video)
+        );
+        assert_eq!(stream, [0xaa]);
+    }
+
+    #[tokio::test]
+    async fn unknown_stream_kind_is_an_error() {
+        let mut stream: &[u8] = &[0xee];
+        assert!(matches!(
+            read_stream_kind(&mut stream).await,
+            Err(StreamError::UnknownKind(0xee))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_without_a_kind_is_an_error() {
+        let mut stream: &[u8] = &[];
+        assert!(matches!(
+            read_stream_kind(&mut stream).await,
+            Err(StreamError::Io(_))
+        ));
     }
 }

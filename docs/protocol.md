@@ -2,13 +2,17 @@
 
 Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
 `dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
-**1.0** (`PROTOCOL_VERSION`).
+**2.0** (`PROTOCOL_VERSION`).
 
 ## Version compatibility
 
 `ClientHello` and `ServerHello` in the handshake exchange a `ProtocolVersion { major, minor }`. Peers with the same
 `major` are compatible. A `minor` bump only adds messages, and a new message is never sent to a peer that didn't
 advertise support for it. The host refuses a different `major` with `Rejected(IncompatibleVersion)`.
+
+The ALPN stays `dari/1` across majors on purpose. The hello layout hasn't changed since 1.0, so a peer on another
+major still completes TLS, decodes the hello, and gets that readable rejection instead of a TLS failure. Version 2.0
+added the stream kind tag described below; 0.0.1 apps speak 1.0 and can't connect to newer ones.
 
 ## Framing
 
@@ -36,6 +40,17 @@ into the control stream, so control messages that arrived right after the handsh
 aren't lost. The QUIC transport configuration limits how many streams the peer may open: a viewer can open exactly
 one bidirectional stream (handshake, then control) and no unidirectional streams, and only the host opens
 unidirectional streams for media.
+
+### Stream kinds
+
+Every unidirectional stream starts with one byte naming what it carries (`StreamKind`), followed by that kind's
+framed messages. The receiver reads the tag before choosing a codec, so several kinds can share the connection
+without depending on the order streams are opened in. A tag the receiver doesn't know is a protocol error and ends
+the session; a new kind is only ever sent to a peer whose version defines it.
+
+| Tag | Kind | Direction | Contents |
+| --- | --- | --- | --- |
+| `1` | `Video` | Host → viewer | Framed `VideoPacket`s, one stream for the whole session |
 
 ## Handshake
 

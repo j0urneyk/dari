@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use dari_input::ModifierMapping;
 use dari_media::{DecodedFrame, VideoDecoder};
-use dari_net::{AccessPassword, ConnectError, PeerInfo, SessionLink, connect, connect_via_relay};
+use dari_net::{
+    AccessPassword, ConnectError, IncomingStream, PeerInfo, SessionLink, StreamError, connect,
+    connect_via_relay,
+};
 use dari_proto::{
     Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent, Os,
     QualityPreset, VideoPacket,
@@ -371,10 +374,11 @@ async fn receive_video(
     outgoing: mpsc::Sender<Outgoing>,
     stats: Arc<ViewerStats>,
 ) -> Result<(), SessionEndReason> {
-    let mut video = link
-        .accept_video_receiver()
-        .await
-        .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
+    let IncomingStream::Video(mut video) =
+        link.accept_stream().await.map_err(|error| match error {
+            StreamError::UnknownKind(_) => SessionEndReason::ProtocolError(error.to_string()),
+            _ => SessionEndReason::ConnectionLost(error.to_string()),
+        })?;
     let (packets, packet_receiver) = mpsc::channel(DECODE_QUEUE);
     let decode_stats = stats.clone();
     let decoder = std::thread::Builder::new()

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use dari_net::{
     AccessPassword, ConnectError, DeviceIdentity, HandshakeError, HostEndpoint, HostSettings,
-    connect,
+    IncomingStream, connect,
 };
 use dari_proto::{ControlMessage, RejectReason, VideoPacket};
 use futures_util::{SinkExt, StreamExt};
@@ -86,7 +86,7 @@ async fn authenticated_session_exchanges_control_and_video() {
     };
     let mut video_tx = host_link.open_video_sender().await.unwrap();
     video_tx.send(&packet).await.unwrap();
-    let mut video_rx = viewer_link.accept_video_receiver().await.unwrap();
+    let IncomingStream::Video(mut video_rx) = viewer_link.accept_stream().await.unwrap();
     assert_eq!(video_rx.next().await.unwrap().unwrap(), packet);
 }
 

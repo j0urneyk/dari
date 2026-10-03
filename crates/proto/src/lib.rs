@@ -8,6 +8,7 @@ mod control;
 mod handshake;
 mod input;
 mod relay;
+mod stream;
 mod validate;
 mod version;
 mod video;
@@ -30,6 +31,7 @@ pub use relay::{
     Allocation, DEFAULT_RELAY_PORT, DeviceId, RELAY_ACK_MAGIC, RELAY_ALPN, RELAY_BIND_MAGIC,
     RELAY_TOKEN_LEN, RelayError, RelayRequest, RelayResponse,
 };
+pub use stream::StreamKind;
 pub use validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, sanitize_display_text};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};
 pub use video::VideoPacket;
