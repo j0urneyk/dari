@@ -34,13 +34,15 @@ pub use audio::{
     SystemAudioCapturer, SystemAudioOutput, spawn_audio_stream,
 };
 pub use codec::{
-    CodecError, DecodedFrame, EncodedFrame, EncoderSettings, VideoDecoder, VideoEncoder,
+    CodecError, DecodedFrame, EncodedFrame, EncoderSettings, FrameDelivery, VideoDecoder,
+    VideoEncoder,
 };
 pub use display::{CaptureError, DisplayCapturer, DisplayInfo, list_displays};
 pub use frame::{CapturedFrame, RgbaFrame};
 pub use permission::{PermissionState, request_screen_capture_access, screen_capture_access};
 pub use scale::{FrameScaler, MAX_ENCODED_LONG_EDGE, fit_within};
 pub use stream::{
-    CaptureStream, ScreenCapturer, StreamError, StreamSettings, StreamStats, spawn_capture_stream,
+    CaptureStream, FRAMES_IN_FLIGHT, ScreenCapturer, StreamError, StreamSettings, StreamStats,
+    spawn_capture_stream,
 };
 pub use synthetic::SyntheticCapturer;

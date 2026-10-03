@@ -1,7 +1,7 @@
 //! The host's capture → scale → encode loop on a dedicated thread.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::codec::{CodecError, EncodedFrame, EncoderSettings, VideoEncoder};
+use crate::codec::{CodecError, EncodedFrame, EncoderSettings, FrameDelivery, VideoEncoder};
 use crate::display::CaptureError;
 use crate::frame::CapturedFrame;
 use crate::scale::FrameScaler;
@@ -77,7 +77,9 @@ pub struct StreamStats {
     pub frames_encoded: AtomicU64,
     /// Frames dropped before encoding because the consumer had not taken the previous one yet.
     pub frames_skipped: AtomicU64,
-    /// Time spent scaling and encoding, in microseconds.
+    /// Time from capturing each encoded frame to its delivery (scaling and encoding latency),
+    /// in microseconds. Frames overlap in a hardware encoder, so this is not the time the
+    /// thread was busy.
     pub encode_micros: AtomicU64,
     /// Whether the frames so far came from a hardware encoder.
     pub hardware_encoding: AtomicBool,
@@ -87,6 +89,8 @@ pub struct StreamStats {
 struct StreamControl {
     stop: AtomicBool,
     keyframe_requested: AtomicBool,
+    /// Frames submitted to the encoder and not yet delivered or dropped.
+    in_flight: AtomicUsize,
     stats: StreamStats,
 }
 
@@ -137,13 +141,21 @@ const CAPTURE_FAILURE_LIMIT: Duration = Duration::from_secs(30);
 /// Longest wait for a self-paced source, so a stop request is noticed promptly.
 const SOURCE_WAIT: Duration = Duration::from_millis(50);
 
+/// How many frames the encoder may work on at once. VideoToolbox takes a new frame while the
+/// previous one is still being encoded, so a frame that takes longer than the frame interval
+/// (about 8 ms at 2560×1662) does not cap the frame rate. A sink needs room for this many frames
+/// for the stream to benefit.
+pub const FRAMES_IN_FLIGHT: usize = 2;
+
 /// Starts capturing on a new thread.
 ///
 /// `open_capturer` runs on that thread, so platform capture handles never cross threads.
-/// Encoded frames are delivered to `sink`; a fatal error is delivered as the last item. Frames
-/// are only encoded when `sink` has room, so a slow network drops whole frames *before*
-/// encoding and the H.264 reference chain stays intact. Transient capture failures (a secure
-/// desktop on Windows, a display mode change) are retried for up to 30 seconds.
+/// Encoded frames are delivered to `sink`, each as soon as it is encoded; a fatal error is
+/// delivered as the last item. A frame is only encoded while no encoded frame is waiting in
+/// `sink` and fewer than [`FRAMES_IN_FLIGHT`] are being encoded, with room reserved for each, so
+/// a slow network drops whole frames *before* encoding and the H.264 reference chain stays
+/// intact. Transient capture failures (a secure desktop on Windows, a display mode change) are
+/// retried for up to 30 seconds.
 pub fn spawn_capture_stream<C, F>(
     open_capturer: F,
     settings: StreamSettings,
@@ -174,7 +186,7 @@ fn run<C, F>(
     open_capturer: F,
     settings: StreamSettings,
     sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
-    control: &StreamControl,
+    control: &Arc<StreamControl>,
 ) -> Result<(), StreamError>
 where
     C: ScreenCapturer,
@@ -206,7 +218,7 @@ where
             }
             next_frame = (next_frame + interval).max(now);
             // Capturing is a polled source's expensive step; skip it while the consumer is behind.
-            if sink.capacity() == 0 {
+            if consumer_is_behind(sink, control) {
                 control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -221,7 +233,12 @@ where
                 frame
             }
             Ok(None) => match &last_frame {
-                Some(frame) if control.keyframe_requested.load(Ordering::Relaxed) => frame.clone(),
+                Some(frame)
+                    if control.keyframe_requested.load(Ordering::Relaxed)
+                        || encoder.has_lost_frames() =>
+                {
+                    frame.clone()
+                }
                 _ => continue,
             },
             Err(error @ CaptureError::Backend(_))
@@ -242,18 +259,22 @@ where
             }
         };
 
-        let permit = match sink.try_reserve() {
+        if consumer_is_behind(sink, control) {
+            control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let permit = match sink.clone().try_reserve_owned() {
             Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(())) => {
+            Err(mpsc::error::TrySendError::Full(_)) => {
                 control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            Err(mpsc::error::TrySendError::Closed(())) => {
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 debug!("capture sink closed");
                 return Ok(());
             }
         };
-        let started = Instant::now();
+        let deliver = delivery(permit, control.clone());
         let frame = match captured {
             CapturedFrame::Rgba(frame) => {
                 CapturedFrame::Rgba(scaler.fit(frame, settings.max_long_edge))
@@ -264,29 +285,67 @@ where
         if control.keyframe_requested.swap(false, Ordering::Relaxed) {
             encoder.request_keyframe();
         }
-        let encoded = encoder.encode(&frame);
-        control.stats.encode_micros.fetch_add(
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+        let submitted = encoder.submit(&frame, deliver);
         control
             .stats
             .hardware_encoding
             .store(encoder.is_hardware(), Ordering::Relaxed);
-        match encoded {
-            Ok(Some(encoded)) => {
-                control.stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
-                permit.send(Ok(encoded));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                warn!(%error, "capture stream stopped");
-                permit.send(Err(error.into()));
-                return Ok(());
-            }
+        if let Err(error) = submitted {
+            warn!(%error, "capture stream stopped");
+            deliver_error(sink, control, error.into());
+            return Ok(());
         }
     }
     Ok(())
+}
+
+/// Sends one encoded frame into the room reserved for it, and counts it.
+fn delivery(
+    permit: mpsc::OwnedPermit<Result<EncodedFrame, StreamError>>,
+    control: Arc<StreamControl>,
+) -> FrameDelivery {
+    let in_flight = InFlight::start(control);
+    let started = Instant::now();
+    Box::new(move |encoded| {
+        let stats = &in_flight.0.stats;
+        stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
+        stats.encode_micros.fetch_add(
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        permit.send(Ok(encoded));
+        // Counted until after the send, so `consumer_is_behind` may briefly miss a waiting frame
+        // but never mistakes a frame in flight for one.
+        drop(in_flight);
+    })
+}
+
+/// Whether a new frame would only wait: an encoded frame the consumer has not taken yet is
+/// waiting in `sink`, or the encoder already has [`FRAMES_IN_FLIGHT`] frames.
+fn consumer_is_behind(
+    sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
+    control: &StreamControl,
+) -> bool {
+    let in_flight = control.in_flight.load(Ordering::Relaxed);
+    // Slots in use are reserved for frames in flight or hold frames waiting for the consumer.
+    let waiting = (sink.max_capacity() - sink.capacity()).saturating_sub(in_flight);
+    waiting > 0 || in_flight >= FRAMES_IN_FLIGHT
+}
+
+/// Counts one frame in flight until it is delivered or dropped.
+struct InFlight(Arc<StreamControl>);
+
+impl InFlight {
+    fn start(control: Arc<StreamControl>) -> Self {
+        control.in_flight.fetch_add(1, Ordering::Relaxed);
+        Self(control)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Delivers the stream's last item, an error, without blocking on a consumer that may itself be
@@ -523,6 +582,95 @@ mod tests {
         let resent = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
         assert!(resent.unwrap().unwrap().unwrap().keyframe);
         stream.stop();
+    }
+
+    /// A source on its own clock that shows prepared frames at a fixed rate, like a display
+    /// with something moving on it.
+    #[cfg(target_os = "macos")]
+    struct ClockedSource {
+        frames: Vec<CapturedFrame>,
+        interval: Duration,
+        next: Instant,
+        shown: usize,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ScreenCapturer for ClockedSource {
+        fn capture(&mut self, _timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            std::thread::sleep(self.next.saturating_duration_since(Instant::now()));
+            self.next = (self.next + self.interval).max(Instant::now());
+            self.shown += 1;
+            Ok(Some(self.frames[self.shown % self.frames.len()].clone()))
+        }
+
+        fn paces_itself(&self) -> bool {
+            true
+        }
+    }
+
+    /// Measures the hardware stream at 144 fps without depending on what the screen shows:
+    /// `cargo test --release -p dari-media -- --ignored --nocapture hardware_stream_keeps_up`.
+    #[cfg(target_os = "macos")]
+    #[ignore = "a release-mode throughput measurement"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hardware_stream_keeps_up_with_144_fps() {
+        const FPS: u32 = 144;
+        let (width, height) = (1920, 1246);
+        let mut capturer = SyntheticCapturer::new(width, height);
+        let frames: Vec<CapturedFrame> = (0..32)
+            .map(|_| {
+                let rgba = capturer.render();
+                let native =
+                    crate::apple::NativeFrame::from_i420(&crate::codec::rgba_to_i420(&rgba));
+                CapturedFrame::Native(native.unwrap())
+            })
+            .collect();
+        let (sender, mut receiver) = mpsc::channel(FRAMES_IN_FLIGHT);
+        let stream = spawn_capture_stream(
+            move || {
+                Ok(ClockedSource {
+                    frames,
+                    interval: Duration::from_secs(1) / FPS,
+                    next: Instant::now(),
+                    shown: 0,
+                })
+            },
+            StreamSettings {
+                max_long_edge: width,
+                max_fps: FPS,
+                bitrate_bps: 4_000_000,
+                hardware_encoder: true,
+            },
+            sender,
+        )
+        .unwrap();
+        // Count once the encoder has settled: VideoToolbox in real-time mode slowed down after
+        // about three seconds.
+        let warm_up = Instant::now();
+        while warm_up.elapsed() < Duration::from_secs(4) {
+            receiver.recv().await.unwrap().unwrap();
+        }
+        let encoded_before = stream.stats().frames_encoded.load(Ordering::Relaxed);
+        let micros_before = stream.stats().encode_micros.load(Ordering::Relaxed);
+        let started = Instant::now();
+        let mut received = 0u32;
+        while started.elapsed() < Duration::from_secs(5) {
+            receiver.recv().await.unwrap().unwrap();
+            received += 1;
+        }
+        let fps = f64::from(received) / started.elapsed().as_secs_f64();
+        let stats = stream.stats();
+        #[expect(clippy::cast_precision_loss, reason = "report only")]
+        let latency_ms = (stats.encode_micros.load(Ordering::Relaxed) - micros_before) as f64
+            / (stats.frames_encoded.load(Ordering::Relaxed) - encoded_before).max(1) as f64
+            / 1000.0;
+        println!(
+            "{width}x{height} at {FPS} fps: {fps:.1} fps delivered, {latency_ms:.2} ms latency, {} skipped",
+            stats.frames_skipped.load(Ordering::Relaxed)
+        );
+        assert!(stats.hardware_encoding.load(Ordering::Relaxed));
+        stream.stop();
+        assert!(fps > f64::from(FPS) * 0.95, "{fps:.1} fps");
     }
 
     #[tokio::test(flavor = "multi_thread")]

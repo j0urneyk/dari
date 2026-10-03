@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
-    AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError,
-    StreamSettings, spawn_audio_stream, spawn_capture_stream,
+    AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame,
+    FRAMES_IN_FLIGHT, StreamError, StreamSettings, spawn_audio_stream, spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
@@ -434,7 +434,9 @@ impl HostSession {
                 .open_video_sender()
                 .await
                 .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
-            let (frames, frame_receiver) = mpsc::channel(1);
+            // Room for the frames the encoder overlaps; the capture thread still drops a frame
+            // before encoding while an encoded one waits for the network.
+            let (frames, frame_receiver) = mpsc::channel(FRAMES_IN_FLIGHT);
             self.frames = Some(frames);
             self.pump = Some(tokio::spawn(pump_video(
                 frame_receiver,
