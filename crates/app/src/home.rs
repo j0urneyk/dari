@@ -287,7 +287,7 @@ impl Home {
                         .w(viewport.width)
                         .h(viewport.height)
                         .object_fit(ObjectFit::Cover)
-                        .opacity(style::picture_opacity(cx)),
+                        .opacity(style::frost_opacity(cx)),
                 )
                 .child(
                     div()
@@ -308,8 +308,17 @@ impl Home {
                 sidebar.bg(style::sidebar_surface(cx))
             })
             .children(frosted)
-            .border_r_1()
-            .border_color(style::hairline(cx))
+            // A hairline drawn inside the sidebar, over its surface: a border would sit outside
+            // the frosted layer and let what is behind the window through untinted.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(px(1.))
+                    .bg(style::hairline(cx)),
+            )
             .child(
                 div()
                     .id("sidebar")
@@ -578,16 +587,25 @@ impl Render for Home {
             None => style::TITLE_BAR_HEIGHT + px(16.),
         };
         let scenery = self.backdrop.as_ref().map(|scenery| {
+            // Only behind the pages: the sidebar draws its own frosted copy, and layering both
+            // would hide what is behind the window there. The picture is still placed against
+            // the whole window, so it lines up with the sidebar's copy.
             div()
                 .absolute()
-                .inset_0()
+                .top_0()
+                .bottom_0()
+                .left(style::SIDEBAR_WIDTH)
+                .right_0()
+                .overflow_hidden()
                 .child(
                     // GPUI fades each primitive on its own, so only the picture is faded: the
                     // veil keeps its cover and the pages stay readable.
                     img(scenery.picture.clone())
                         .absolute()
-                        .inset_0()
-                        .size_full()
+                        .top_0()
+                        .left(-style::SIDEBAR_WIDTH)
+                        .w(viewport.width)
+                        .h(viewport.height)
                         .object_fit(ObjectFit::Cover)
                         .opacity(style::picture_opacity(cx)),
                 )
@@ -1341,7 +1359,7 @@ impl Render for HostPanel {
                 .flex_none()
                 .gap_2()
                 .text_sm()
-                .text_color(cx.theme().muted_foreground)
+                .font_medium()
                 .child(text().allow_remote_access)
                 .child(
                     Switch::new("hosting")

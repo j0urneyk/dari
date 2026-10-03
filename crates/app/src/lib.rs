@@ -100,6 +100,8 @@ fn run_gui() -> anyhow::Result<()> {
                 tracing::error!(%error, "failed to open the home window");
                 cx.quit();
             }
+            // Bring the window to the front, even when launched from a terminal.
+            cx.activate(true);
         });
     Ok(())
 }

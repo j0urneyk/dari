@@ -265,10 +265,20 @@ pub(crate) fn content_surface(cx: &App) -> Hsla {
     surface(cx).opacity(if translucent(cx) { 0.86 } else { 1. })
 }
 
-/// How opaque the background picture's layers are: with translucency on, what is behind the
-/// window shows through the picture too, blurred.
+// With translucency on, the background picture's layers are drawn translucent too, so what is
+// behind the window shows through about as much as it does without a picture: about 40% across
+// the picture's hero band, a third through the sidebar, and a tenth under the pages, where the
+// veil keeps text readable. Every layer that thins out is blurred or sits in the hero band, so
+// no sharp detail reaches the pages.
+
+/// How opaque the background picture is.
 pub(crate) fn picture_opacity(cx: &App) -> f32 {
-    if translucent(cx) { 0.82 } else { 1. }
+    if translucent(cx) { 0.5 } else { 1. }
+}
+
+/// How opaque the blurred picture in a frosted panel is.
+pub(crate) fn frost_opacity(cx: &App) -> f32 {
+    if translucent(cx) { 0.3 } else { 1. }
 }
 
 /// The surface color shifted toward a background picture's `average` color, so the surface
@@ -284,13 +294,26 @@ pub(crate) fn veil(average: Hsla, cx: &App) -> Background {
     linear_gradient(
         180.,
         linear_color_stop(color.opacity(0.02), 0.),
-        linear_color_stop(color.opacity(0.92), 0.27),
+        linear_color_stop(
+            color.opacity(match (translucent(cx), cx.theme().is_dark()) {
+                (true, true) => 0.4,
+                (true, false) => 0.46,
+                (false, _) => 0.92,
+            }),
+            0.27,
+        ),
     )
 }
 
 /// The tint over the blurred picture in a frosted panel.
 pub(crate) fn frost_tint(average: Hsla, cx: &App) -> Hsla {
-    picture_surface(average, cx).opacity(if cx.theme().is_dark() { 0.68 } else { 0.74 })
+    let cover = match (translucent(cx), cx.theme().is_dark()) {
+        (true, true) => 0.3,
+        (true, false) => 0.42,
+        (false, true) => 0.68,
+        (false, false) => 0.74,
+    };
+    picture_surface(average, cx).opacity(cover)
 }
 
 /// A hairline between panels, visible on any background.
