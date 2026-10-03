@@ -648,7 +648,9 @@ async fn a_frame_rate_asked_for_before_approval_applies_from_the_start() {
         *event == ViewerEvent::FrameRate(60)
     })
     .await;
-    // One capture at the requested rate, not a default one restarted.
+    // One capture at the requested rate, not a default one restarted. The viewer can hear the
+    // rate before the host has opened the capture, so wait for it.
+    wait_until(|| !opened.lock().unwrap().is_empty()).await;
     let opened = opened.lock().unwrap().clone();
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0].max_fps, 60);
