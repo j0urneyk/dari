@@ -266,12 +266,10 @@ pub(crate) fn content_surface(cx: &App) -> Hsla {
     surface(cx).opacity(if translucent(cx) { 0.86 } else { 1. })
 }
 
-// With translucency on, the background picture is drawn translucent too, so what is behind the
-// window shows through it about as much as it does through the sidebar.
-
-/// How opaque the background picture is.
+/// How opaque the background picture is. With translucency on, what is behind the window shows
+/// through it a little; any more, and the blurred desktop washes the picture out.
 pub(crate) fn picture_opacity(cx: &App) -> f32 {
-    if translucent(cx) { 0.5 } else { 1. }
+    if translucent(cx) { 0.82 } else { 1. }
 }
 
 /// How opaque the blurred picture in the sidebar is, over the sidebar's own surface. The
@@ -301,18 +299,19 @@ pub(crate) fn scenery_surface(cx: &App) -> Background {
     }
 }
 
-/// The veil over a background picture: the surface's color shifted toward the picture's
-/// `average` color, covering the picture enough to keep the pages readable over it, and thinning
-/// out as the picture fades into the surface. A picture far from the surface in lightness, like
-/// a dark photo behind the light theme, needs the most cover.
+/// The veil over a background picture: a light wash of the surface's color, shifted toward the
+/// picture's `average` color, behind the page title at the top, gone by the first panels. The
+/// panels carry the rest of the page on their own glass, so the picture stays vivid around them.
+/// A picture far from the surface in lightness, like a dark photo behind the light theme, gets
+/// the most.
 pub(crate) fn veil(average: Hsla, cx: &App) -> Background {
     let dark = cx.theme().is_dark();
     let color = surface(cx).mix_oklab(average, if dark { 0.78 } else { 0.84 });
-    let cover = (0.2 + 0.7 * contrast(average, cx)).min(0.72);
+    let cover = (0.1 + 0.4 * contrast(average, cx)).min(0.32);
     linear_gradient(
         180.,
-        linear_color_stop(color.opacity(cover), backdrop::FADE_FROM),
-        linear_color_stop(color.opacity(0.), backdrop::FADE_TO),
+        linear_color_stop(color.opacity(cover), 0.08),
+        linear_color_stop(color.opacity(0.), 0.32),
     )
 }
 
