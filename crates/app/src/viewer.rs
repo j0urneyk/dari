@@ -382,7 +382,6 @@ impl ViewerView {
                     div().child(
                         Button::new("disconnect")
                             .small()
-                            .outline()
                             .icon(AssetIcon::Unplug)
                             .label(text().disconnect)
                             .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
@@ -391,7 +390,7 @@ impl ViewerView {
             });
         div()
             .flex_none()
-            .bg(style::content_surface(false, cx))
+            .bg(style::content_surface(cx))
             .border_b_1()
             .border_color(cx.theme().border)
             .child(style::title_bar().child(controls))

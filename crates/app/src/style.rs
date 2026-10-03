@@ -12,7 +12,9 @@
 use std::borrow::Cow;
 
 use gpui_kit::component::theme::{Theme, ThemeMode};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable as _, StyledExt as _, TitleBar};
+use gpui_kit::component::{
+    ActiveTheme, Colorize as _, Icon, Sizable as _, StyledExt as _, TitleBar,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::settings::ThemePreference;
@@ -199,6 +201,12 @@ fn paint(theme: &mut Theme, dark: bool) {
     colors.link = primary;
     colors.link_hover = colors.primary_hover;
     colors.link_active = colors.primary_active;
+    // The default button is a frosted chip: a wash of the text color, so it reads on any
+    // surface, a background picture included.
+    let ink = if dark { hex(0xFFFFFF) } else { hex(0x000000) };
+    colors.button = ink.opacity(if dark { 0.1 } else { 0.06 });
+    colors.button_hover = ink.opacity(if dark { 0.15 } else { 0.1 });
+    colors.button_active = ink.opacity(if dark { 0.2 } else { 0.14 });
     if dark {
         colors.background = transparent_black();
         colors.foreground = hex(0xE6E7EA);
@@ -210,6 +218,7 @@ fn paint(theme: &mut Theme, dark: bool) {
         colors.secondary_hover = hex(0x2D2F34);
         colors.secondary_active = hex(0x34363C);
         colors.secondary_foreground = colors.foreground;
+        colors.button_foreground = colors.foreground;
         colors.switch = hex(0x3A3C42);
         colors.switch_thumb = hex(0xFFFFFF);
         colors.popover = hex(0x202125);
@@ -228,6 +237,7 @@ fn paint(theme: &mut Theme, dark: bool) {
         colors.secondary_hover = hex(0xE9EAED);
         colors.secondary_active = hex(0xE1E2E6);
         colors.secondary_foreground = colors.foreground;
+        colors.button_foreground = colors.foreground;
         colors.switch = hex(0xD8DADF);
         colors.popover = hex(0xFFFFFF);
         colors.success = hex(0x16A34A);
@@ -237,30 +247,49 @@ fn paint(theme: &mut Theme, dark: bool) {
 }
 
 /// The sidebar's surface: the most translucent, so what is behind the window shows through.
-/// `over_picture` is true when the home window's background picture is behind it.
-pub(crate) fn sidebar_surface(over_picture: bool, cx: &App) -> Hsla {
+pub(crate) fn sidebar_surface(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
     let tint = if dark { hex(0x141518) } else { hex(0xEEEFF2) };
     // Gray text needs more cover on a light tint than on a dark one to stay readable.
-    let cover = match (over_picture, translucent(cx), dark) {
-        (true, _, true) => 0.42,
-        (true, _, false) => 0.62,
-        (false, true, true) => 0.55,
-        (false, true, false) => 0.6,
-        (false, false, _) => 1.,
+    let cover = match (translucent(cx), dark) {
+        (true, true) => 0.55,
+        (true, false) => 0.6,
+        (false, _) => 1.,
     };
     tint.opacity(cover)
 }
 
 /// The main content's surface: translucent enough to show what is behind it, opaque enough
 /// that text stays crisp.
-pub(crate) fn content_surface(over_picture: bool, cx: &App) -> Hsla {
-    let cover = match (over_picture, translucent(cx)) {
-        (true, _) => 0.74,
-        (false, true) => 0.86,
-        (false, false) => 1.,
-    };
-    surface(cx).opacity(cover)
+pub(crate) fn content_surface(cx: &App) -> Hsla {
+    surface(cx).opacity(if translucent(cx) { 0.86 } else { 1. })
+}
+
+/// The surface color shifted toward a background picture's `average` color, so the surface
+/// over the picture belongs to it.
+fn picture_surface(average: Hsla, cx: &App) -> Hsla {
+    surface(cx).mix_oklab(average, if cx.theme().is_dark() { 0.78 } else { 0.84 })
+}
+
+/// The veil over a background picture: clear across the top, where the picture is the window's
+/// hero, thickening into a calm surface where the pages sit.
+pub(crate) fn veil(average: Hsla, cx: &App) -> Background {
+    let color = picture_surface(average, cx);
+    linear_gradient(
+        180.,
+        linear_color_stop(color.opacity(0.02), 0.),
+        linear_color_stop(color.opacity(0.92), 0.27),
+    )
+}
+
+/// The tint over the blurred picture in a frosted panel.
+pub(crate) fn frost_tint(average: Hsla, cx: &App) -> Hsla {
+    picture_surface(average, cx).opacity(if cx.theme().is_dark() { 0.68 } else { 0.74 })
+}
+
+/// A hairline between panels, visible on any background.
+pub(crate) fn hairline(cx: &App) -> Hsla {
+    cx.theme().foreground.opacity(0.09)
 }
 
 /// A wash for hovered rows; [`selected_fill`] is one step stronger.
@@ -334,6 +363,14 @@ pub(crate) fn page_header(
                 ),
         )
         .child(div().flex_none().child(trailing))
+}
+
+/// A text field on a frosted fill, so it reads as a field over any surface.
+pub(crate) fn field(input: impl IntoElement, cx: &App) -> Div {
+    div()
+        .rounded(cx.theme().radius)
+        .bg(cx.theme().button)
+        .child(input)
 }
 
 /// A small label above a value or a group.

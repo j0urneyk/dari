@@ -93,7 +93,9 @@ GPUI's macOS platform can only be created on the main thread, so the standard te
 `crates/app/tests/gui.rs` is a test with its own `main` (`harness = false`), and the app crate exposes a library
 (`dari::test_support`). Each test renders windows with `HeadlessAppContext` and saves the result to
 `target/gui-snapshots/*.png` for visual review. The home window is also rendered in the dark theme
-(`home-dark.png`), and the viewer once more after the host ends the session (`viewer-ended.png`).
+(`home-dark.png`), and the viewer once more after the host ends the session (`viewer-ended.png`). The
+background-picture test draws a synthetic picture; to review the design over a real one, set `DARI_GUI_BACKGROUND`
+to its path.
 
 - The home window shows addresses and the password.
 - The viewer window connects to a synthetic host over real QUIC and draws the screen, and GPUI input events

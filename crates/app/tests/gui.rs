@@ -527,6 +527,8 @@ mod macos {
         })
         .save(&picture)
         .unwrap();
+        // To review the design over a real photo, point DARI_GUI_BACKGROUND at one.
+        let picture = std::env::var_os("DARI_GUI_BACKGROUND").map_or(picture, PathBuf::from);
         Settings {
             port: 0,
             background_image: Some(picture),
@@ -551,6 +553,9 @@ mod macos {
         cx.update_window(window, |_, window, cx| window.click("nav-settings", cx))
             .unwrap();
         save(&mut cx, window, "settings-background");
+        cx.update_window(window, |_, window, cx| window.click("nav-connect", cx))
+            .unwrap();
+        save(&mut cx, window, "connect-background");
     }
 
     /// The settings page switches the theme and the window's translucency, and remembers both.

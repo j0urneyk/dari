@@ -49,8 +49,8 @@ Windows, ⌘C arrives as Ctrl+C and copies as usual.
 | --- | --- |
 | **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
 | **Translucent window** | On by default. Without a background picture, what is behind the window shows through, blurred. Viewer windows opened afterwards follow it too |
-| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. **Choose…** picks one, **Remove** goes back |
-| **Blur the picture** | Off by default. Blurs the background picture so text over it reads more easily |
+| **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It is sharp across the top of the window and fades into a surface tinted with its colors where the pages sit, and the sidebar shows it as frosted glass, so text stays readable over any picture. **Choose…** picks one, **Remove** goes back |
+| **Blur the picture** | Off by default. Blurs the whole picture, the top of the window included |
 
 ## Viewer window
 

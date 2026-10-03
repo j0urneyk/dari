@@ -58,7 +58,7 @@ pub struct Home {
     /// Whether the host panel was waiting on the user's answer when it last changed.
     approval_pending: bool,
     /// The background picture from the settings, softened, once it has loaded.
-    backdrop: Option<Arc<RenderImage>>,
+    backdrop: Option<Scenery>,
     /// Whether the background picture in the settings could not be read.
     backdrop_unreadable: bool,
     /// Loads the background picture; replacing it cancels the load.
@@ -118,7 +118,7 @@ impl Home {
         self.backdrop_task = Some(cx.spawn_in(window, async move |this, cx| {
             let picture = prepared.await;
             let _updated = this.update_in(cx, |this, window, cx| match picture {
-                Ok(picture) => this.set_backdrop(Some(Arc::new(picture)), window, cx),
+                Ok(prepared) => this.set_backdrop(Some(Scenery::new(prepared)), window, cx),
                 Err(error) => {
                     tracing::warn!("cannot show the background picture: {error:#}");
                     this.backdrop_unreadable = true;
@@ -130,13 +130,15 @@ impl Home {
 
     fn set_backdrop(
         &mut self,
-        picture: Option<Arc<RenderImage>>,
+        scenery: Option<Scenery>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(previous) = std::mem::replace(&mut self.backdrop, picture) {
-            // Each picture is a GPU texture; release the one it replaces.
-            let _dropped = window.drop_image(previous);
+        if let Some(previous) = std::mem::replace(&mut self.backdrop, scenery) {
+            // Each layer is a GPU texture; release the ones being replaced.
+            for layer in [previous.picture, previous.frost, previous.glow] {
+                let _dropped = window.drop_image(layer);
+            }
         }
         cx.notify();
     }
@@ -239,7 +241,7 @@ impl Home {
         cx.notify();
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> impl IntoElement {
         let (status_color, status) = self.device_status(cx);
         let navigation = div()
             .v_flex()
@@ -271,15 +273,42 @@ impl Home {
             )
             .child(self.render_devices(cx));
 
+        let frosted = self.backdrop.as_ref().map(|scenery| {
+            // The picture, blurred, drawn where it lies in the window: the sidebar reads as
+            // frosted glass over it.
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    img(scenery.frost.clone())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .object_fit(ObjectFit::Cover),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(style::frost_tint(scenery.average, cx)),
+                )
+        });
         div()
+            .relative()
+            .overflow_hidden()
             .v_flex()
             .flex_none()
             .w(style::SIDEBAR_WIDTH)
             .h_full()
             .pt(style::TITLE_BAR_HEIGHT)
-            .bg(style::sidebar_surface(self.backdrop.is_some(), cx))
+            .when(frosted.is_none(), |sidebar| {
+                sidebar.bg(style::sidebar_surface(cx))
+            })
+            .children(frosted)
             .border_r_1()
-            .border_color(cx.theme().border)
+            .border_color(style::hairline(cx))
             .child(
                 div()
                     .id("sidebar")
@@ -479,7 +508,6 @@ impl Home {
             })
             .child(
                 Button::new("background-choose")
-                    .outline()
                     .small()
                     .label(text().background_choose)
                     .on_click(cx.listener(|_, _, window, cx| Self::choose_backdrop(window, cx))),
@@ -535,36 +563,58 @@ impl Home {
 }
 
 impl Render for Home {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = window.viewport_size();
         let page = match self.page {
             Page::Device => self.host.clone().into_any_element(),
             Page::Connect => self.connect.clone().into_any_element(),
             Page::Settings => self.render_settings(cx).into_any_element(),
         };
-        let over_picture = self.backdrop.is_some();
-        div()
-            .relative()
-            .size_full()
-            .text_color(cx.theme().foreground)
-            .children(self.backdrop.clone().map(|picture| {
+        // Over a picture, pages start lower, so the picture shows across the top as the
+        // window's hero and the page sits where the veil has made the surface calm.
+        let page_top = match &self.backdrop {
+            Some(_) => (viewport.height * 0.24).max(style::TITLE_BAR_HEIGHT + px(16.)),
+            None => style::TITLE_BAR_HEIGHT + px(16.),
+        };
+        let scenery = self.backdrop.as_ref().map(|scenery| {
+            let layer = |picture: Arc<RenderImage>| {
                 img(picture)
                     .absolute()
                     .inset_0()
                     .size_full()
                     .object_fit(ObjectFit::Cover)
-            }))
+            };
+            div()
+                .absolute()
+                .inset_0()
+                .child(layer(scenery.picture.clone()))
+                .child(layer(scenery.glow.clone()))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(style::veil(scenery.average, cx)),
+                )
+        });
+        div()
+            .relative()
+            .size_full()
+            .text_color(cx.theme().foreground)
+            .children(scenery)
             .child(
                 div()
                     .h_flex()
                     .size_full()
-                    .child(self.render_sidebar(cx))
+                    .child(self.render_sidebar(viewport, cx))
                     .child(
                         div()
                             .id("home-body")
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .bg(style::content_surface(over_picture, cx))
+                            .when(self.backdrop.is_none(), |body| {
+                                body.bg(style::content_surface(cx))
+                            })
                             .overflow_y_scrollbar()
                             .child(
                                 div()
@@ -573,7 +623,7 @@ impl Render for Home {
                                     .max_w(px(620.))
                                     .mx_auto()
                                     .px_10()
-                                    .pt(style::TITLE_BAR_HEIGHT + px(16.))
+                                    .pt(page_top)
                                     .pb_10()
                                     .child(page),
                             ),
@@ -587,6 +637,27 @@ impl Render for Home {
                     .right_0()
                     .child(Self::render_title_bar()),
             )
+    }
+}
+
+/// The background picture's layers on the GPU (see [`backdrop`]).
+struct Scenery {
+    picture: Arc<RenderImage>,
+    frost: Arc<RenderImage>,
+    glow: Arc<RenderImage>,
+    /// The picture's average color.
+    average: Hsla,
+}
+
+impl Scenery {
+    fn new(prepared: backdrop::Backdrop) -> Self {
+        let [red, green, blue] = prepared.average;
+        Self {
+            picture: Arc::new(prepared.picture),
+            frost: Arc::new(prepared.frost),
+            glow: Arc::new(prepared.glow),
+            average: rgb(u32::from_be_bytes([0, red, green, blue])).into(),
+        }
     }
 }
 
@@ -871,7 +942,6 @@ impl HostPanel {
                         .child(
                             Button::new("approval-view")
                                 .small()
-                                .outline()
                                 .icon(IconName::Eye)
                                 .label(text().allow_view_only)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1073,7 +1143,6 @@ impl HostPanel {
                 .child(
                     Button::new("permission-request")
                         .small()
-                        .outline()
                         .label(text().request_permission)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             permissions::request_missing(current);
@@ -1180,7 +1249,10 @@ impl HostPanel {
             div().children(relay_state.map(style::status_dot)),
             cx,
         ));
-        relay = relay.child(Input::new(&self.relay_input).id("relay-address").small());
+        relay = relay.child(style::field(
+            Input::new(&self.relay_input).id("relay-address").small(),
+            cx,
+        ));
         match &self.relay {
             Some(RelayStatus::Connecting) => {
                 relay = relay.child(
@@ -1505,7 +1577,7 @@ impl Render for ConnectPanel {
                 .v_flex()
                 .gap_1p5()
                 .child(div().text_sm().font_medium().child(label))
-                .child(input)
+                .child(style::field(input, cx))
         };
         let muted = cx.theme().muted_foreground;
         div()
