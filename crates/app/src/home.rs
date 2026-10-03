@@ -14,11 +14,15 @@ use dari_session::{
     ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
     SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
 };
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, StyledExt as _};
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -26,6 +30,7 @@ use crate::config::{device_name, local_addresses, resolve_target};
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
 use crate::state::AppState;
+use crate::style;
 use crate::text::text;
 use crate::viewer::open_viewer_window;
 
@@ -35,6 +40,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 pub struct Home {
     host: Entity<HostPanel>,
     connect: Entity<ConnectPanel>,
+    _appearance: Subscription,
 }
 
 impl std::fmt::Debug for Home {
@@ -48,6 +54,7 @@ impl Home {
         Self {
             host: cx.new(|cx| HostPanel::new(window, cx)),
             connect: cx.new(|cx| ConnectPanel::new(window, cx)),
+            _appearance: style::follow_appearance(window, cx),
         }
     }
 }
@@ -87,57 +94,90 @@ impl Home {
     }
 }
 
+impl Home {
+    fn render_header(&self, cx: &App) -> Div {
+        let host = self.host.read(cx);
+        let (color, status) = match &host.hosting {
+            Hosting::Running(_) if host.approval.is_some() => {
+                (cx.theme().warning, text().approval_title.to_owned())
+            }
+            Hosting::Running(_) if host.viewer.is_some() => (
+                cx.theme().success,
+                text().viewer_connected(&host.viewer_name()),
+            ),
+            Hosting::Running(_) => (cx.theme().success, text().hosting_on.to_owned()),
+            Hosting::Off => (cx.theme().muted_foreground, text().hosting_off.to_owned()),
+            Hosting::Failed(_) => (cx.theme().danger, text().hosting_failed.to_owned()),
+        };
+        div()
+            .h_flex()
+            .gap_3()
+            .px_8()
+            .pt_6()
+            .pb_5()
+            .child(style::logo())
+            .child(
+                div()
+                    .v_flex()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .line_height(px(22.))
+                            .child("Dari"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text().app_subtitle),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .rounded_full()
+                    .bg(cx.theme().background)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .text_xs()
+                    .font_medium()
+                    .child(style::status_dot(color))
+                    .child(status),
+            )
+    }
+}
+
 impl Render for Home {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
             .size_full()
-            .p_6()
-            .gap_6()
-            .bg(cx.theme().background)
+            .bg(style::canvas(cx))
             .text_color(cx.theme().foreground)
+            .child(self.render_header(cx))
             .child(
                 div()
-                    .v_flex()
-                    .gap_1()
-                    .child(div().text_xl().font_semibold().child("Dari"))
+                    .id("home-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(text().app_subtitle),
+                            .h_flex()
+                            .items_start()
+                            .gap_5()
+                            .px_8()
+                            .pb_8()
+                            .child(self.host.clone())
+                            .child(self.connect.clone()),
                     ),
             )
-            .child(
-                div()
-                    .h_flex()
-                    .flex_1()
-                    .items_start()
-                    .gap_6()
-                    .child(self.host.clone())
-                    .child(self.connect.clone()),
-            )
     }
-}
-
-fn card(title: &'static str, cx: &App) -> Div {
-    div()
-        .v_flex()
-        .flex_1()
-        .min_w_0()
-        .gap_4()
-        .p_5()
-        .border_1()
-        .border_color(cx.theme().border)
-        .rounded(cx.theme().radius_lg)
-        .child(div().text_base().font_semibold().child(title))
-}
-
-fn label(content: &'static str, cx: &App) -> Div {
-    div()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(content)
 }
 
 enum Hosting {
@@ -341,48 +381,11 @@ impl HostPanel {
         cx.notify();
     }
 
-    fn render_relay(&self, cx: &App) -> Div {
-        let mut section = div()
-            .v_flex()
-            .gap_1()
-            .child(label(text().relay_server, cx))
-            .child(Input::new(&self.relay_input).id("relay-address"));
-        match &self.relay {
-            Some(RelayStatus::Registered(id)) => {
-                section = section.child(
-                    div()
-                        .h_flex()
-                        .gap_2()
-                        .child(label(text().my_id, cx))
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .text_lg()
-                                .font_semibold()
-                                .child(id.to_string()),
-                        )
-                        .child(Clipboard::new("relay-id-copy").value(id.to_string())),
-                );
-            }
-            Some(RelayStatus::Connecting) => {
-                section = section.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(text().relay_connecting),
-                );
-            }
-            Some(RelayStatus::Unavailable(error)) => {
-                section = section.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(text().relay_unavailable(error)),
-                );
-            }
-            None => {}
-        }
-        section
+    fn viewer_name(&self) -> String {
+        self.viewer
+            .as_ref()
+            .map(|viewer| viewer.name.clone())
+            .unwrap_or_default()
     }
 
     fn answer(&mut self, decision: ApprovalDecision, cx: &mut Context<Self>) {
@@ -409,37 +412,42 @@ impl HostPanel {
 
     fn render_approval(&self, cx: &mut Context<Self>) -> Option<Div> {
         let (peer, _) = self.approval.as_ref()?;
+        let primary = cx.theme().primary;
         Some(
             div()
                 .v_flex()
-                .gap_2()
-                .p_3()
-                .rounded(cx.theme().radius)
+                .gap_4()
+                .p_4()
+                .rounded(cx.theme().radius_lg)
+                .bg(primary.opacity(0.07))
                 .border_1()
-                .border_color(cx.theme().primary)
-                .child(div().text_sm().font_semibold().child(text().approval_title))
-                .child(div().text_sm().child(text().approval_prompt(&peer.name)))
+                .border_color(primary.opacity(0.45))
                 .child(
                     div()
                         .h_flex()
+                        .items_start()
+                        .gap_3()
+                        .child(style::icon_badge(AssetIcon::ShieldCheck, primary, px(36.)))
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap_0p5()
+                                .min_w_0()
+                                .child(div().text_sm().font_semibold().child(text().approval_title))
+                                .child(div().text_sm().child(text().approval_prompt(&peer.name)))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(text().approval_hint),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .justify_end()
                         .gap_2()
-                        .child(
-                            Button::new("approval-control")
-                                .primary()
-                                .small()
-                                .label(text().allow_control)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.answer(ApprovalDecision::AllowControl, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("approval-view")
-                                .small()
-                                .label(text().allow_view_only)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.answer(ApprovalDecision::ViewOnly, cx);
-                                })),
-                        )
                         .child(
                             Button::new("approval-decline")
                                 .small()
@@ -448,79 +456,29 @@ impl HostPanel {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.answer(ApprovalDecision::Deny, cx);
                                 })),
+                        )
+                        .child(
+                            Button::new("approval-view")
+                                .small()
+                                .outline()
+                                .icon(IconName::Eye)
+                                .label(text().allow_view_only)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalDecision::ViewOnly, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("approval-control")
+                                .small()
+                                .primary()
+                                .icon(AssetIcon::MousePointer2)
+                                .label(text().allow_control)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalDecision::AllowControl, cx);
+                                })),
                         ),
                 ),
         )
-    }
-
-    fn render_policy(cx: &mut Context<Self>) -> Div {
-        let settings = AppState::settings(cx).clone();
-        div()
-            .v_flex()
-            .gap_2()
-            .child(
-                Switch::new("policy-approval")
-                    .label(text().require_approval)
-                    .checked(settings.require_approval)
-                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        this.set_policy(|settings| settings.require_approval = checked, cx);
-                    })),
-            )
-            .child(
-                Switch::new("policy-clipboard")
-                    .label(text().clipboard_sync)
-                    .checked(settings.clipboard_sync)
-                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        this.set_policy(|settings| settings.clipboard_sync = checked, cx);
-                    })),
-            )
-            .child(
-                Switch::new("policy-discovery")
-                    .label(text().lan_discovery)
-                    .checked(settings.lan_discovery)
-                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        this.set_policy(|settings| settings.lan_discovery = checked, cx);
-                    })),
-            )
-    }
-
-    fn render_addresses(&self, cx: &App) -> Div {
-        let port = self.port(cx);
-        let mut list = div().v_flex().gap_1();
-        if self.addresses.is_empty() {
-            list = list.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text().no_addresses),
-            );
-        }
-        for address in &self.addresses {
-            let shown = match address {
-                IpAddr::V4(v4) if port == crate::config::DEFAULT_PORT => v4.to_string(),
-                IpAddr::V4(v4) => format!("{v4}:{port}"),
-                IpAddr::V6(v6) => format!("[{v6}]:{port}"),
-            };
-            list = list.child(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .font_family("monospace")
-                            .text_sm()
-                            .child(shown.clone()),
-                    )
-                    .child(
-                        Clipboard::new(SharedString::from(format!("address-{address}")))
-                            .value(shown),
-                    ),
-            );
-        }
-        list
     }
 
     fn render_password(&self, cx: &mut Context<Self>) -> Div {
@@ -537,56 +495,170 @@ impl HostPanel {
             .map(|password| password.display_text().as_str().to_owned().into())
             .unwrap_or_default();
         div()
-            .h_flex()
-            .gap_2()
+            .v_flex()
+            .gap_1()
             .child(
                 div()
-                    .font_family("monospace")
-                    .text_2xl()
+                    .h_flex()
+                    .justify_between()
+                    .child(style::eyebrow(text().password, cx))
+                    .when(self.password.is_some(), |row| {
+                        row.child(
+                            div()
+                                .h_flex()
+                                .gap_0p5()
+                                .child(Clipboard::new("password-copy").value(copy_value))
+                                .child(
+                                    Button::new("password-reveal")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(if self.reveal_password {
+                                            IconName::EyeOff
+                                        } else {
+                                            IconName::Eye
+                                        })
+                                        .tooltip(if self.reveal_password {
+                                            text().hide_password
+                                        } else {
+                                            text().show_password
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.reveal_password = !this.reveal_password;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("password-regenerate")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::RefreshCw)
+                                        .tooltip(text().new_password)
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            if let Hosting::Running(handle) = &this.hosting {
+                                                handle.regenerate_password();
+                                            }
+                                        })),
+                                ),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_3xl()
                     .font_semibold()
+                    .line_height(px(40.))
+                    .when(self.password.is_none(), |value| {
+                        value.text_color(cx.theme().muted_foreground)
+                    })
                     .child(shown),
             )
-            .when(self.password.is_some(), |row| {
-                row.child(Clipboard::new("password-copy").value(copy_value))
-                    .child(
-                        Button::new("password-reveal")
-                            .ghost()
-                            .small()
-                            .icon(if self.reveal_password {
-                                IconName::EyeOff
+    }
+
+    /// Everything a viewer needs to reach this device: password, address, and relay ID.
+    fn render_credentials(&self, cx: &mut Context<Self>) -> Div {
+        let port = self.port(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let shown: Vec<(IpAddr, String)> = self
+            .addresses
+            .iter()
+            .map(|address| (*address, shown_address(*address, port)))
+            .collect();
+        let detail = |label: &'static str, value: AnyElement| {
+            div()
+                .h_flex()
+                .justify_between()
+                .gap_4()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(value)
+        };
+        let copyable = |id: SharedString, value: String, small: bool| {
+            div()
+                .h_flex()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(mono.clone())
+                        .map(|text| {
+                            if small {
+                                text.text_xs()
                             } else {
-                                IconName::Eye
-                            })
-                            .tooltip(if self.reveal_password {
-                                text().hide_password
-                            } else {
-                                text().show_password
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.reveal_password = !this.reveal_password;
-                                cx.notify();
+                                text.text_sm()
+                            }
+                        })
+                        .child(value.clone()),
+                )
+                .child(Clipboard::new(id).value(value))
+        };
+
+        let mut details = div()
+            .v_flex()
+            .gap_2p5()
+            .pt_4()
+            .border_t_1()
+            .border_color(cx.theme().border);
+        match shown.split_first() {
+            None => {
+                details = details.child(detail(
+                    text().addresses,
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text().no_addresses)
+                        .into_any_element(),
+                ));
+            }
+            Some(((address, first), rest)) => {
+                details = details.child(detail(
+                    text().addresses,
+                    copyable(format!("address-{address}").into(), first.clone(), false)
+                        .into_any_element(),
+                ));
+                if !rest.is_empty() {
+                    details = details.child(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .child(style::eyebrow(text().other_addresses, cx))
+                            .children(rest.iter().map(|(address, shown)| {
+                                copyable(format!("address-{address}").into(), shown.clone(), true)
+                                    .text_color(cx.theme().muted_foreground)
                             })),
-                    )
-                    .child(
-                        Button::new("password-regenerate")
-                            .ghost()
-                            .small()
-                            .icon(IconName::RefreshCw)
-                            .tooltip(text().new_password)
-                            .on_click(cx.listener(|this, _, _, _| {
-                                if let Hosting::Running(handle) = &this.hosting {
-                                    handle.regenerate_password();
-                                }
-                            })),
-                    )
-            })
+                    );
+                }
+            }
+        }
+        if let Some(RelayStatus::Registered(id)) = &self.relay {
+            details = details.child(detail(
+                text().my_id,
+                copyable("relay-id-copy".into(), id.to_string(), false).into_any_element(),
+            ));
+        }
+
+        div()
+            .v_flex()
+            .gap_4()
+            .p_5()
+            .rounded(cx.theme().radius_lg)
+            .bg(cx.theme().muted)
+            .child(self.render_password(cx))
+            .child(details)
     }
 
     fn render_permissions(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.permissions.all_granted() {
             return None;
         }
-        let mut message = div().v_flex().gap_1().text_sm();
+        let mut message = div().v_flex().flex_1().gap_2().text_sm();
         if !self.permissions.screen {
             message = message.child(text().screen_permission_missing);
         }
@@ -594,126 +666,258 @@ impl HostPanel {
             message = message.child(text().input_permission_missing);
         }
         let current = self.permissions;
-        Some(
+        message = message.child(
             div()
-                .v_flex()
+                .h_flex()
                 .gap_2()
-                .p_3()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().warning.opacity(0.12))
-                .border_1()
-                .border_color(cx.theme().warning.opacity(0.4))
-                .child(message)
                 .child(
-                    div()
-                        .h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("permission-request")
-                                .small()
-                                .label(text().request_permission)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    permissions::request_missing(current);
-                                    this.refresh(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("permission-settings")
-                                .small()
-                                .ghost()
-                                .label(text().open_settings)
-                                .on_click(move |_, _, cx| {
-                                    cx.open_url(permissions::settings_url(current));
-                                }),
-                        ),
+                    Button::new("permission-request")
+                        .small()
+                        .outline()
+                        .label(text().request_permission)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            permissions::request_missing(current);
+                            this.refresh(cx);
+                        })),
+                )
+                .child(
+                    Button::new("permission-settings")
+                        .small()
+                        .ghost()
+                        .icon(IconName::ExternalLink)
+                        .label(text().open_settings)
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(permissions::settings_url(current));
+                        }),
                 ),
-        )
+        );
+        Some(style::callout(IconName::TriangleAlert, cx.theme().warning, cx).child(message))
     }
 
-    fn render_session(&self, cx: &mut Context<Self>) -> Div {
+    fn render_session(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.approval.is_some() {
             // The approval card speaks for the waiting viewer until the host user decides.
-            return div();
+            return None;
         }
         let Some(viewer) = &self.viewer else {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text().waiting_for_viewer);
+            return Some(
+                div()
+                    .h_flex()
+                    .justify_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(style::status_dot(cx.theme().success))
+                    .child(text().waiting_for_viewer),
+            );
         };
-        let mut row = div().v_flex().gap_2().child(
+        let success = cx.theme().success;
+        let mut about = div().v_flex().flex_1().min_w_0().gap_0p5().child(
             div()
                 .text_sm()
                 .font_semibold()
                 .child(text().viewer_connected(&viewer.name)),
         );
         if let Some(status) = self.session_status {
+            let note = |content: &'static str| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(content)
+            };
             if status.screen != Availability::Available {
-                row = row.child(div().text_xs().child(text().screen_permission_missing));
+                about = about.child(note(text().screen_permission_missing));
             }
             if status.input != Availability::Available {
-                row = row.child(div().text_xs().child(text().input_permission_missing));
+                about = about.child(note(text().input_permission_missing));
             }
         }
-        row.child(
-            Button::new("session-end")
-                .danger()
-                .small()
-                .label(text().end_session)
-                .on_click(cx.listener(|this, _, _, _| {
-                    if let Hosting::Running(handle) = &this.hosting {
-                        handle.end_session();
-                    }
-                })),
+        Some(
+            div()
+                .h_flex()
+                .gap_3()
+                .p_3()
+                .rounded(cx.theme().radius_lg)
+                .bg(success.opacity(0.08))
+                .border_1()
+                .border_color(success.opacity(0.35))
+                .child(style::icon_badge(
+                    AssetIcon::MonitorSmartphone,
+                    success,
+                    px(36.),
+                ))
+                .child(about)
+                .child(
+                    Button::new("session-end")
+                        .danger()
+                        .small()
+                        .icon(AssetIcon::Unplug)
+                        .label(text().end_session)
+                        .on_click(cx.listener(|this, _, _, _| {
+                            if let Hosting::Running(handle) = &this.hosting {
+                                handle.end_session();
+                            }
+                        })),
+                ),
         )
+    }
+
+    fn render_settings(&self, cx: &mut Context<Self>) -> Div {
+        let settings = AppState::settings(cx).clone();
+        let relay_state = match &self.relay {
+            Some(RelayStatus::Registered(_)) => Some(cx.theme().success),
+            Some(RelayStatus::Connecting) => Some(cx.theme().warning),
+            Some(RelayStatus::Unavailable(_)) => Some(cx.theme().danger),
+            None => None,
+        };
+        let mut relay = div().v_flex().gap_2().child(style::setting_row(
+            AssetIcon::Waypoints,
+            text().relay_server,
+            div().children(relay_state.map(style::status_dot)),
+            cx,
+        ));
+        relay = relay.child(Input::new(&self.relay_input).id("relay-address").small());
+        match &self.relay {
+            Some(RelayStatus::Connecting) => {
+                relay = relay.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text().relay_connecting),
+                );
+            }
+            Some(RelayStatus::Unavailable(error)) => {
+                relay = relay.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(text().relay_unavailable(error)),
+                );
+            }
+            Some(RelayStatus::Registered(_)) | None => {}
+        }
+        div()
+            .v_flex()
+            .gap_2()
+            .child(style::eyebrow(text().settings, cx))
+            .child(style::row_group(
+                [
+                    style::setting_row(
+                        AssetIcon::ShieldCheck,
+                        text().require_approval,
+                        Switch::new("policy-approval")
+                            .accessibility_label(text().require_approval)
+                            .checked(settings.require_approval)
+                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                                let checked = *checked;
+                                this.set_policy(|settings| settings.require_approval = checked, cx);
+                            })),
+                        cx,
+                    ),
+                    style::setting_row(
+                        AssetIcon::Clipboard,
+                        text().clipboard_sync,
+                        Switch::new("policy-clipboard")
+                            .accessibility_label(text().clipboard_sync)
+                            .checked(settings.clipboard_sync)
+                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                                let checked = *checked;
+                                this.set_policy(|settings| settings.clipboard_sync = checked, cx);
+                            })),
+                        cx,
+                    ),
+                    style::setting_row(
+                        AssetIcon::Radar,
+                        text().lan_discovery,
+                        Switch::new("policy-discovery")
+                            .accessibility_label(text().lan_discovery)
+                            .checked(settings.lan_discovery)
+                            .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                                let checked = *checked;
+                                this.set_policy(|settings| settings.lan_discovery = checked, cx);
+                            })),
+                        cx,
+                    ),
+                    relay,
+                ],
+                cx,
+            ))
+    }
+}
+
+/// How an address of this device is written for a viewer to type.
+fn shown_address(address: IpAddr, port: u16) -> String {
+    match address {
+        IpAddr::V4(v4) if port == crate::config::DEFAULT_PORT => v4.to_string(),
+        IpAddr::V4(v4) => format!("{v4}:{port}"),
+        IpAddr::V6(v6) => format!("[{v6}]:{port}"),
     }
 }
 
 impl Render for HostPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = !matches!(self.hosting, Hosting::Off);
-        let mut panel = card(text().this_device, cx).child(
-            Switch::new("hosting")
-                .label(text().allow_remote_access)
-                .checked(enabled)
-                .on_change(
-                    cx.listener(|this, checked: &bool, _, cx| this.set_hosting(*checked, cx)),
-                ),
-        );
+        let header = div()
+            .h_flex()
+            .justify_between()
+            .gap_4()
+            .child(style::card_header(
+                AssetIcon::Monitor,
+                text().this_device,
+                device_name(),
+                cx,
+            ))
+            .child(
+                Switch::new("hosting")
+                    .accessibility_label(text().allow_remote_access)
+                    .tooltip(text().allow_remote_access)
+                    .checked(enabled)
+                    .on_change(
+                        cx.listener(|this, checked: &bool, _, cx| this.set_hosting(*checked, cx)),
+                    ),
+            );
+        let mut panel = style::card(cx)
+            .flex_1()
+            .min_w_0()
+            .child(header)
+            .children(self.render_permissions(cx));
         panel = match &self.hosting {
             Hosting::Off => panel.child(
                 div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text().not_accepting),
+                    .v_flex()
+                    .items_center()
+                    .gap_1()
+                    .py_6()
+                    .px_4()
+                    .rounded(cx.theme().radius_lg)
+                    .border_1()
+                    .border_dashed()
+                    .border_color(cx.theme().border)
+                    .child(div().text_sm().font_medium().child(text().not_accepting))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_center()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text().not_accepting_hint),
+                    ),
             ),
             Hosting::Failed(error) => panel.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(format!("{}: {error}", text().hosting_failed)),
+                style::callout(IconName::CircleX, cx.theme().danger, cx).child(
+                    div()
+                        .v_flex()
+                        .gap_0p5()
+                        .text_sm()
+                        .child(div().font_semibold().child(text().hosting_failed))
+                        .child(error.clone()),
+                ),
             ),
             Hosting::Running(_) => panel
-                .child(
-                    div()
-                        .v_flex()
-                        .gap_1()
-                        .child(label(text().addresses, cx))
-                        .child(self.render_addresses(cx)),
-                )
-                .child(
-                    div()
-                        .v_flex()
-                        .gap_1()
-                        .child(label(text().password, cx))
-                        .child(self.render_password(cx)),
-                )
                 .children(self.render_approval(cx))
-                .child(self.render_session(cx))
-                .child(Self::render_policy(cx))
-                .child(self.render_relay(cx)),
+                .child(self.render_credentials(cx))
+                .children(self.render_session(cx)),
         };
-        panel.children(self.render_permissions(cx))
+        panel.child(self.render_settings(cx))
     }
 }
 
@@ -873,11 +1077,7 @@ fn nearby_address(device: &NearbyDevice) -> String {
         .first()
         .copied()
         .unwrap_or(IpAddr::from([0, 0, 0, 0]));
-    match (address, device.port) {
-        (IpAddr::V4(v4), crate::config::DEFAULT_PORT) => v4.to_string(),
-        (IpAddr::V4(v4), port) => format!("{v4}:{port}"),
-        (IpAddr::V6(v6), port) => format!("[{v6}]:{port}"),
-    }
+    shown_address(address, device.port)
 }
 
 fn describe_connect_error(error: &ConnectError) -> String {
@@ -889,93 +1089,202 @@ fn describe_connect_error(error: &ConnectError) -> String {
     }
 }
 
+impl ConnectPanel {
+    /// Puts `address` in the form and moves on to the password.
+    fn pick(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.address.update(cx, |input, cx| {
+            input.set_value(address, window, cx);
+        });
+        self.password.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// A device the user can pick: an icon, a name, and an address.
+    fn device_row(
+        id: SharedString,
+        icon: impl Into<Icon>,
+        title: String,
+        address: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let hover = cx.theme().muted;
+        let mono = cx.theme().mono_font_family.clone();
+        let picked = address.clone();
+        let mut about = div().v_flex().flex_1().min_w_0();
+        if title == address {
+            about = about.child(div().text_sm().font_family(mono).truncate().child(address));
+        } else {
+            about = about
+                .child(div().text_sm().font_medium().truncate().child(title))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(mono)
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(address),
+                );
+        }
+        div()
+            .id(id)
+            .h_flex()
+            .gap_3()
+            .cursor_pointer()
+            .hover(move |row| row.bg(hover))
+            .child(style::icon_badge(icon, cx.theme().primary, px(32.)))
+            .child(about)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Icon::new(IconName::ChevronRight).small()),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.pick(picked.clone(), window, cx);
+            }))
+    }
+
+    fn render_devices(&self, cx: &mut Context<Self>) -> Div {
+        let recent = AppState::settings(cx).recent_addresses.clone();
+        let mut section = div().v_flex().gap_5();
+        if self.nearby.is_empty() && recent.is_empty() {
+            return section.child(
+                div()
+                    .h_flex()
+                    .gap_3()
+                    .p_4()
+                    .rounded(cx.theme().radius_lg)
+                    .border_1()
+                    .border_dashed()
+                    .border_color(cx.theme().border)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Icon::new(AssetIcon::Radar).small())
+                    .child(text().nearby_empty),
+            );
+        }
+        if !self.nearby.is_empty() {
+            let rows: Vec<_> = self
+                .nearby
+                .iter()
+                .map(|device| {
+                    Self::device_row(
+                        format!("nearby-{}", device.id).into(),
+                        AssetIcon::Laptop,
+                        device.name.clone(),
+                        nearby_address(device),
+                        cx,
+                    )
+                })
+                .collect();
+            section = section.child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .child(style::eyebrow(text().nearby_devices, cx))
+                    .child(style::row_group(rows, cx)),
+            );
+        }
+        if !recent.is_empty() {
+            let rows: Vec<_> = recent
+                .into_iter()
+                .map(|address| {
+                    Self::device_row(
+                        format!("recent-{address}").into(),
+                        AssetIcon::Clock,
+                        address.clone(),
+                        address,
+                        cx,
+                    )
+                })
+                .collect();
+            section = section.child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .child(style::eyebrow(text().recent, cx))
+                    .child(style::row_group(rows, cx)),
+            );
+        }
+        section
+    }
+}
+
 impl Render for ConnectPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let recent = AppState::settings(cx).recent_addresses.clone();
-        card(text().control_remote_device, cx)
+        let field = |label: &'static str, input: Input| {
+            div()
+                .v_flex()
+                .gap_1p5()
+                .child(div().text_sm().font_medium().child(label))
+                .child(input)
+        };
+        let muted = cx.theme().muted_foreground;
+        style::card(cx)
+            .flex_1()
+            .min_w_0()
+            .child(style::card_header(
+                AssetIcon::MousePointer2,
+                text().control_remote_device,
+                text().connect_subtitle,
+                cx,
+            ))
             .child(
                 div()
                     .v_flex()
-                    .gap_1()
-                    .child(label(text().address, cx))
-                    .child(Input::new(&self.address).id("connect-address")),
-            )
-            .child(
-                div()
-                    .v_flex()
-                    .gap_1()
-                    .child(label(text().password, cx))
-                    .child(Input::new(&self.password).id("connect-password")),
-            )
-            .child(
-                Switch::new("map-shortcut-modifier")
-                    .label(text().map_shortcut_modifier)
-                    .checked(AppState::settings(cx).map_shortcut_modifier)
-                    .on_change(cx.listener(|_, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        AppState::update_settings(cx, |settings| {
-                            settings.map_shortcut_modifier = checked;
-                        });
-                        cx.notify();
+                    .gap_4()
+                    .child(field(
+                        text().address,
+                        Input::new(&self.address).id("connect-address").prefix(
+                            div()
+                                .text_color(muted)
+                                .child(Icon::new(IconName::Globe).small()),
+                        ),
+                    ))
+                    .child(field(
+                        text().password,
+                        Input::new(&self.password).id("connect-password").prefix(
+                            div()
+                                .text_color(muted)
+                                .child(Icon::new(AssetIcon::KeyRound).small()),
+                        ),
+                    ))
+                    .child(style::row_group(
+                        [style::setting_row(
+                            AssetIcon::Command,
+                            text().map_shortcut_modifier,
+                            Switch::new("map-shortcut-modifier")
+                                .accessibility_label(text().map_shortcut_modifier)
+                                .checked(AppState::settings(cx).map_shortcut_modifier)
+                                .on_change(cx.listener(|_, checked: &bool, _, cx| {
+                                    let checked = *checked;
+                                    AppState::update_settings(cx, |settings| {
+                                        settings.map_shortcut_modifier = checked;
+                                    });
+                                    cx.notify();
+                                })),
+                            cx,
+                        )],
+                        cx,
+                    ))
+                    .child(
+                        Button::new("connect")
+                            .primary()
+                            .large()
+                            .w_full()
+                            .label(if self.connecting {
+                                text().connecting
+                            } else {
+                                text().connect
+                            })
+                            .loading(self.connecting)
+                            .disabled(self.connecting)
+                            .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
+                    )
+                    .children(self.error.clone().map(|error| {
+                        style::callout(IconName::CircleX, cx.theme().danger, cx)
+                            .child(div().flex_1().text_sm().child(error))
                     })),
             )
-            .child(
-                Button::new("connect")
-                    .primary()
-                    .label(if self.connecting {
-                        text().connecting
-                    } else {
-                        text().connect
-                    })
-                    .loading(self.connecting)
-                    .disabled(self.connecting)
-                    .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
-            )
-            .children(
-                self.error
-                    .clone()
-                    .map(|error| div().text_sm().text_color(cx.theme().danger).child(error)),
-            )
-            .when(!self.nearby.is_empty(), |panel| {
-                panel.child(
-                    div()
-                        .v_flex()
-                        .gap_1()
-                        .child(label(text().nearby_devices, cx))
-                        .children(self.nearby.iter().map(|device| {
-                            let address = nearby_address(device);
-                            Button::new(SharedString::from(format!("nearby-{}", device.id)))
-                                .ghost()
-                                .small()
-                                .label(format!("{} · {address}", device.name))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let address = address.clone();
-                                    this.address.update(cx, |input, cx| {
-                                        input.set_value(address, window, cx);
-                                    });
-                                }))
-                        })),
-                )
-            })
-            .when(!recent.is_empty(), |panel| {
-                panel.child(
-                    div()
-                        .v_flex()
-                        .gap_1()
-                        .child(label(text().recent, cx))
-                        .children(recent.into_iter().map(|address| {
-                            Button::new(SharedString::from(format!("recent-{address}")))
-                                .ghost()
-                                .small()
-                                .label(address.clone())
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let address = address.clone();
-                                    this.address.update(cx, |input, cx| {
-                                        input.set_value(address, window, cx);
-                                    });
-                                }))
-                        })),
-                )
-            })
+            .child(self.render_devices(cx))
     }
 }

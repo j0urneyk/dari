@@ -58,6 +58,14 @@ pub(crate) struct Text {
     pub(crate) relay_placeholder: &'static str,
     pub(crate) relay_connecting: &'static str,
     pub(crate) relay_required: &'static str,
+    pub(crate) connect_subtitle: &'static str,
+    pub(crate) hosting_on: &'static str,
+    pub(crate) hosting_off: &'static str,
+    pub(crate) not_accepting_hint: &'static str,
+    pub(crate) other_addresses: &'static str,
+    pub(crate) settings: &'static str,
+    pub(crate) nearby_empty: &'static str,
+    pub(crate) approval_hint: &'static str,
     korean: bool,
 }
 
@@ -72,11 +80,9 @@ impl Text {
 
     pub(crate) fn approval_prompt(&self, name: &str) -> String {
         if self.korean {
-            format!(
-                "{name}이(가) 이 기기에 접속하려고 합니다. 30초 안에 응답하지 않으면 거부됩니다."
-            )
+            format!("{name}이(가) 이 기기에 접속하려고 합니다.")
         } else {
-            format!("{name} wants to connect to this device. It is declined after 30 seconds.")
+            format!("{name} wants to connect to this device.")
         }
     }
 
@@ -208,6 +214,14 @@ static KOREAN: Text = Text {
     relay_placeholder: "다른 네트워크에서 접속하려면 릴레이 주소 입력 (선택)",
     relay_connecting: "릴레이에 연결하는 중…",
     relay_required: "ID로 접속하려면 먼저 릴레이 서버를 설정하세요",
+    connect_subtitle: "상대 기기에 표시된 주소와 비밀번호로 접속합니다",
+    hosting_on: "접속 가능",
+    hosting_off: "원격 접속 꺼짐",
+    not_accepting_hint: "켜면 이 기기의 접속 주소와 일회용 비밀번호가 표시됩니다.",
+    other_addresses: "다른 주소",
+    settings: "설정",
+    nearby_empty: "같은 네트워크에서 Dari를 켠 기기가 여기에 나타납니다",
+    approval_hint: "30초 안에 응답하지 않으면 자동으로 거부됩니다.",
     korean: true,
 };
 
@@ -263,6 +277,14 @@ static ENGLISH: Text = Text {
     relay_placeholder: "Relay address for connecting across networks (optional)",
     relay_connecting: "Connecting to the relay…",
     relay_required: "Set a relay server to connect by ID",
+    connect_subtitle: "Use the address and password shown on the other device",
+    hosting_on: "Accepting connections",
+    hosting_off: "Remote access off",
+    not_accepting_hint: "Turn it on to show this device's address and one-time password.",
+    other_addresses: "Other addresses",
+    settings: "Settings",
+    nearby_empty: "Devices running Dari on this network show up here",
+    approval_hint: "Declined automatically after 30 seconds without an answer.",
     korean: false,
 };
 

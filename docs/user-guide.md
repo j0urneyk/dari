@@ -2,7 +2,10 @@
 
 Installation and the basic flow are in the [README](../README.md#install). This guide covers each part of the
 screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
-when the system language is Korean, and in English otherwise.
+when the system language is Korean, and in English otherwise, and it follows the system's light or dark appearance.
+
+The pill at the top right of the home window sums up this device: accepting connections, a pending connection
+request, a connected viewer, or remote access off.
 
 ## Home window
 
@@ -10,8 +13,8 @@ when the system language is Korean, and in English otherwise.
 
 | Item | Description |
 | --- | --- |
-| **Allow remote access** | When off, new connections are refused. A running session is not affected |
-| **Addresses** | The `IP:port` list that devices on the same network enter. The default port is UDP 47821 |
+| **Allow remote access** | The switch in the card's header. When off, new connections are refused. A running session is not affected |
+| **Addresses** | The `IP:port` that devices on the same network enter, with any further addresses under **Other addresses**. The default port is UDP 47821 |
 | **One-time password** | Ten characters, like `K7MXQ-3PTWA`. Copy, show/hide, and **New password**. It's gone once a connection uses it, and a new one is made when the session ends |
 | **My ID** | The nine-digit ID (`123 456 789`) shown when a relay server is set |
 | **Relay server** | Enter `server` or `server:port` and press Enter. Leave it empty to not use a relay |
@@ -31,7 +34,7 @@ hostname, or, when using a relay, a nine-digit ID. Without a port, 47821 is used
 the same relay server set too. The password ignores case, spaces, and `-`. Press Enter to connect right away.
 
 **Recent** lists the last five addresses, and **Nearby devices** lists devices advertising on the same network.
-Nearby-device information is an unauthenticated display hint; connecting always checks the password.
+Picking one fills in the address and moves to the password field. Nearby-device information is an unauthenticated display hint; connecting always checks the password.
 
 **Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
 Windows, ⌘C arrives as Ctrl+C and copies as usual.
@@ -44,7 +47,10 @@ movement, clicks, the wheel, and key presses over the screen go to the remote de
 Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
 
 The toolbar shows frames per second and round-trip latency (`30 fps · 12 ms`), and offers **Display** (choose
-among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. Closing the window also ends the
+among monitors), quality (**Speed / Balanced / Quality**), and **Disconnect**. The dot before the device name is
+green while the session runs, amber while the host is still deciding, and gray once the session is over; a finished
+session explains why and offers **Close**. Limits such as a view-only session appear as a notice at the top of the
+screen. Closing the window also ends the
 session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
 remote device.
 

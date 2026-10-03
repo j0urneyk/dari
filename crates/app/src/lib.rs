@@ -11,6 +11,7 @@ mod permissions;
 mod runtime;
 mod settings;
 mod state;
+mod style;
 mod text;
 mod video_layout;
 mod viewer;
@@ -20,8 +21,12 @@ use gpui_kit::*;
 use tracing_subscriber::EnvFilter;
 
 const WINDOW_SIZE: Size<Pixels> = Size {
-    width: px(960.),
-    height: px(640.),
+    width: px(1000.),
+    height: px(700.),
+};
+const MIN_WINDOW_SIZE: Size<Pixels> = Size {
+    width: px(760.),
+    height: px(520.),
 };
 
 #[derive(Debug, Parser)]
@@ -80,15 +85,15 @@ fn run_gui() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let data_directory = config::data_directory()?;
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(style::AppAssets)
         .run(move |cx| {
-            gpui_kit::init(cx);
-            viewer::init(cx);
+            init_ui(cx);
             runtime::TokioRuntime::install(runtime, cx);
             state::AppState::install(data_directory, cx);
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(WINDOW_SIZE, cx)),
+                window_min_size: Some(MIN_WINDOW_SIZE),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Dari".into()),
                     ..Default::default()
@@ -105,6 +110,13 @@ fn run_gui() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Initializes gpui-kit, Dari's theme, and the viewer's key bindings.
+fn init_ui(cx: &mut App) {
+    gpui_kit::init(cx);
+    style::init(cx);
+    viewer::init(cx);
+}
+
 /// Entry points for the headless GUI tests. Not a stable API.
 #[doc(hidden)]
 pub mod test_support {
@@ -112,5 +124,11 @@ pub mod test_support {
     pub use crate::runtime::TokioRuntime;
     pub use crate::settings::Settings;
     pub use crate::state::AppState;
-    pub use crate::viewer::{ViewerView, init as init_viewer, open_viewer_window};
+    pub use crate::style::{AppAssets, apply as apply_theme};
+    pub use crate::viewer::{ViewerView, open_viewer_window};
+
+    /// Everything the GUI needs before opening a window, as the app does at startup.
+    pub fn init(cx: &mut gpui_kit::App) {
+        crate::init_ui(cx);
+    }
 }

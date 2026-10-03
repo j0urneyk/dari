@@ -40,11 +40,12 @@ mod macos {
     use dari_session::{
         HostConfig, HostEvent, HostPlatform, ViewerConfig, ViewerTarget, connect_viewer, start_host,
     };
+    use gpui_kit::component::theme::ThemeMode;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::*;
 
     use dari::test_support::{
-        AppState, Home, Settings, TokioRuntime, init_viewer, open_viewer_window,
+        AppAssets, AppState, Home, Settings, TokioRuntime, apply_theme, open_viewer_window,
     };
 
     const DISPLAY: DisplayInfo = DisplayInfo {
@@ -112,14 +113,13 @@ mod macos {
     fn app(data_directory: &std::path::Path) -> HeadlessAppContext {
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
-            Arc::new(gpui_kit::assets::Assets),
+            Arc::new(AppAssets),
             gpui_kit::platform::current_headless_renderer,
         );
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let directory = data_directory.to_owned();
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            init_viewer(cx);
+            dari::test_support::init(cx);
             TokioRuntime::install(runtime, cx);
             AppState::install(directory, cx);
         });
@@ -178,7 +178,7 @@ mod macos {
         let mut cx = app(data.path());
         let (window, home) = cx
             .update(|cx| {
-                gpui_kit::open_window(window_options(960., 640.), cx, |window, cx| {
+                gpui_kit::open_window(window_options(1000., 700.), cx, |window, cx| {
                     cx.new(|cx| Home::new(window, cx))
                 })
             })
@@ -187,6 +187,9 @@ mod macos {
             cx.update(|cx| home.read(cx).has_password(cx))
         });
         save(&mut cx, window, "home");
+
+        cx.update(|cx| apply_theme(ThemeMode::Dark, cx));
+        save(&mut cx, window, "home-dark");
     }
 
     pub(super) fn viewer_window_shows_the_remote_screen_and_forwards_input() {
@@ -361,6 +364,13 @@ mod macos {
             growth < allowed,
             "replaced frames must be released; memory grew {growth:.1} MB over {shown} frames"
         );
+
+        // Ending the session on the host side tells the viewer why and offers to close.
+        host.end_session();
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            cx.update(|cx| view.read(cx).has_ended())
+        });
+        save(&mut cx, window, "viewer-ended");
         drop(host);
     }
 
@@ -420,7 +430,7 @@ mod macos {
         let mut cx = app(data.path());
         let (window, home) = cx
             .update(|cx| {
-                gpui_kit::open_window(window_options(960., 900.), cx, |window, cx| {
+                gpui_kit::open_window(window_options(1000., 900.), cx, |window, cx| {
                     cx.new(|cx| Home::new(window, cx))
                 })
             })

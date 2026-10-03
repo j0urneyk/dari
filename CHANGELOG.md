@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The app has a new look. It uses Dari's blue throughout and follows the system's light or dark appearance. The
+  home window puts the one-time password and address up front, shows connection requests as a prominent card,
+  groups settings into a list, and lists nearby and recent devices as rows you can pick from. The viewer toolbar
+  has a session status dot and segmented display and quality controls, and waiting, approval, and session-ended
+  states appear as centered cards over the screen.
+
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.
 - Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead
