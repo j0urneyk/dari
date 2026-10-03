@@ -279,6 +279,7 @@ impl Home {
             div()
                 .absolute()
                 .inset_0()
+                .opacity(style::picture_opacity(cx))
                 .child(
                     img(scenery.frost.clone())
                         .absolute()
@@ -587,6 +588,7 @@ impl Render for Home {
             div()
                 .absolute()
                 .inset_0()
+                .opacity(style::picture_opacity(cx))
                 .child(layer(scenery.picture.clone()))
                 .child(layer(scenery.glow.clone()))
                 .child(

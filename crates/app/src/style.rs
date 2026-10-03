@@ -265,6 +265,12 @@ pub(crate) fn content_surface(cx: &App) -> Hsla {
     surface(cx).opacity(if translucent(cx) { 0.86 } else { 1. })
 }
 
+/// How opaque the background picture's layers are: with translucency on, what is behind the
+/// window shows through the picture too, blurred.
+pub(crate) fn picture_opacity(cx: &App) -> f32 {
+    if translucent(cx) { 0.82 } else { 1. }
+}
+
 /// The surface color shifted toward a background picture's `average` color, so the surface
 /// over the picture belongs to it.
 fn picture_surface(average: Hsla, cx: &App) -> Hsla {
