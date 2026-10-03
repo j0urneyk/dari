@@ -183,6 +183,20 @@ open -n --stdout target/crosscheck/host.log target/crosscheck/DariCheck.app --ar
 Then run `dari-check audio-view 127.0.0.1:PORT` with the port and password from `host.log` (here, or from another
 machine with this Mac's address). The tone is audible during the run.
 
+On the Windows VM, give it a sound card first; `create-vm.sh` doesn't, and without one the host reports audio
+Unavailable. This shuts the VM down, restarts UTM with an `intel-hda` device, and starts the VM again (it does nothing
+if the VM already has one):
+
+```bash
+scripts/crosscheck/vm/add-sound.sh
+```
+
+Run the Windows host in the desktop session (`interactive.ps1 start -Name audio-host -Exe
+C:\dari-check\dari-check.exe -Arguments 'audio-host','--port','47821' -Log ...`), since WASAPI loopback needs the
+signed-in user's audio session, and the viewer anywhere. A copy of `dari-check.exe` outside `C:\dari-check` needs its
+own firewall program rule, as `prepare-peer.ps1` makes for that path: otherwise Windows answers the first listen with
+block rules and the viewer times out.
+
 #### Local Windows 11 VM
 
 On Apple silicon, `scripts/crosscheck/vm/create-vm.sh` creates a Windows 11 on Arm VM in UTM (`brew install --cask
