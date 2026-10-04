@@ -144,7 +144,8 @@ encoder lowers the SPS's `level_idc` to 5.2. The level only states a throughput,
 frames stay within 5.2's limits.
 
 Turning real-time mode off costs little power. While streaming, the media engine (the `AVE` channel of IOReport's
-energy counters, the source `powermetrics` reads, which needs no sudo) draws 0.06–0.2 W with real-time mode off.
+energy counters, the source `powermetrics` reads; the `power_sample` example reads it without sudo, see
+[development.md](development.md)) draws 0.06–0.2 W with real-time mode off.
 Real-time mode saves 0.04–0.1 W of that, at most 0.1 Wh per hour of streaming, and it saves it by lowering the
 clock, which is where the latency comes from. Every frame gets slower, including isolated ones and frames of slow
 streams, so real-time mode can't be enabled only for low frame rates: a keystroke on a still screen would take more
