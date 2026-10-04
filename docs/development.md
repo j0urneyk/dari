@@ -464,7 +464,7 @@ Release steps:
    `## [Unreleased]` and the compare/tag links (Keep a Changelog). Update the version in the root `Cargo.toml` too.
 2. Merge that through a PR, then push a `vx.y.z` tag.
 3. `.github/workflows/release.yml` builds the macOS dmg, the Windows installer, and the Linux relay tar.gz, and
-   creates a draft release whose notes are the matching CHANGELOG section. Extraction stops at the next `## [`
+   creates a draft release titled with the bare version (`x.y.z`) whose notes are the matching CHANGELOG section. Extraction stops at the next `## [`
    heading or a `[x]: ` link-definition line. If a release for the tag already exists, only the assets are added
    (`--clobber`).
 4. Check that the draft notes match the CHANGELOG section, then publish.

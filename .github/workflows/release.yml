@@ -138,5 +138,6 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$TAG" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" artifacts/* --draft --title "dari $TAG" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
+            # The release is titled with the bare version (0.0.2), not the tag (v0.0.2).
+            gh release create "$TAG" artifacts/* --draft --title "${TAG#v}" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
           fi

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-10-05
+
 ### Added
 
 - File and folder transfer in both directions for sessions that allow control. Drop files or folders on the remote
@@ -77,7 +79,7 @@ All notable changes to this project are documented here. The format follows
   lets a refused app record, but only silence, so the host now asks macOS whether it was refused and tells the viewer,
   whose toolbar shows **No sound permission** with where to allow it. While macOS is still asking the host's user, the
   viewer's sound button reads **Waiting for sound permission** instead of playing nothing, and sound starts once they
-  allow it. This adds an availability state to the unreleased session protocol 2.0.
+  allow it.
 - A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
   keyboard layout from the input thread, which macOS only allows on the main thread, so the app crashed; character
   keys are now pressed by their key code.
@@ -113,5 +115,6 @@ The first release of Dari.
   network declarations, and a tag-triggered release workflow that also ships the Linux relay.
 - Licensed under MIT OR Apache-2.0.
 
-[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/j0urneyk/dari/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/j0urneyk/dari/releases/tag/v0.0.1

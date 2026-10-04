@@ -26,7 +26,7 @@ The UI is in Korean or English: it follows the system language unless you pick o
 
 ## Status
 
-Dari is early: 0.0.1 is its first release. Automated tests run real QUIC sessions against synthetic screens, and
+Dari is early: 0.0.2 is its second release. Automated tests run real QUIC sessions against synthetic screens, and
 GUI tests render the app on macOS. Sessions between hosted runners cover every pairing (Mac and Windows, two Macs,
 two Windows PCs) every night. Some things haven't been checked on real hardware yet:
 
