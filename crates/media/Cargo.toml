@@ -17,6 +17,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 xcap.workspace = true
+yuv.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true

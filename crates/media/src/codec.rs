@@ -2,8 +2,9 @@
 //!
 //! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS, a
 //! Media Foundation hardware encoder on Windows) and OpenH264 otherwise. Decoding always uses
-//! OpenH264. Every encoder emits the same Annex-B Constrained Baseline stream with BT.601
-//! limited-range color, so any viewer decodes any host.
+//! OpenH264, and the `yuv` crate converts its output to BGRA. Every encoder emits the same
+//! Annex-B Constrained Baseline stream with BT.601 limited-range color, so any viewer decodes any
+//! host.
 
 use openh264::OpenH264API;
 use openh264::decoder::Decoder;
@@ -36,6 +37,8 @@ pub enum CodecError {
     Windows { operation: &'static str, code: i32 },
     #[error("malformed encoder output: {0}")]
     MalformedOutput(&'static str),
+    #[error("color conversion failed: {0}")]
+    ColorConversion(#[from] yuv::YuvError),
 }
 
 /// Encoder tuning.
@@ -475,20 +478,39 @@ impl VideoDecoder {
             return Ok(None);
         };
         let (width, height) = yuv.dimensions();
-        if width == 0 || height == 0 || width.saturating_mul(height) > MAX_DECODED_PIXELS {
-            return Err(CodecError::UnsupportedDimensions {
-                width: u32::try_from(width).unwrap_or(u32::MAX),
-                height: u32::try_from(height).unwrap_or(u32::MAX),
-            });
-        }
-        let mut bgra = vec![0u8; width * height * 4];
-        yuv.write_rgba8(&mut bgra);
-        for pixel in bgra.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
-        }
-        Ok(Some(DecodedFrame {
+        let unsupported = || CodecError::UnsupportedDimensions {
             width: u32::try_from(width).unwrap_or(u32::MAX),
             height: u32::try_from(height).unwrap_or(u32::MAX),
+        };
+        if width == 0 || height == 0 || width.saturating_mul(height) > MAX_DECODED_PIXELS {
+            return Err(unsupported());
+        }
+        let (y_stride, u_stride, v_stride) = yuv.strides();
+        let to_u32 = |value: usize| u32::try_from(value).map_err(|_| unsupported());
+        let image = yuv::YuvPlanarImage {
+            y_plane: yuv.y(),
+            y_stride: to_u32(y_stride)?,
+            u_plane: yuv.u(),
+            u_stride: to_u32(u_stride)?,
+            v_plane: yuv.v(),
+            v_stride: to_u32(v_stride)?,
+            width: to_u32(width)?,
+            height: to_u32(height)?,
+        };
+        // One SIMD pass straight to BGRA, with the encoders' BT.601 limited-range matrix. It
+        // replaced OpenH264's `write_rgba8` and an R/B swap, which took about four times as long
+        // as decoding itself.
+        let mut bgra = vec![0u8; width * height * 4];
+        yuv::yuv420_to_bgra(
+            &image,
+            &mut bgra,
+            image.width * 4,
+            yuv::YuvRange::Limited,
+            yuv::YuvStandardMatrix::Bt601,
+        )?;
+        Ok(Some(DecodedFrame {
+            width: image.width,
+            height: image.height,
             bgra,
         }))
     }
@@ -576,6 +598,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn decoded_colors_keep_bt601_limited_range() {
+        // Saturated colors move by tens of levels under the wrong matrix or range.
+        let colors = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [128, 128, 128],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [240, 64, 32],
+        ];
+        for mut encoder in encoders() {
+            let hardware = encoder.is_hardware();
+            let mut decoder = VideoDecoder::new().unwrap();
+            for [red, green, blue] in colors {
+                let pixels = [red, green, blue, 255].repeat(64 * 64);
+                let source = RgbaFrame::new(64, 64, pixels.clone()).unwrap();
+                encoder.request_keyframe();
+                let encoded = encoder.encode(&source.into()).unwrap().unwrap();
+                let decoded = decoder.decode(&encoded.data).unwrap().unwrap();
+                let error = mean_abs_error(&pixels, &decoded.bgra);
+                assert!(
+                    error < 3.0,
+                    "{:?} decoded as {:?}, mean error {error} (hardware: {hardware})",
+                    [red, green, blue],
+                    &decoded.bgra[..4]
+                );
+            }
+        }
+    }
+
+    /// Measures decoding the Quality preset's size to BGRA, the viewer's per-frame cost:
+    /// `cargo test --release -p dari-media -- --ignored --nocapture decoding_keeps_up`.
+    #[test]
+    #[ignore = "a release-mode throughput measurement"]
+    fn decoding_keeps_up_with_144_fps() {
+        let mut encoder = VideoEncoder::new(EncoderSettings {
+            max_fps: 144.0,
+            hardware: false,
+            ..EncoderSettings::default()
+        })
+        .unwrap();
+        let mut capturer = SyntheticCapturer::new(2560, 1662);
+        let packets: Vec<_> = (0..32)
+            .filter_map(|_| encoder.encode(&frame(&mut capturer)).unwrap())
+            .collect();
+        let mut decoder = VideoDecoder::new().unwrap();
+        let started = std::time::Instant::now();
+        for packet in &packets {
+            decoder.decode(&packet.data).unwrap().unwrap();
+        }
+        let per_frame = started.elapsed() / u32::try_from(packets.len()).unwrap();
+        println!("2560x1662 decoded to BGRA in {per_frame:?} per frame");
+        assert!(
+            per_frame < std::time::Duration::from_secs(1) / 144,
+            "{per_frame:?} per frame is too slow for 144 fps"
+        );
     }
 
     #[test]

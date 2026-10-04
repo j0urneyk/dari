@@ -128,6 +128,8 @@ pub struct ViewerHandle {
     peer: PeerInfo,
     outgoing: mpsc::Sender<Outgoing>,
     frames: watch::Receiver<Option<Arc<DecodedFrame>>>,
+    /// Lets [`ViewerHandle::take_frame`] move the latest frame out of the channel.
+    frame_slot: watch::Sender<Option<Arc<DecodedFrame>>>,
     stats: Arc<ViewerStats>,
     link: Arc<SessionLink>,
     transfers: mpsc::UnboundedSender<TransferCommand>,
@@ -184,9 +186,16 @@ impl ViewerHandle {
             .try_send(Outgoing::SetFrameRate(rate.clamp(1, MAX_FRAME_RATE)));
     }
 
-    /// The most recent decoded frame. Older frames are skipped, never queued.
+    /// The most recent decoded frame. Older frames are skipped, never queued. The channel stays
+    /// open until this handle is dropped.
     pub fn frames(&self) -> watch::Receiver<Option<Arc<DecodedFrame>>> {
         self.frames.clone()
+    }
+
+    /// Takes the most recent decoded frame out of [`ViewerHandle::frames`], leaving `None`. The
+    /// pixels move without a copy unless a receiver still holds a clone of the frame's `Arc`.
+    pub fn take_frame(&self) -> Option<DecodedFrame> {
+        take_latest(&self.frame_slot)
     }
 
     pub fn stats(&self) -> &ViewerStats {
@@ -281,7 +290,7 @@ pub async fn connect_viewer(
         control_receiver,
         outgoing.clone(),
         outgoing_receiver,
-        frame_sender,
+        frame_sender.clone(),
         events,
         stats.clone(),
         mapping,
@@ -295,6 +304,7 @@ pub async fn connect_viewer(
             peer,
             outgoing,
             frames,
+            frame_slot: frame_sender,
             stats,
             link,
             transfers,
@@ -701,6 +711,16 @@ async fn receive_video(
     result
 }
 
+fn take_latest(slot: &watch::Sender<Option<Arc<DecodedFrame>>>) -> Option<DecodedFrame> {
+    let mut taken = None;
+    // Receivers are not told: there is nothing new for them to see.
+    slot.send_if_modified(|frame| {
+        taken = frame.take();
+        false
+    });
+    taken.map(Arc::unwrap_or_clone)
+}
+
 fn decode_loop(
     mut packets: mpsc::Receiver<VideoPacket>,
     frames: &watch::Sender<Option<Arc<DecodedFrame>>>,
@@ -741,6 +761,26 @@ mod tests {
     use dari_proto::{KeyCode, NamedKey, PointerPosition};
 
     use super::*;
+
+    #[test]
+    fn taking_a_frame_moves_its_pixels_without_a_copy() {
+        let (slot, mut frames) = watch::channel(None);
+        let frame = DecodedFrame {
+            width: 2,
+            height: 1,
+            bgra: vec![1, 2, 3, 255, 4, 5, 6, 255],
+        };
+        let pixels = frame.bgra.as_ptr();
+        slot.send_replace(Some(Arc::new(frame)));
+        assert!(frames.has_changed().unwrap());
+        frames.mark_unchanged();
+
+        let taken = take_latest(&slot).unwrap();
+        assert_eq!(taken.bgra.as_ptr(), pixels, "the pixel buffer was copied");
+        assert!(frames.borrow().is_none());
+        assert!(!frames.has_changed().unwrap(), "taking is not a new frame");
+        assert!(take_latest(&slot).is_none());
+    }
 
     #[test]
     fn pointer_moves_leave_room_for_key_releases() {
