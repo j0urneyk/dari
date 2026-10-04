@@ -1,8 +1,8 @@
 # Dari
 
 Dari is a remote desktop app for macOS and Windows 11. The same app shares your screen (host) and controls
-another computer (viewer), so a Mac can control a Windows PC and the other way around. The name is Korean for
-"bridge" (다리).
+another computer (viewer), so any two of them work together: a Mac and a Windows PC in either direction, two Macs, or
+two Windows PCs. The name is Korean for "bridge" (다리).
 
 Every session is end-to-end encrypted and authenticated with a one-time password shown on the host. By default,
 the person at the host also has to approve each connection before anything is shared. It's written in Rust with a
@@ -20,16 +20,18 @@ What you can do with it:
 - Send files and folders both ways: drop them on the remote screen or pick them with **Send file…**. Files from the host are
   saved only after you accept them.
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
-  host.
+  host. Between two Macs or two Windows PCs they arrive unchanged.
 
 The UI is in Korean or English: it follows the system language unless you pick one in the settings.
 
 ## Status
 
 Dari is early: 0.0.1 is its first release. Automated tests run real QUIC sessions against synthetic screens, and
-GUI tests render the app on macOS. Some things haven't been checked on real hardware yet:
+GUI tests render the app on macOS. Sessions between hosted runners cover every pairing (Mac and Windows, two Macs,
+two Windows PCs) every night. Some things haven't been checked on real hardware yet:
 
-- A session between a physical Mac and a physical Windows 11 PC.
+- A session between a physical Mac and a physical Windows 11 PC, between two physical Macs, or between two physical
+  Windows 11 PCs.
 - Screen sharing and input injection with the macOS permissions actually granted.
 - The Windows installer produced by the release workflow.
 
@@ -138,7 +140,8 @@ input, wherever it sits on the network.
 
 - Windows' secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) can't be captured or controlled by a
   regular app.
-- Video uses software H.264 encoding only. There's no unattended access, and a Mac shares its sound only on macOS 14.6 or later.
+- A Windows PC without a hardware H.264 encoder encodes on the CPU, at a much lower frame rate. There's no
+  unattended access, and a Mac shares its sound only on macOS 14.6 or later.
 - Builds exist only for Apple silicon Macs and x64 Windows.
 
 ## Building from source

@@ -58,6 +58,9 @@ All notable changes to this project are documented here. The format follows
   MacBook a 2560×1662 stream (the Quality preset) went from about 9.6 ms to 2.4 ms per frame, so viewers now keep
   up with 144 fps hosts instead of stalling near 110 fps. Colors are unchanged.
 - Dari now requires macOS 13 or later (was 12).
+- Two Macs and two Windows PCs are supported pairings, not only a Mac and a Windows PC; ⌘ and Ctrl shortcuts pass
+  through unchanged between computers on the same OS. The nightly cross-device check now runs sessions between two
+  macOS runners and between two Windows runners as well, in both directions, directly, through a relay, and view only.
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.
 - Hosts throttle failed password attempts through a relay per viewer (by the viewer IP the relay reports) instead

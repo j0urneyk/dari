@@ -85,7 +85,7 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 | Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (the first stream already runs at the requested rate, with or without approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
 | GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
-| Cross-device | `crates/check`, `scripts/crosscheck/` | This Mac against a Windows VM or an x64 runner over SSH, in both directions; see [Cross-device checks](#cross-device-checks) |
+| Cross-device | `crates/check`, `scripts/crosscheck/` | Two machines in both directions, for every pairing: Mac and Windows, two Macs, two Windows PCs; see [Cross-device checks](#cross-device-checks) |
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
 Real capture and encoding performance is measured with an example that captures and encodes the primary display
@@ -164,11 +164,13 @@ with the installed `dari.exe`.
 
 ### Cross-device checks
 
-`scripts/crosscheck/crosscheck.sh` runs sessions between a Mac and a Windows machine it reaches over SSH, in both
-directions. Every night and on pull requests that touch the crates, the **Cross-device check** workflow runs it between
-a macOS runner and an x64 Windows runner; before a release, run it from your Mac against a local Windows 11 VM, which
-adds what the runners can't have: the Korean input method, a second monitor, and 150% scaling. Each case runs `dari-check host` on one side and
-`dari-check view` on the other. `dari-check` (`crates/check`) is a test-only binary that isn't packaged. The two
+`scripts/crosscheck/crosscheck.sh` runs sessions between two peers, A and B, in both directions. Either peer can be
+a Mac or a Windows PC, so it covers every pairing Dari supports: a Mac and a Windows PC, two Macs, and two Windows
+PCs. A peer is this Mac (`--a local`) or a machine the script reaches over SSH (`--b windows:USER@HOST`, `--b
+macos:USER@HOST`); the script itself runs on macOS or Linux. Every night and on pull requests that touch the crates,
+the **Cross-device check** workflow runs all three pairings on hosted runners; before a release, run it from your Mac
+against a local Windows 11 VM, which adds what the runners can't have: the Korean input method, a second monitor, and
+150% scaling. Each case runs `dari-check host` on one peer and `dari-check view` on the other. `dari-check` (`crates/check`) is a test-only binary that isn't packaged. The two
 sides share nothing but the session, and each checks what it can observe on its own machine:
 
 | Side | Checks |
@@ -178,16 +180,30 @@ sides share nothing but the session, and each checks what it can observe on its 
 | Viewer | Status matches the approval; the expected number of displays; switching to each display; frames shaped like the display with real content (saved as PNGs); the host's clipboard reply arrives on this machine's clipboard |
 | View only | No input or clipboard text reaches the host, and nothing comes back |
 
-The cases are `mac-host-direct`, `windows-host-direct`, `mac-host-relay`, `windows-host-relay` (through a
-`dari-relay` the script runs on the Mac), `mac-host-view-only` and `windows-host-view-only`. With `--release TAG` it
-also downloads that release, installs the DMG's app here and the Windows installer on the peer, and connects the
-installed apps to each other in both directions with their own headless `host` and `connect` commands
-(`installed-windows-host`, `installed-mac-host`), which catches packaging problems a source build can't. In an allowed
-session the
-host ends the session after the clipboard round trip, and in a view-only session the viewer disconnects, which
-covers both disconnect directions. Logs and frames go to `target/crosscheck/<time>/`. Don't touch the Mac's mouse
-during a run: the host check reads the real pointer position, and the Mac's clipboard is overwritten and then
-restored. The terminal running the script needs Screen Recording and Accessibility.
+The checks are the same for every pairing: each side judges by its own OS, so a Mac host expects ⌘ from a Mac
+viewer just as it does from a Windows viewer, whose Ctrl the session translates, and a Windows viewer still sends
+the Hangul key to a Windows host. Between two Macs or two Windows PCs nothing is translated, and the host's "no
+untranslated foreign modifier" check proves that end to end.
+
+The cases are named by which peer hosts: `a-host-direct`, `b-host-direct`, `a-host-relay`, `b-host-relay` (through
+a `dari-relay` the script runs on its own machine), `a-host-view-only`, `b-host-view-only`, and the audio check
+`a-host-audio`, `b-host-audio` (see [Audio check](#audio-check); `--no-audio` reports them as skipped). With
+`--release TAG` it also downloads that release, installs on each peer the package for its OS (the DMG's app on a Mac,
+the installer on Windows), and connects the installed apps to each other in both directions with their own headless
+`host` and `connect` commands (`a-host-installed`, `b-host-installed`), which catches packaging problems a source
+build can't. `--cases` picks a subset. In an allowed session the host ends the session after the clipboard round
+trip, and in a view-only session the viewer disconnects, which covers both disconnect directions. Logs and frames go
+to `target/crosscheck/<time>/`. Don't touch a Mac peer's mouse during a run: the host check reads the real pointer
+position, and the Mac's clipboard is overwritten and then restored. When this Mac is a peer, the terminal running the
+script needs Screen Recording and Accessibility.
+
+Programs started over SSH can't capture the screen or inject input, so on each peer the script starts them in the
+signed-in session through a helper: `windows/interactive.ps1` runs them as a scheduled task for the signed-in user,
+and on a Mac `macos/interactive.sh serve`, left running in a Terminal on that Mac (or a job step on a runner), starts
+what the script asks for over SSH as its own child, so the program gets that Terminal's grants. A local Mac peer goes
+through the same helper, which the script starts itself. Hosts listen on UDP 47831 on a Mac, so a Dari app running
+there (47821) doesn't get in the way, and on 47821 on Windows; the relay listens on 47822 on the driving machine,
+which may also be peer A.
 
 A host and a viewer on the same machine share one clipboard, so the clipboard round trip only passes between two
 machines. The rest of `dari-check` can still be tried locally with `dari-check host --port 0 --approve view-only
@@ -212,7 +228,9 @@ open -n --stdout target/crosscheck/host.log target/crosscheck/DariCheck.app --ar
 ```
 
 Then run `dari-check audio-view 127.0.0.1:PORT` with the port and password from `host.log` (here, or from another
-machine with this Mac's address). The tone is audible during the run.
+machine with this Mac's address). The tone is audible during the run. `crosscheck.sh` runs the same pair as its
+`a-host-audio` and `b-host-audio` cases: it builds `DariCheck.app` on every Mac peer and opens it there, so approve
+the system audio prompt on each Mac on the first run.
 
 On the Windows VM, give it a sound card first; `create-vm.sh` doesn't, and without one the host reports audio
 Unavailable. This shuts the VM down, restarts UTM with an `intel-hda` device, and starts the VM again (it does nothing
@@ -222,9 +240,9 @@ if the VM already has one):
 scripts/crosscheck/vm/add-sound.sh
 ```
 
-Run the Windows host in the desktop session (`interactive.ps1 start -Name audio-host -Exe
-C:\dari-check\dari-check.exe -Arguments 'audio-host','--port','47821' -Log ...`), since WASAPI loopback needs the
-signed-in user's audio session, and the viewer anywhere. A copy of `dari-check.exe` outside `C:\dari-check` needs its
+`crosscheck.sh` runs the Windows host in the desktop session through `interactive.ps1`, since WASAPI loopback needs
+the signed-in user's audio session; by hand, that's `interactive.ps1 start -Name audio-host -Exe
+C:\dari-check\dari-check.exe -Arguments 'audio-host','--port','47821' -Log ...`, and the viewer anywhere. A copy of `dari-check.exe` outside `C:\dari-check` needs its
 own firewall program rule, as `prepare-peer.ps1` makes for that path: otherwise Windows answers the first listen with
 block rules and the viewer times out.
 
@@ -256,7 +274,7 @@ Network access (System Settings → Privacy & Security → Local Network), or ev
 "No route to host".
 
 ```bash
-scripts/crosscheck/crosscheck.sh --windows dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build
+scripts/crosscheck/crosscheck.sh --a local --b windows:dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build
 ```
 
 `vm/add-second-display.sh` then gives the VM a second monitor, 1920×1080 at 150% to the right of the 100% primary,
@@ -265,7 +283,7 @@ add one itself (a second virtio-gpu device stops Windows on Arm from booting), s
 [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) with
 `windows/install-virtual-display.ps1`. Windows 11 24H2 and later refuse that Arm64 driver unless test signing is on,
 so the script turns test signing on in the VM (`bcdedit /set testsigning off` undoes it). Then pass
-`--expect-windows-displays 2`. For a Windows machine set up by hand, run `windows/setup-vm.ps1` in an elevated
+`--b-displays 2`. For a Windows machine set up by hand, run `windows/setup-vm.ps1` in an elevated
 PowerShell instead of the VM scripts.
 
 ```bash
@@ -277,17 +295,58 @@ Don't remove the VM's CD drives: that moves the system disk to another PCI addre
 Scripts in `scripts/crosscheck/` that run on Windows are ASCII only, which CI checks: Windows PowerShell 5.1 reads
 a script without a byte order mark in the system code page, and on Korean Windows a single "…" broke parsing.
 
-#### Every night: macOS and Windows runners
+#### A second Mac or Windows PC
+
+To check two Macs or two PCs on real hardware, prepare each machine you reach over SSH once. On a Windows PC, run
+`windows/setup-vm.ps1` in an elevated PowerShell, or `windows/prepare-peer.ps1 -PublicKey ...` if it already has
+`dari-check.exe` in `C:\dari-check`; it must stay signed in. On a Mac, `macos/prepare-peer.sh` turns on Remote Login
+with key-only login and authorizes your key, and `macos/interactive.sh serve` must run in a Terminal on it, with
+Screen Recording and Accessibility granted to Terminal, for as long as the checks run. On a Mac with macOS's
+firewall on, allow incoming connections for `dari-check` when it asks. `--build` copies this checkout to each SSH
+peer and builds `dari-check` there (a Mac peer needs Rust and the Xcode command line tools).
+
+```bash
+scripts/crosscheck/macos/prepare-peer.sh "$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+```bash
+scripts/crosscheck/macos/interactive.sh serve
+```
+
+Then, from your Mac:
+
+```bash
+scripts/crosscheck/crosscheck.sh --a local --b macos:me@192.168.0.12 --build
+```
+
+For two Windows PCs, run it from a Mac or Linux machine that reaches both; it runs the relay itself:
+
+```bash
+scripts/crosscheck/crosscheck.sh --a windows:me@192.168.0.21 --b windows:me@192.168.0.22 --build
+```
+
+The checks don't cover everything in a same-OS pair; the manual checklist in
+[#20](https://github.com/j0urneyk/dari/issues/20) lists what to try by hand (Nearby devices, the approval prompt's
+timeout, quality presets, Korean input, file transfer, and macOS permissions).
+
+#### Every night: hosted runners
 
 `.github/workflows/crosscheck.yml` runs every night, on demand, and on pull requests from this repository that touch
-`crates/`, `Cargo.lock`, or `scripts/crosscheck/`. Hosted runners can't reach each other, so both join the tailnet as
-ephemeral `tag:ci` nodes through Tailscale workload identity federation. A first job makes an SSH key for the run; the
-Windows job builds `dari-check`, allows SSH and UDP 47821 from tailnet addresses only, joins as `dari-check-<run id>`,
-and waits; the macOS job joins as `dari-check-<run id>-mac` and runs `crosscheck.sh` against it with
-`scripts/crosscheck/ci-driver.sh`, then tells it to finish. Logs and frames are the `crosscheck-mac` and
-`crosscheck-windows` artifacts, and a failing nightly run sends GitHub's usual failed-workflow notification. The
-Windows runner is Windows Server in English with one display, so Hangul input, a second monitor, and scaling are left
-to the VM.
+`crates/`, `Cargo.lock`, or `scripts/crosscheck/`, for three pairings: a macOS runner and an x64 Windows runner, two
+macOS runners, and two Windows runners. The repository is public, so the runner minutes cost nothing and every
+pairing runs on pull requests too. Hosted runners can't reach each other, so all of them join the tailnet as
+ephemeral `tag:ci` nodes through Tailscale workload identity federation. A first job makes an SSH key for the run.
+Peer jobs build `dari-check`, open SSH, join as `dari-check-<run id>-<pairing>-<a|b>`, and wait: a Windows peer
+allows SSH and UDP 47821 from tailnet addresses only and waits for a `done` file; a macOS peer runs
+`macos/interactive.sh serve` in a job step until its `done` file appears, because only the job's own processes have
+the runner image's Screen Recording grant (the image grants SSH sessions Accessibility but not Screen Recording).
+A driver job per pairing joins as `dari-check-<run id>-<pairing>-driver` and runs `crosscheck.sh` with
+`scripts/crosscheck/ci-driver.sh`, then tells its peers to finish. When the pairing has a Mac, the driver is that
+macOS runner and is peer A itself; two Windows peers are driven from an Ubuntu runner, which runs the relay. Logs and
+frames are the `crosscheck-<pairing>-<driver|a|b>` artifacts, and a failing nightly run sends GitHub's usual
+failed-workflow notification. Windows runners are Windows Server in English with one display and no GPU, so Hangul
+input, a second monitor, scaling, and the hardware encoder are left to the VM and real machines; hosted runners may have
+no sound output, so CI skips the audio cases.
 
 One-time setup:
 
@@ -316,10 +375,11 @@ One-time setup:
 #### Before a release: the local VM
 
 With the VM running (`utmctl start dari-win11`, then `vm/wait-vm.sh`), check the release candidate's source and its
-packaged builds from your Mac:
+packaged builds from your Mac. The audio cases need the VM's sound card (`vm/add-sound.sh`); pass `--no-audio`
+without one:
 
 ```bash
-scripts/crosscheck/crosscheck.sh --windows dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build --expect-windows-displays 2 --release vX.Y.Z
+scripts/crosscheck/crosscheck.sh --a local --b windows:dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --build --b-displays 2 --release vX.Y.Z
 ```
 
 #### Keeping the VM small
