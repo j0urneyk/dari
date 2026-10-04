@@ -113,7 +113,10 @@ viewer can't send them any. Each datagram is decoded and validated (at most 1,27
 - **Names:** a peer's file name is rejected unless it is a single component without separators, control
   characters, bidirectional overrides, or zero-width characters (an `exe` disguised as `photo‮gnp.exe` is
   refused). The receiver then makes it safe for both macOS and Windows and never overwrites an existing file. Files
-  are only ever written inside the downloads folder.
+  are only ever written inside the downloads folder. A folder's paths are checked component by component, so `..`
+  or a separator can't reach outside it, and colliding names (including by case) are numbered rather than
+  overwriting each other. Senders don't follow symbolic links, so a link inside a shared folder can't expose files
+  outside it.
 - **Integrity and cleanup:** a file is written as `<name>.part` and renamed only when exactly the offered number of
   bytes arrived on a cleanly finished stream. A reset stream, a short or long stream, a cancel from either side,
   or the session ending deletes the partial file. QUIC already authenticates every byte end to end.

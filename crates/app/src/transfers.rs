@@ -131,6 +131,7 @@ fn row<V: TransferActions>(transfer: &Transfer, cx: &mut Context<V>) -> Div {
         .text_xs()
         .text_color(cx.theme().muted_foreground)
         .child(format_size(transfer.size))
+        .children(transfer.files.map(|files| text().folder_files(files)))
         .child(state_label(transfer));
     let mut buttons = div().h_flex().gap_1();
     let incoming_offer = transfer.direction == TransferDirection::Receiving
@@ -260,6 +261,7 @@ mod tests {
             transferred: 0,
             state,
             saved_to: None,
+            files: None,
         }
     }
 

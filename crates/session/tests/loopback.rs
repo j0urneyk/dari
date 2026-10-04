@@ -1121,6 +1121,96 @@ async fn hosts_capture_audio_only_for_viewers_that_ask() {
     assert_eq!(live.load(Ordering::SeqCst), 0);
 }
 
+/// Every file below `dir`, as `relative/path` → contents.
+fn tree(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path.strip_prefix(dir).unwrap();
+                let key = relative
+                    .iter()
+                    .map(|component| component.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                found.insert(key, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    found
+}
+
+fn sample_folder(dir: &Path, name: &str) -> PathBuf {
+    let root = dir.join(name);
+    std::fs::create_dir_all(root.join("2026/여름")).unwrap();
+    std::fs::write(root.join("readme.txt"), b"hello").unwrap();
+    std::fs::write(root.join("empty.bin"), b"").unwrap();
+    sample_file(&root.join("2026"), "big.bin", 700_001);
+    std::fs::write(root.join("2026/여름/바다.jpg"), vec![9u8; 4321]).unwrap();
+    root
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn folders_flow_both_ways_with_their_structure() {
+    let mut session = file_session().await;
+
+    // Viewer → host.
+    let upload = sample_folder(session.sources.path(), "사진");
+    session.viewer.send_file(upload.clone());
+    let received = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(received.state, TransferState::Completed);
+    assert_eq!(received.files, Some(4));
+    let saved = received.saved_to.unwrap();
+    assert_eq!(saved, session.host_downloads.path().join("사진"));
+    assert_eq!(tree(&saved), tree(&upload));
+    let sent = wait_for_transfer(&mut session.viewer_events, viewer_transfer, None).await;
+    assert_eq!(sent.state, TransferState::Completed);
+
+    // Host → viewer, into a downloads folder that already has one by that name.
+    std::fs::create_dir(session.viewer_downloads.path().join("사진")).unwrap();
+    session.host.handle.send_file(upload.clone());
+    let offer = wait_for_transfer(
+        &mut session.viewer_events,
+        viewer_transfer,
+        Some(TransferState::Offered),
+    )
+    .await;
+    assert_eq!((offer.name.as_str(), offer.files), ("사진", Some(4)));
+    session.viewer.accept_transfer(offer.id);
+    let received = wait_for_transfer(&mut session.viewer_events, viewer_transfer, None).await;
+    assert_eq!(received.state, TransferState::Completed);
+    let saved = received.saved_to.unwrap();
+    assert_eq!(saved, session.viewer_downloads.path().join("사진 (1)"));
+    assert_eq!(tree(&saved), tree(&upload));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_folder_leaves_nothing_behind() {
+    let mut session = file_session().await;
+    let upload = sample_folder(session.sources.path(), "big");
+    sample_file(&upload, "huge.bin", 8_000_000);
+    session.host.handle.send_file(upload);
+    let offer = wait_for_transfer(
+        &mut session.viewer_events,
+        viewer_transfer,
+        Some(TransferState::Offered),
+    )
+    .await;
+    session.viewer.accept_transfer(offer.id);
+    session.viewer.cancel_transfer(offer.id);
+    let ended = wait_for_transfer(&mut session.host.events, host_transfer, None).await;
+    assert_eq!(ended.state, TransferState::Ended(TransferEnd::Cancelled));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        files_in(session.viewer_downloads.path()),
+        Vec::<String>::new()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slow_audio_device_does_not_stall_the_session() {
     let platform = TestPlatform {
