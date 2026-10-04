@@ -165,11 +165,13 @@ impl ViewerView {
         let mut frames = session.frames();
         let frame_task = cx.spawn_in(window, async move |this, cx| {
             while frames.changed().await.is_ok() {
-                let frame = frames.borrow_and_update().clone();
-                let Some(frame) = frame else { continue };
-                let Ok(()) =
-                    this.update_in(cx, |this, window, cx| this.show_frame(&frame, window, cx))
-                else {
+                // Taking the frame instead of cloning its `Arc` hands its pixels to the image
+                // without copying them.
+                let Ok(()) = this.update_in(cx, |this, window, cx| {
+                    if let Some(frame) = this.session.as_ref().and_then(ViewerHandle::take_frame) {
+                        this.show_frame(frame, window, cx);
+                    }
+                }) else {
                     break;
                 };
             }
@@ -236,9 +238,9 @@ impl ViewerView {
         }
     }
 
-    fn show_frame(&mut self, frame: &DecodedFrame, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone())
-        else {
+    fn show_frame(&mut self, frame: DecodedFrame, window: &mut Window, cx: &mut Context<Self>) {
+        let (width, height) = (frame.width, frame.height);
+        let Some(buffer) = RgbaImage::from_raw(width, height, frame.bgra) else {
             return;
         };
         // `RenderImage` expects BGRA, which is what the decoder produces.
@@ -247,7 +249,7 @@ impl ViewerView {
             // Each frame is a new GPU texture; release the old one or the atlas grows forever.
             let _dropped = window.drop_image(previous);
         }
-        self.frame_size = size(frame.width, frame.height);
+        self.frame_size = size(width, height);
         self.frames_shown += 1;
         cx.notify();
     }

@@ -17,7 +17,7 @@ dari-relay ──► dari-net, dari-proto
 | --- | --- | --- | --- |
 | `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
-| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), fast_image_resize, openh264, cpal, opus-rs |
+| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), fast_image_resize, openh264, yuv, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
@@ -33,7 +33,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Async and networking | `tokio`, `tokio-util`, `quinn`, `rustls` (ring provider), `rcgen` |
 | Authentication and crypto | `spake2`, `hmac`, `sha2`, `subtle`, `zeroize`, `getrandom` |
 | Serialization | `serde`, `postcard` |
-| Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize`; on macOS the `objc2` bindings for ScreenCaptureKit, CoreVideo, CoreMedia, and VideoToolbox |
+| Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize`, `yuv` (SIMD YUV to BGRA on the viewer); on macOS the `objc2` bindings for ScreenCaptureKit, CoreVideo, CoreMedia, and VideoToolbox |
 | System audio | `cpal` (WASAPI loopback, Core Audio process tap, playback), `opus-rs` (pure-Rust Opus) |
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
@@ -203,8 +203,22 @@ rate, and real screen content takes longer to encode than the test's pattern. Bo
 mode off but one frame at a time, 2560×1662 managed only 73 fps, because 8 ms per frame is longer than a 144 fps
 frame interval. Before ScreenCaptureKit and VideoToolbox, the same Mac streamed 18 and 13.5 fps.
 
-On the viewer, OpenH264 decodes a 1920×1246 screen to BGRA in about 4.7 ms (about 210 fps) on the decode thread, and
-a 2560×1662 one in about 8.6 ms, which limits the Quality preset to about 115 fps whatever the host sends.
+On the viewer, OpenH264 decodes each frame to I420, and the `yuv` crate (yuvutils-rs) converts it to BGRA in one
+SIMD pass with the same BT.601 limited-range matrix the encoders use. OpenH264's own `write_rgba8` followed by an R/B
+swap used to take about four times as long as decoding: on 2560×1662 screen content, about 2 ms decoding and 8.5 ms
+converting. Allocating a fresh buffer per frame costs about 0.1 ms, and splitting the conversion across threads
+saved only about 0.3 ms, so neither is done. Measured on an M5 MacBook with `capture_bench` (10 s of the screen, the
+same build before and after) and the ignored `decoding_keeps_up_with_144_fps` test (a synthetic 2560×1662 stream):
+
+| Decoding to BGRA | Before: `write_rgba8` and a swap | Now: `yuv420_to_bgra` |
+| --- | --- | --- |
+| 1920×1246, screen (`capture_bench`) | 5.2 ms per frame (about 190 fps) | 1.3 ms per frame (about 775 fps) |
+| 2560×1662, screen (`capture_bench`) | 9.6 ms per frame (about 105 fps) | 2.4 ms per frame (about 420 fps) |
+| 2560×1662, synthetic (test) | 9.0 ms per frame | 2.2 ms per frame |
+
+The Quality preset used to cap the viewer at about 105–115 fps whatever the host sent; it now decodes 144 fps with
+time to spare. The two conversions differ by at most one level in 98% of channels and are equally close to the exact
+BT.601 math (about 0.5 levels on average). They part only below black (Y under 16), which `yuv` clamps to black.
 
 ### Input coordinates and DPI
 
@@ -221,7 +235,8 @@ than through a manifest). When the display changes, the input coordinate space f
 and returns a `ViewerHandle` and a `ViewerEvent` channel.
 
 - Video stream → decode thread (queue of 4) → `watch::Sender<Option<Arc<DecodedFrame>>>`. The UI always sees only
-  the latest frame. A decode failure sends `RequestKeyframe`.
+  the latest frame, and takes it out of the channel with `ViewerHandle::take_frame` so its pixels move into the
+  `RenderImage` without a copy. A decode failure sends `RequestKeyframe`.
 - Input goes through a queue of 512, of which 128 slots are reserved for key and button events. Even when the
   network falls behind, pointer moves can't fill the queue and cause key releases to be dropped.
 - A cleanly ended video stream doesn't end the session; the control stream decides when the session is over.
@@ -273,9 +288,11 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 
 The viewer window creates a new `RenderImage` for every frame and releases the previous image from the GPU atlas
 with `window.drop_image`. A GUI test confirmed that without it, six seconds of streaming grows memory by about
-280 MB. The copies this costs are cheap at 1920×1246. On an M5, in a release build, copying the decoded frame into
-the `RenderImage` takes about 0.4 ms. Rendering the window, including the upload to a fresh atlas texture, takes
-about 0.25 ms. That is under 1 ms of the 6.9 ms a 144 fps frame allows on the main thread.
+280 MB. The decoded frame itself is not copied: the window takes it out of the frame channel
+(`ViewerHandle::take_frame`) instead of cloning its `Arc`, so the decoder's buffer becomes the image's. The copy it
+used to make cost about 0.4 ms at 1920×1246 inside the app, and about 0.3 ms at 2560×1662 for a bare copy of a
+freshly decoded buffer, on the main thread of an M5 in a release build. Rendering the window, including the upload
+to a fresh atlas texture, takes about 0.25 ms of the 6.9 ms a 144 fps frame allows on the main thread.
 
 gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and copying. In the remote screen's key
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window
