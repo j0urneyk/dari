@@ -345,8 +345,9 @@ A driver job per pairing joins as `dari-check-<run id>-<pairing>-driver` and run
 macOS runner and is peer A itself; two Windows peers are driven from an Ubuntu runner, which runs the relay. Logs and
 frames are the `crosscheck-<pairing>-<driver|a|b>` artifacts, and a failing nightly run sends GitHub's usual
 failed-workflow notification. Windows runners are Windows Server in English with one display and no GPU, so Hangul
-input, a second monitor, scaling, and the hardware encoder are left to the VM and real machines; hosted runners may have
-no sound output, so CI skips the audio cases.
+input, a second monitor, scaling, and the hardware encoder are left to the VM and real machines. CI skips the audio cases:
+Windows runners have no sound device at all, and a macOS runner's app can't be granted system audio recording, so its
+host reports sound Available but records nothing.
 
 One-time setup:
 

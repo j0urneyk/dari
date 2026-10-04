@@ -74,7 +74,7 @@ mkdir -p "$out/frames"
 
 # Each peer's settings live in variables named after it (a_os, b_dir, ...), read with `field`.
 for side in a b; do
-  for name in os via dest dir bin port hangul app; do eval "${side}_$name=''"; done
+  for name in os via dest dir bin port hangul app check_app; do eval "${side}_$name=''"; done
 done
 field() { local name="$1_$2"; printf '%s' "${!name}"; }
 set_field() { eval "$1_$2=\$3"; }
@@ -339,6 +339,7 @@ for side in a b; do
       put "$side" "$root/scripts/crosscheck/macos/interactive.sh" "$(path "$side" interactive.sh)"
       on "$side" "test -e $(quote "$side" "$(path "$side" run/serving)")" ||
         { echo "$side: run scripts/crosscheck/macos/interactive.sh serve in its signed-in session first" >&2; exit 1; }
+      set_field "$side" check_app "$(path "$side" DariCheck.app)"
       if [[ $build == 1 ]]; then
         echo "Building dari-check on $side..."
         put "$side" "$out/src.tar" "$(path "$side" src.tar)"
@@ -350,6 +351,9 @@ for side in a b; do
     macos/local)
       set_field "$side" dir "$out/peer-$side"
       set_field "$side" bin "$bin/dari-check"
+      # Where mac-check-app.sh puts it by default. macOS remembers the system audio permission
+      # for the bundle, so it stays out of the run's own directory.
+      set_field "$side" check_app "$root/target/crosscheck/DariCheck.app"
       set_field "$side" port 47831
       set_field "$side" hangul ''
       mkdir -p "$out/peer-$side/logs"
@@ -363,7 +367,7 @@ for side in a b; do
   if ((wants_audio)) && [[ $(field "$side" os) == macos ]]; then
     # macOS only records system sound for an app bundle that declares why (mac-check-app.sh).
     if [[ $(field "$side" via) == local ]]; then
-      "$root/scripts/crosscheck/mac-check-app.sh" "$bin/dari-check" "$(field "$side" dir)" >/dev/null
+      "$root/scripts/crosscheck/mac-check-app.sh" "$bin/dari-check" "$(dirname "$(field "$side" check_app)")" >/dev/null
     else
       put "$side" "$root/scripts/crosscheck/mac-check-app.sh" "$(path "$side" mac-check-app.sh)"
       on "$side" "/bin/bash $(quote "$side" "$(path "$side" mac-check-app.sh)" "$(field "$side" bin)" "$(field "$side" dir)") >/dev/null"
@@ -455,7 +459,7 @@ run_audio_case() {
   peer_view_log=$(path "$viewer" "logs/$name-view.log")
   password_file=$(path "$viewer" "$name-password")
   program=$(field "$host" bin)
-  [[ $(field "$host" os) == macos ]] && program=$(path "$host" DariCheck.app)
+  [[ $(field "$host" os) == macos ]] && program=$(field "$host" check_app)
   start "$host" host "$peer_host_log" '' "$program" audio-host --port "$(field "$host" port)" ||
     echo "the audio host did not start"
   if password=$(wait_for_peer_line "$host" "$peer_host_log" "$host_log" password 60); then

@@ -18,6 +18,8 @@ ssh_options=(-i "$keys/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o Con
   -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$keys/known_hosts")
 this_ip=$(tailscale ip -4 | head -n 1)
 
+# No audio: Windows runners have no sound device, and macOS runners can't grant system audio
+# recording, so a Mac host records nothing.
 arguments=(--relay-ip "$this_ip" --identity "$keys/id_ed25519" --known-hosts "$keys/known_hosts"
   --out "$out" --no-audio)
 destinations=()
