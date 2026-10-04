@@ -597,8 +597,9 @@ mod macos {
         save(&mut cx, window, "home-background-opaque-dark");
     }
 
-    /// The settings page switches the theme and the window's translucency, and remembers both.
-    pub(super) fn settings_change_the_theme_and_translucency() {
+    /// The settings page switches the theme, the language, and the window's translucency, and
+    /// remembers all three.
+    pub(super) fn settings_change_the_theme_language_and_translucency() {
         let data = tempfile::tempdir().unwrap();
         Settings {
             port: 0,
@@ -618,6 +619,7 @@ mod macos {
             window.click("nav-settings", cx);
             window.render_frame(cx);
             window.click("theme-dark", cx);
+            window.click("language-korean", cx);
             window.click("translucent-window", cx);
         })
         .unwrap();
@@ -625,7 +627,17 @@ mod macos {
         assert!(cx.update(|cx| gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
         let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
         assert!(saved.contains(r#"theme = "dark""#), "{saved}");
+        assert!(saved.contains(r#"language = "korean""#), "{saved}");
         assert!(saved.contains("translucent_window = false"), "{saved}");
+        save(&mut cx, window, "settings-korean");
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("language-english", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
+        assert!(saved.contains(r#"language = "english""#), "{saved}");
         save(&mut cx, window, "settings");
     }
 
@@ -714,6 +726,32 @@ mod macos {
             std::fs::read(&saved).is_ok_and(|bytes| bytes == b"dropped on the viewer")
         });
 
+        // A dropped folder arrives with its structure.
+        let folder = sources.path().join("앨범");
+        std::fs::create_dir_all(folder.join("2026")).unwrap();
+        std::fs::write(folder.join("2026/a.txt"), b"inside a folder").unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position: center,
+                    paths: ExternalPaths(vec![folder.clone()].into()),
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Submit { position: center }),
+                cx,
+            );
+        })
+        .unwrap();
+        let saved = host_downloads.path().join("앨범/2026/a.txt");
+        pump(&mut cx, Duration::from_secs(10), |_| {
+            while let Ok(event) = host_events.try_recv() {
+                drop(event);
+            }
+            std::fs::read(&saved).is_ok_and(|bytes| bytes == b"inside a folder")
+        });
+
         // The host offers a file; it waits for the viewer user.
         let offered = sources.path().join("from-host.bin");
         std::fs::write(&offered, vec![7u8; 200_000]).unwrap();
@@ -768,8 +806,8 @@ mod macos {
                 home_window_shows_a_background_picture,
             ),
             (
-                "settings_change_the_theme_and_translucency",
-                settings_change_the_theme_and_translucency,
+                "settings_change_the_theme_language_and_translucency",
+                settings_change_the_theme_language_and_translucency,
             ),
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",

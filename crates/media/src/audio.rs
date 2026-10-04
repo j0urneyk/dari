@@ -115,10 +115,14 @@ impl SystemAudioCapturer {
                         channels,
                     });
                 },
-                move |error| {
-                    warn!(%error, "system audio capture failed");
-                    *reported.lock().unwrap_or_else(PoisonError::into_inner) =
-                        Some(error.to_string());
+                move |error: cpal::Error| {
+                    if capture_error_is_fatal(error.kind()) {
+                        warn!(%error, "system audio capture failed");
+                        *reported.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some(error.to_string());
+                    } else {
+                        debug!(%error, "system audio capture glitched");
+                    }
                 },
                 None,
             )
@@ -152,6 +156,16 @@ impl AudioCapturer for SystemAudioCapturer {
             }
         }
     }
+}
+
+/// Whether a capture stream error ends capture. Glitches (an underrun or overrun, which a busy
+/// or emulated machine reports routinely), rerouting to a new default device, and a refused
+/// real-time priority leave the stream running.
+fn capture_error_is_fatal(kind: cpal::ErrorKind) -> bool {
+    !matches!(
+        kind,
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied
+    )
 }
 
 /// Whether this OS can record its own output. cpal's macOS loopback uses a process tap, which
@@ -813,6 +827,14 @@ mod tests {
         #[expect(clippy::cast_precision_loss, reason = "test")]
         let mean = samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
         mean.sqrt()
+    }
+
+    #[test]
+    fn glitches_do_not_stop_capture() {
+        assert!(!capture_error_is_fatal(cpal::ErrorKind::Xrun));
+        assert!(!capture_error_is_fatal(cpal::ErrorKind::DeviceChanged));
+        assert!(capture_error_is_fatal(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(capture_error_is_fatal(cpal::ErrorKind::StreamInvalidated));
     }
 
     #[test]

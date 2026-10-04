@@ -8,11 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- File transfer in both directions for sessions that allow control. Drop files on the remote screen or use
-  **Send file…** in the viewer toolbar or the host's session card. The host saves the viewer's files to Downloads;
-  files from the host wait until the viewer user chooses **Save**. Names are normalized (no more separated Korean
+- File and folder transfer in both directions for sessions that allow control. Drop files or folders on the remote
+  screen or use **Send file…** in the viewer toolbar or the host's session card. The host saves the viewer's files
+  to Downloads; files from the host wait until the viewer user chooses **Save**. Names are normalized (no more separated Korean
   jamo from macOS), made safe for Windows, and never overwrite an existing file; cancelled or failed transfers
-  leave no partial file. Turn it off with **Exchange files** on the host.
+  leave no partial file. Folders keep their structure; colliding names inside them are numbered, and symbolic links
+  are not followed. Turn it off with **Exchange files** on the host.
 - Sound from the remote computer. The host records what it plays (WASAPI loopback on Windows, a Core Audio process
   tap on macOS 14.6 and later) and sends 20 ms Opus packets as QUIC datagrams; the viewer plays them through a small
   jitter buffer and conceals lost packets. **Sound on / Sound off** in the viewer toolbar mutes it, which also stops
@@ -21,6 +22,8 @@ All notable changes to this project are documented here. The format follows
   Auto follows the viewer's fastest display, and the host caps the rate at its own display's refresh rate and
   reports what it settled on. `dari connect --fps` does the same from the command line. Faster streams get a
   higher bitrate.
+- **Language** on the settings page: System, 한국어, or English. The choice is saved and every open window
+  switches right away; System keeps following the system language as before.
 
 ### Changed
 
@@ -44,7 +47,8 @@ All notable changes to this project are documented here. The format follows
   `blur_background`. The device page's settings are now headed **Sharing**.
 - macOS hosts capture with ScreenCaptureKit and encode with VideoToolbox in hardware, instead of taking a full
   screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
-  over 100 fps, and the host only sends frames when the screen changes.
+  the full refresh rate of its 120 Hz display, and the encoder keeps up with 144 fps; the host only sends frames
+  when the screen changes.
 - Windows hosts capture with Windows.Graphics.Capture, scale and convert frames on the GPU, and encode with the
   graphics card's hardware H.264 encoder (Intel, NVIDIA, AMD, or Qualcomm, through Media Foundation), instead of
   taking a full screenshot and encoding it on the CPU for every frame, which held them to about 20 fps at 1920px.

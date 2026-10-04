@@ -419,7 +419,7 @@ async fn wait_for_clipboard(expected: &str, timeout: Duration) -> bool {
     false
 }
 
-async fn read_password(file: Option<&PathBuf>) -> anyhow::Result<AccessPassword> {
+pub(crate) async fn read_password(file: Option<&PathBuf>) -> anyhow::Result<AccessPassword> {
     let text = match file {
         Some(file) => std::fs::read_to_string(file)
             .with_context(|| format!("cannot read {}", file.display()))?,
@@ -434,7 +434,7 @@ async fn read_password(file: Option<&PathBuf>) -> anyhow::Result<AccessPassword>
     Ok(AccessPassword::parse(text.trim())?)
 }
 
-fn parse_address(input: &str) -> anyhow::Result<SocketAddr> {
+pub(crate) fn parse_address(input: &str) -> anyhow::Result<SocketAddr> {
     if let Ok(address) = input.parse::<SocketAddr>() {
         return Ok(address);
     }

@@ -79,6 +79,10 @@ impl std::fmt::Debug for EncodedFrame {
     }
 }
 
+/// Receives one encoded frame. The encoder calls it once the frame is ready, possibly on another
+/// thread, or drops it uncalled if the frame produced no output.
+pub type FrameDelivery = Box<dyn FnOnce(EncodedFrame) + Send>;
+
 /// Encodes captured frames. Frames must have even dimensions (see [`crate::fit_within`]). A
 /// change of dimensions re-initializes the encoder, which starts again with a keyframe.
 ///
@@ -92,21 +96,29 @@ pub struct VideoEncoder {
 #[derive(Debug)]
 enum Backend {
     OpenH264(Box<SoftwareEncoder>),
-    /// VideoToolbox on macOS, Media Foundation on Windows.
-    #[cfg(any(target_os = "macos", windows))]
-    Hardware(crate::native::HardwareEncoder),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(crate::apple::HardwareEncoder),
+    /// Encodes one frame at a time: each is delivered before `submit` returns.
+    #[cfg(windows)]
+    MediaFoundation(crate::win::HardwareEncoder),
 }
 
 impl VideoEncoder {
     /// Creates an encoder. With `settings.hardware`, it uses the platform's hardware encoder if
     /// the machine has one, and OpenH264 otherwise.
     pub fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(target_os = "macos")]
+        if settings.hardware {
+            return Ok(Self {
+                backend: Backend::VideoToolbox(crate::apple::HardwareEncoder::new(settings)),
+            });
+        }
+        #[cfg(windows)]
         if settings.hardware
-            && let Some(encoder) = crate::native::HardwareEncoder::new(settings)
+            && let Some(encoder) = crate::win::HardwareEncoder::new(settings)
         {
             return Ok(Self {
-                backend: Backend::Hardware(encoder),
+                backend: Backend::MediaFoundation(encoder),
             });
         }
         Ok(Self {
@@ -118,8 +130,10 @@ impl VideoEncoder {
     pub fn is_hardware(&self) -> bool {
         match self.backend {
             Backend::OpenH264(_) => false,
-            #[cfg(any(target_os = "macos", windows))]
-            Backend::Hardware(_) => true,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(_) => true,
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => true,
         }
     }
 
@@ -127,31 +141,114 @@ impl VideoEncoder {
     pub fn request_keyframe(&mut self) {
         match &mut self.backend {
             Backend::OpenH264(encoder) => encoder.keyframe_requested = true,
-            #[cfg(any(target_os = "macos", windows))]
-            Backend::Hardware(encoder) => encoder.request_keyframe(),
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => encoder.request_keyframe(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(encoder) => encoder.request_keyframe(),
         }
     }
 
-    /// Encodes `frame`. Returns `None` when the encoder produced no output for it.
-    pub fn encode(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedFrame>, CodecError> {
+    /// Whether a submitted frame was lost to a hardware failure. The next frame switches to
+    /// OpenH264 and starts with a keyframe, so a still screen should submit its last frame again.
+    pub fn has_lost_frames(&self) -> bool {
+        match &self.backend {
+            // Media Foundation frames are re-encoded by OpenH264 as soon as they fail.
+            Backend::OpenH264(_) => false,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => encoder.has_failed(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => false,
+        }
+    }
+
+    /// Starts encoding `frame` and returns without waiting for it if the backend can overlap
+    /// frames (VideoToolbox); OpenH264 encodes before returning. `deliver` receives the result
+    /// as soon as it is ready, frames in submission order.
+    pub fn submit(
+        &mut self,
+        frame: &CapturedFrame,
+        deliver: FrameDelivery,
+    ) -> Result<(), CodecError> {
         let (width, height) = (frame.width(), frame.height());
         if width % 2 != 0 || height % 2 != 0 {
             return Err(CodecError::UnsupportedDimensions { width, height });
         }
         match &mut self.backend {
-            Backend::OpenH264(encoder) => encoder.encode(frame),
-            #[cfg(any(target_os = "macos", windows))]
-            Backend::Hardware(encoder) => match encoder.encode(frame) {
-                Ok(encoded) => Ok(encoded),
+            Backend::OpenH264(encoder) => encoder.submit(frame, deliver),
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => {
+                let deliver = if encoder.has_failed() {
+                    tracing::warn!("hardware encoding failed; falling back to OpenH264");
+                    Some(deliver)
+                } else {
+                    match encoder.submit(frame, deliver) {
+                        Ok(()) => return Ok(()),
+                        Err(failure) => {
+                            let error = failure.error;
+                            tracing::warn!(%error, "hardware encoding failed; falling back to OpenH264");
+                            failure.deliver
+                        }
+                    }
+                };
+                let software = Box::new(SoftwareEncoder::new(encoder.settings())?);
+                // Dropping the hardware encoder delivers its frames still in flight first.
+                self.backend = Backend::OpenH264(software);
+                deliver.map_or(Ok(()), |deliver| self.submit(frame, deliver))
+            }
+            #[cfg(windows)]
+            Backend::MediaFoundation(encoder) => match encoder.encode(frame) {
+                Ok(encoded) => {
+                    if let Some(encoded) = encoded {
+                        deliver(encoded);
+                    }
+                    Ok(())
+                }
                 Err(error) => {
                     tracing::warn!(%error, "hardware encoding failed; falling back to OpenH264");
-                    let mut software = Box::new(SoftwareEncoder::new(encoder.settings())?);
-                    let encoded = software.encode(frame);
+                    let software = Box::new(SoftwareEncoder::new(encoder.settings())?);
                     self.backend = Backend::OpenH264(software);
-                    encoded
+                    self.submit(frame, deliver)
                 }
             },
         }
+    }
+
+    /// Waits until every submitted frame has been delivered or dropped.
+    pub fn flush(&mut self) {
+        match &mut self.backend {
+            Backend::OpenH264(_) => {}
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(encoder) => encoder.flush(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => {}
+        }
+    }
+
+    /// Encodes `frame` and waits for it. Returns `None` when the encoder produced no output for
+    /// it.
+    pub fn encode(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedFrame>, CodecError> {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        for _attempt in 0..2 {
+            let output = slot.clone();
+            self.submit(
+                frame,
+                Box::new(move |encoded| {
+                    *output
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(encoded);
+                }),
+            )?;
+            self.flush();
+            let encoded = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            // A frame lost to a hardware failure is encoded again by the fallback.
+            if encoded.is_some() || !self.has_lost_frames() {
+                return Ok(encoded);
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -188,6 +285,13 @@ impl SoftwareEncoder {
             yuv: None,
             keyframe_requested: false,
         })
+    }
+
+    fn submit(&mut self, frame: &CapturedFrame, deliver: FrameDelivery) -> Result<(), CodecError> {
+        if let Some(encoded) = self.encode(frame)? {
+            deliver(encoded);
+        }
+        Ok(())
     }
 
     fn encode(&mut self, frame: &CapturedFrame) -> Result<Option<EncodedFrame>, CodecError> {
@@ -239,6 +343,52 @@ pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
     let mut yuv = YUVBuffer::new(dimensions.0, dimensions.1);
     yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
     yuv
+}
+
+/// H.264's sequence parameter set NAL unit type.
+#[cfg(any(target_os = "macos", windows, test))]
+const NAL_SPS: u8 = 7;
+
+#[cfg(any(target_os = "macos", windows, test))]
+/// The highest H.264 level OpenH264 decodes (`level_idc` 52, level 5.2).
+const MAX_DECODABLE_LEVEL: u8 = 52;
+
+#[cfg(any(target_os = "macos", windows, test))]
+/// Lowers the level an SPS declares to [`MAX_DECODABLE_LEVEL`]. The automatic level follows the
+/// macroblock rate, so 2560×1662 at 144 fps comes out as level 6.0, whose parameter sets OpenH264
+/// rejects. The level only states a throughput the decoder must sustain; frame size and
+/// reference frames, which it does use, are within 5.2's limits for any stream Dari sends.
+pub(crate) fn cap_level(nal: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    // NAL header, profile_idc, constraint flags, level_idc: fixed bytes before any emulation
+    // prevention could shift them, since profile_idc is never zero.
+    match nal {
+        [header, _profile, _constraints, level, ..]
+            if header & 0x1f == NAL_SPS && *level > MAX_DECODABLE_LEVEL =>
+        {
+            let mut capped = nal.to_vec();
+            capped[3] = MAX_DECODABLE_LEVEL;
+            std::borrow::Cow::Owned(capped)
+        }
+        _ => std::borrow::Cow::Borrowed(nal),
+    }
+}
+
+/// Applies [`cap_level`] to every SPS in an Annex-B stream, in place.
+#[cfg(any(windows, test))]
+pub(crate) fn cap_annex_b_levels(annex_b: &mut [u8]) {
+    let starts: Vec<usize> = annex_b
+        .windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == [0, 0, 1])
+        .map(|(index, _)| index + 3)
+        .collect();
+    for start in starts {
+        if let Some(nal) = annex_b.get_mut(start..start + 4)
+            && let std::borrow::Cow::Owned(capped) = cap_level(nal)
+        {
+            nal.copy_from_slice(&capped);
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", windows, test))]
@@ -350,13 +500,18 @@ mod tests {
     use crate::frame::RgbaFrame;
     use crate::synthetic::SyntheticCapturer;
 
+    /// One encoder per backend this platform has.
+    fn encoders() -> Vec<VideoEncoder> {
+        encoders_with(EncoderSettings::default())
+    }
+
     /// One encoder per backend this machine has. On Windows, Media Foundation's own software
     /// H.264 encoder also runs through the hardware backend, so its Media Foundation path is
     /// exercised on machines without a hardware encoder (CI runners, VMs) too.
-    fn encoders() -> Vec<VideoEncoder> {
+    fn encoders_with(settings: EncoderSettings) -> Vec<VideoEncoder> {
         let settings = |hardware| EncoderSettings {
             hardware,
-            ..EncoderSettings::default()
+            ..settings
         };
         let mut encoders = vec![VideoEncoder::new(settings(false)).unwrap()];
         let hardware = VideoEncoder::new(settings(true)).unwrap();
@@ -369,9 +524,9 @@ mod tests {
         }
         #[cfg(windows)]
         encoders.push(VideoEncoder {
-            backend: Backend::Hardware(crate::win::HardwareEncoder::microsoft_software(settings(
-                true,
-            ))),
+            backend: Backend::MediaFoundation(crate::win::HardwareEncoder::microsoft_software(
+                settings(true),
+            )),
         });
         encoders
     }
@@ -464,6 +619,80 @@ mod tests {
         }
     }
 
+    /// A delivery that forwards to a channel.
+    fn deliver_to(sender: &std::sync::mpsc::Sender<EncodedFrame>) -> FrameDelivery {
+        let sender = sender.clone();
+        Box::new(move |encoded| {
+            let _sent = sender.send(encoded);
+        })
+    }
+
+    #[test]
+    fn an_isolated_frame_is_delivered_without_a_following_frame() {
+        for mut encoder in encoders() {
+            let mut capturer = SyntheticCapturer::new(320, 240);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            for index in 0..3 {
+                encoder
+                    .submit(&frame(&mut capturer), deliver_to(&sender))
+                    .unwrap();
+                // Neither a flush nor a next frame: a keystroke on a still screen must not wait.
+                let encoded = receiver
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap_or_else(|_| panic!("frame {index} was held back"));
+                assert_eq!(encoded.keyframe, index == 0);
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_frames_arrive_in_order() {
+        for mut encoder in encoders() {
+            let hardware = encoder.is_hardware();
+            let mut capturer = SyntheticCapturer::new(320, 240);
+            let mut decoder = VideoDecoder::new().unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            for _ in 0..20 {
+                encoder
+                    .submit(&frame(&mut capturer), deliver_to(&sender))
+                    .unwrap();
+            }
+            encoder.flush();
+            assert_eq!(encoder.is_hardware(), hardware, "no fallback to software");
+            let frames: Vec<_> = receiver.try_iter().collect();
+            assert!(
+                frames.len() >= 10,
+                "only {} frames (hardware: {hardware})",
+                frames.len()
+            );
+            assert!(frames[0].keyframe);
+            for encoded in &frames {
+                assert!(decoder.decode(&encoded.data).unwrap().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_fast_stream_stays_decodable() {
+        // 2560×1662 at 144 fps is past level 5.2's macroblock rate, the highest OpenH264 knows.
+        for mut encoder in encoders_with(EncoderSettings {
+            max_fps: 144.0,
+            ..EncoderSettings::default()
+        }) {
+            let hardware = encoder.is_hardware();
+            let mut capturer = SyntheticCapturer::new(2560, 1662);
+            let mut decoder = VideoDecoder::new().unwrap();
+            for _ in 0..2 {
+                let encoded = encoder.encode(&frame(&mut capturer)).unwrap().unwrap();
+                let decoded = decoder.decode(&encoded.data);
+                assert!(
+                    matches!(decoded, Ok(Some(_))),
+                    "{decoded:?} (hardware: {hardware})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn odd_dimensions_are_rejected() {
         for mut encoder in encoders() {
@@ -473,6 +702,31 @@ mod tests {
                 Err(CodecError::UnsupportedDimensions { .. })
             ));
         }
+    }
+
+    #[test]
+    fn levels_above_5_2_are_capped() {
+        use std::borrow::Cow;
+        let level_6 = [0x27, 0x42, 0xc0, 0x3c, 0xab, 0x40];
+        assert_eq!(*cap_level(&level_6), [0x27, 0x42, 0xc0, 0x34, 0xab, 0x40]);
+        let level_5_1 = [0x27, 0x42, 0xc0, 0x33, 0xab, 0x40];
+        assert!(matches!(cap_level(&level_5_1), Cow::Borrowed(_)));
+        let pps = [0x28, 0xce, 0x3c, 0x80];
+        assert!(matches!(cap_level(&pps), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn levels_are_capped_inside_an_annex_b_stream() {
+        let mut stream = [
+            0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x3c, 0xab, 0, 0, 1, 0x65, 0x3c,
+        ];
+        cap_annex_b_levels(&mut stream);
+        assert_eq!(
+            stream,
+            [
+                0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x34, 0xab, 0, 0, 1, 0x65, 0x3c
+            ]
+        );
     }
 
     #[test]

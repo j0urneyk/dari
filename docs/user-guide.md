@@ -2,7 +2,8 @@
 
 Installation and the basic flow are in the [README](../README.md#install). This guide covers each part of the
 screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
-when the system language is Korean, and in English otherwise, and it follows the system's light or dark appearance.
+when the system language is Korean, and in English otherwise, unless **Language** in the settings picks one; it
+follows the system's light or dark appearance unless **Theme** picks one.
 
 The home window has a sidebar and a page beside it. **This device** in the sidebar sums up its state (accepting
 connections, a pending connection request, a connected viewer, or remote access off) and opens the page for sharing
@@ -28,7 +29,7 @@ transparent title bar.
 | **Ask before each connection** | On by default. When off, a viewer that knows the password gets control immediately |
 | **Share clipboard** | On by default. Text is exchanged only in sessions that allow control |
 | **Share sound** | On by default. Viewers that turn sound on hear what this computer plays, in view-only sessions too. Windows, or macOS 14.6 and later; macOS asks for permission to record system audio the first time |
-| **Exchange files** | On by default. In sessions that allow control, the viewer's files are saved to this computer's Downloads folder, and **Send file…** next to **Disconnect** sends files to the viewer |
+| **Exchange files** | On by default. In sessions that allow control, the viewer's files and folders are saved to this computer's Downloads folder, and **Send file…** next to **Disconnect** sends files or folders to the viewer |
 | **Show this device on the local network** | On by default. Advertises the name over mDNS so it appears in the other side's "Nearby devices" |
 
 Changes to the approval, clipboard, sound, and file settings apply from the next session. Transfers in the running session
@@ -51,6 +52,7 @@ Windows, ⌘C arrives as Ctrl+C and copies as usual.
 | Item | Description |
 | --- | --- |
 | **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
+| **Language** | **System** (Korean when the system language is Korean, English otherwise), **한국어**, or **English**. Every open window switches right away |
 | **Translucent window** | On by default. What is behind the window shows through, blurred, through the background picture too. Viewer windows opened afterwards follow it too |
 | **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It fills the top half of the window and fades out into the theme's own surface below. The page's panels and the sidebar show it as frosted glass, so text stays readable over any picture. Pictures taller than 3:2 show their middle. **Choose…** picks one, **Remove** goes back |
 | **Blur the picture** | Off by default. Blurs the whole picture, not just where it fades out |
@@ -85,7 +87,9 @@ tenth of a second behind the remote computer and isn't synchronized with the pic
 In sessions that allow control, **Send file…** in the toolbar picks files to send, and files dragged onto the remote
 screen are sent too. They're saved in the remote computer's Downloads folder. A file the remote side sends appears
 under the toolbar with its name and size; it's saved to your Downloads folder only if you choose **Save**. A file
-with the same name is never replaced: the new one is saved as `name (1).ext`. Folders can't be sent yet.
+with the same name is never replaced: the new one is saved as `name (1).ext`. Folders work the same way: drop or pick
+one and it arrives with its subfolders (a folder already there gets `name (1)`). Empty subfolders and symbolic
+links inside it are left out, and a folder can hold up to 10,000 files.
 
 Status messages:
 

@@ -50,7 +50,9 @@ use windows::core::{GUID, HRESULT, IUnknown, Interface};
 use super::NativeFrame;
 use super::device::{create_device, start_media_foundation};
 use super::frame::windows_error;
-use crate::codec::{CodecError, EncodedFrame, EncoderSettings, avcc_to_annex_b, rgba_to_i420};
+use crate::codec::{
+    CodecError, EncodedFrame, EncoderSettings, avcc_to_annex_b, cap_annex_b_levels, rgba_to_i420,
+};
 use crate::frame::CapturedFrame;
 
 /// How long a hardware encoder may take to ask for a frame or to finish one before it is
@@ -496,17 +498,21 @@ impl Session {
 
     /// Rewrites encoder output as Annex-B, with the parameter sets in front of a keyframe.
     fn annex_b(&self, data: Vec<u8>) -> Result<(Vec<u8>, bool), CodecError> {
-        let data = if data.starts_with(&[0, 0, 1]) || data.starts_with(&[0, 0, 0, 1]) {
+        let mut data = if data.starts_with(&[0, 0, 1]) || data.starts_with(&[0, 0, 0, 1]) {
             data
         } else {
             avcc_to_annex_b(&data, 4, &[])?
         };
+        // Encoders pick the level from the macroblock rate, which can exceed what OpenH264
+        // decodes at high frame rates.
+        cap_annex_b_levels(&mut data);
         let units = nal_unit_types(&data);
         let keyframe = units.contains(&NAL_IDR);
         if !keyframe || units.contains(&NAL_SPS) {
             return Ok((data, keyframe));
         }
         let mut with_parameter_sets = self.sequence_header()?;
+        cap_annex_b_levels(&mut with_parameter_sets);
         with_parameter_sets.extend_from_slice(&data);
         Ok((with_parameter_sets, keyframe))
     }
