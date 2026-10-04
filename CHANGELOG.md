@@ -44,7 +44,12 @@ All notable changes to this project are documented here. The format follows
   `blur_background`. The device page's settings are now headed **Sharing**.
 - macOS hosts capture with ScreenCaptureKit and encode with VideoToolbox in hardware, instead of taking a full
   screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
-  over 100 fps, and the host only sends frames when the screen changes. Windows hosts are unchanged.
+  over 100 fps, and the host only sends frames when the screen changes.
+- Windows hosts capture with Windows.Graphics.Capture, scale and convert frames on the GPU, and encode with the
+  graphics card's hardware H.264 encoder (Intel, NVIDIA, AMD, or Qualcomm, through Media Foundation), instead of
+  taking a full screenshot and encoding it on the CPU for every frame, which held them to about 20 fps at 1920px.
+  Like macOS hosts, they only send frames when the screen changes. PCs without a hardware encoder, and any encoder
+  failure, fall back to the CPU encoder as before.
 - Dari now requires macOS 13 or later (was 12).
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.

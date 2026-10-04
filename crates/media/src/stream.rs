@@ -47,8 +47,8 @@ pub struct StreamSettings {
     pub max_long_edge: u32,
     pub max_fps: u32,
     pub bitrate_bps: u32,
-    /// Encode with the platform's hardware encoder where there is one (VideoToolbox on macOS),
-    /// falling back to OpenH264.
+    /// Encode with the platform's hardware encoder where there is one (VideoToolbox on macOS, a
+    /// Media Foundation hardware encoder on Windows), falling back to OpenH264.
     pub hardware_encoder: bool,
 }
 
@@ -258,7 +258,7 @@ where
             CapturedFrame::Rgba(frame) => {
                 CapturedFrame::Rgba(scaler.fit(frame, settings.max_long_edge))
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             native @ CapturedFrame::Native(_) => native,
         };
         if control.keyframe_requested.swap(false, Ordering::Relaxed) {

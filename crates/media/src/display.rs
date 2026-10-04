@@ -1,11 +1,12 @@
-//! Physical displays and capturing them: ScreenCaptureKit on macOS, xcap elsewhere.
+//! Physical displays and capturing them: ScreenCaptureKit on macOS, Windows.Graphics.Capture on
+//! Windows, and xcap screenshots elsewhere. xcap lists the displays everywhere.
 
 use std::time::Duration;
 
 use thiserror::Error;
 
 use crate::frame::CapturedFrame;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 use crate::frame::RgbaFrame;
 use crate::permission::{PermissionState, screen_capture_access};
 use crate::stream::{ScreenCapturer, StreamSettings};
@@ -90,7 +91,9 @@ pub struct DisplayCapturer {
     info: DisplayInfo,
     #[cfg(target_os = "macos")]
     source: crate::apple::ScreenCaptureKitCapturer,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    source: crate::win::GraphicsCaptureCapturer,
+    #[cfg(not(any(target_os = "macos", windows)))]
     source: xcap::Monitor,
 }
 
@@ -104,8 +107,8 @@ impl std::fmt::Debug for DisplayCapturer {
 
 impl DisplayCapturer {
     /// Opens display `id`, or the primary display when `id` is `None`, for a stream with
-    /// `settings`. On macOS, ScreenCaptureKit itself scales to `settings.max_long_edge` and
-    /// limits the rate to `settings.max_fps`.
+    /// `settings`. On macOS and Windows, the capture itself scales to `settings.max_long_edge`
+    /// and limits the rate to `settings.max_fps`.
     pub fn open(id: Option<u32>, settings: &StreamSettings) -> Result<Self, CaptureError> {
         if screen_capture_access() == PermissionState::Denied {
             return Err(CaptureError::PermissionDenied);
@@ -133,7 +136,13 @@ impl DisplayCapturer {
             settings.max_long_edge,
             settings.max_fps,
         )?;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let source = crate::win::GraphicsCaptureCapturer::open(
+            info.id,
+            settings.max_long_edge,
+            settings.max_fps,
+        )?;
+        #[cfg(not(any(target_os = "macos", windows)))]
         let source = {
             // xcap captures whole frames on demand; the stream paces and scales them.
             let _ = settings;
@@ -148,17 +157,17 @@ impl DisplayCapturer {
 }
 
 impl ScreenCapturer for DisplayCapturer {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
         self.source.capture(timeout)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn paces_itself(&self) -> bool {
         self.source.paces_itself()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn capture(&mut self, _timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
         let image = self.source.capture_image()?;
         let (width, height) = image.dimensions();

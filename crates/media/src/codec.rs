@@ -1,8 +1,9 @@
 //! H.264 encoding and decoding.
 //!
-//! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS) and
-//! OpenH264 otherwise. Decoding always uses OpenH264. Both encoders emit the same Annex-B
-//! Constrained Baseline stream with BT.601 limited-range color, so any viewer decodes any host.
+//! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS, a
+//! Media Foundation hardware encoder on Windows) and OpenH264 otherwise. Decoding always uses
+//! OpenH264. Every encoder emits the same Annex-B Constrained Baseline stream with BT.601
+//! limited-range color, so any viewer decodes any host.
 
 use openh264::OpenH264API;
 use openh264::decoder::Decoder;
@@ -17,7 +18,7 @@ use crate::frame::CapturedFrame;
 
 /// Largest frame the decoder accepts, matching what any Dari host can produce.
 const MAX_DECODED_PIXELS: usize = 3840 * 2160;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const ANNEX_B_START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 #[derive(Debug, Error)]
@@ -31,6 +32,8 @@ pub enum CodecError {
         operation: &'static str,
         status: i32,
     },
+    #[error("{operation} failed with HRESULT {code:#010x}")]
+    Windows { operation: &'static str, code: i32 },
     #[error("malformed encoder output: {0}")]
     MalformedOutput(&'static str),
 }
@@ -89,16 +92,21 @@ pub struct VideoEncoder {
 #[derive(Debug)]
 enum Backend {
     OpenH264(Box<SoftwareEncoder>),
-    #[cfg(target_os = "macos")]
-    VideoToolbox(crate::apple::HardwareEncoder),
+    /// VideoToolbox on macOS, Media Foundation on Windows.
+    #[cfg(any(target_os = "macos", windows))]
+    Hardware(crate::native::HardwareEncoder),
 }
 
 impl VideoEncoder {
+    /// Creates an encoder. With `settings.hardware`, it uses the platform's hardware encoder if
+    /// the machine has one, and OpenH264 otherwise.
     pub fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
-        #[cfg(target_os = "macos")]
-        if settings.hardware {
+        #[cfg(any(target_os = "macos", windows))]
+        if settings.hardware
+            && let Some(encoder) = crate::native::HardwareEncoder::new(settings)
+        {
             return Ok(Self {
-                backend: Backend::VideoToolbox(crate::apple::HardwareEncoder::new(settings)),
+                backend: Backend::Hardware(encoder),
             });
         }
         Ok(Self {
@@ -110,8 +118,8 @@ impl VideoEncoder {
     pub fn is_hardware(&self) -> bool {
         match self.backend {
             Backend::OpenH264(_) => false,
-            #[cfg(target_os = "macos")]
-            Backend::VideoToolbox(_) => true,
+            #[cfg(any(target_os = "macos", windows))]
+            Backend::Hardware(_) => true,
         }
     }
 
@@ -119,8 +127,8 @@ impl VideoEncoder {
     pub fn request_keyframe(&mut self) {
         match &mut self.backend {
             Backend::OpenH264(encoder) => encoder.keyframe_requested = true,
-            #[cfg(target_os = "macos")]
-            Backend::VideoToolbox(encoder) => encoder.request_keyframe(),
+            #[cfg(any(target_os = "macos", windows))]
+            Backend::Hardware(encoder) => encoder.request_keyframe(),
         }
     }
 
@@ -132,8 +140,8 @@ impl VideoEncoder {
         }
         match &mut self.backend {
             Backend::OpenH264(encoder) => encoder.encode(frame),
-            #[cfg(target_os = "macos")]
-            Backend::VideoToolbox(encoder) => match encoder.encode(frame) {
+            #[cfg(any(target_os = "macos", windows))]
+            Backend::Hardware(encoder) => match encoder.encode(frame) {
                 Ok(encoded) => Ok(encoded),
                 Err(error) => {
                     tracing::warn!(%error, "hardware encoding failed; falling back to OpenH264");
@@ -194,7 +202,7 @@ impl SoftwareEncoder {
                 yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
                 yuv
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             CapturedFrame::Native(frame) => self.yuv.insert(YUVBuffer::from_vec(
                 frame.to_i420()?,
                 dimensions.0,
@@ -223,7 +231,7 @@ impl SoftwareEncoder {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 /// Converts RGBA pixels to I420 planes the way OpenH264 does (BT.601, limited range), so both
 /// encoders produce the same colors.
 pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
@@ -233,7 +241,7 @@ pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
     yuv
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 /// Rewrites one AVCC access unit (NAL units with big-endian length prefixes, as VideoToolbox
 /// emits them) as Annex-B, prefixing `parameter_sets` (SPS and PPS, for a keyframe).
 pub(crate) fn avcc_to_annex_b(
@@ -342,19 +350,30 @@ mod tests {
     use crate::frame::RgbaFrame;
     use crate::synthetic::SyntheticCapturer;
 
-    /// One encoder per backend this platform has.
+    /// One encoder per backend this machine has. On Windows, Media Foundation's own software
+    /// H.264 encoder also runs through the hardware backend, so its Media Foundation path is
+    /// exercised on machines without a hardware encoder (CI runners, VMs) too.
     fn encoders() -> Vec<VideoEncoder> {
-        [false, true]
-            .into_iter()
-            .filter(|hardware| !hardware || cfg!(target_os = "macos"))
-            .map(|hardware| {
-                VideoEncoder::new(EncoderSettings {
-                    hardware,
-                    ..EncoderSettings::default()
-                })
-                .unwrap()
-            })
-            .collect()
+        let settings = |hardware| EncoderSettings {
+            hardware,
+            ..EncoderSettings::default()
+        };
+        let mut encoders = vec![VideoEncoder::new(settings(false)).unwrap()];
+        let hardware = VideoEncoder::new(settings(true)).unwrap();
+        assert!(
+            hardware.is_hardware() || !cfg!(target_os = "macos"),
+            "every Mac has VideoToolbox"
+        );
+        if hardware.is_hardware() {
+            encoders.push(hardware);
+        }
+        #[cfg(windows)]
+        encoders.push(VideoEncoder {
+            backend: Backend::Hardware(crate::win::HardwareEncoder::microsoft_software(settings(
+                true,
+            ))),
+        });
+        encoders
     }
 
     fn frame(capturer: &mut SyntheticCapturer) -> CapturedFrame {

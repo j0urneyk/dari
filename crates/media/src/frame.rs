@@ -38,16 +38,17 @@ impl RgbaFrame {
 pub enum CapturedFrame {
     /// Pixels in memory at the display's size; the stream scales them to its size limit.
     Rgba(RgbaFrame),
-    /// A ScreenCaptureKit frame in GPU memory, already at the stream's size.
-    #[cfg(target_os = "macos")]
-    Native(crate::apple::NativeFrame),
+    /// A frame in GPU memory, already at the stream's size and in NV12: a ScreenCaptureKit
+    /// pixel buffer on macOS, a Direct3D 11 texture on Windows.
+    #[cfg(any(target_os = "macos", windows))]
+    Native(crate::native::NativeFrame),
 }
 
 impl CapturedFrame {
     pub fn width(&self) -> u32 {
         match self {
             CapturedFrame::Rgba(frame) => frame.width(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             CapturedFrame::Native(frame) => frame.width(),
         }
     }
@@ -55,7 +56,7 @@ impl CapturedFrame {
     pub fn height(&self) -> u32 {
         match self {
             CapturedFrame::Rgba(frame) => frame.height(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             CapturedFrame::Native(frame) => frame.height(),
         }
     }

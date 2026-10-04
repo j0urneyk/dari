@@ -55,13 +55,16 @@ cargo deny check
   advisories only to direct dependencies, because we can't replace the crates GPUI pulls in transitively. It also
   checks the license allowlist and bans yanked crates, wildcard versions, and unknown registries or git sources.
 
-`unsafe` appears in two places, each behind its own `allow(unsafe_code)`:
+`unsafe` appears in three places, each behind its own `allow(unsafe_code)`:
 
 - Three OS API calls in `crates/input/src/backend.rs`: `AXIsProcessTrusted` on macOS (checks Accessibility
   permission), and on Windows `SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary
   monitors) and `SetProcessDpiAwarenessContext` (Per-Monitor V2 DPI awareness).
 - The macOS capture and encoding module `crates/media/src/apple/`, which drives ScreenCaptureKit, CoreVideo,
   CoreMedia, and VideoToolbox through the objc2 bindings. Every unsafe block there carries a `SAFETY` comment.
+- The Windows capture and encoding module `crates/media/src/win/`, which drives Windows.Graphics.Capture's interop,
+  Direct3D 11, and Media Foundation through the `windows` crate, which marks every COM call unsafe. Every unsafe block
+  there carries a `SAFETY` comment too.
 
 `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
 capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's
@@ -75,7 +78,7 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 
 | Kind | Location | Coverage |
 | --- | --- | --- |
-| Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode with OpenH264 and (on macOS) VideoToolbox, AVCC to Annex-B conversion, still-screen keyframes, frame rate and bitrate selection, key mapping, letterbox coordinates, relay forwarder |
+| Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode with OpenH264 and each hardware backend (VideoToolbox on macOS; on Windows the machine's Media Foundation hardware encoder if it has one, and Media Foundation's software encoder through the same code so it runs on CI too), GPU conversion to NV12 matching OpenH264's colors (Windows, on WARP where there is no GPU), AVCC to Annex-B conversion, still-screen keyframes, frame rate and bitrate selection, key mapping, letterbox coordinates, relay forwarder |
 | Transport E2E | `crates/net/tests/loopback.rs` | Real QUIC loopback: success, wrong password, consumed password, busy, throttling, oversized pre-auth frame, viewers barred from unidirectional streams |
 | Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (the first stream already runs at the requested rate, with or without approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |

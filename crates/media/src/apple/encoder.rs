@@ -49,12 +49,18 @@ impl std::fmt::Debug for HardwareEncoder {
 }
 
 impl HardwareEncoder {
-    pub(crate) fn new(settings: EncoderSettings) -> Self {
-        Self {
+    /// VideoToolbox is on every Mac, so this always succeeds; the session itself is created for
+    /// the first frame.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the same signature as the Windows encoder, which may find no hardware"
+    )]
+    pub(crate) fn new(settings: EncoderSettings) -> Option<Self> {
+        Some(Self {
             settings,
             session: None,
             keyframe_requested: false,
-        }
+        })
     }
 
     pub(crate) fn settings(&self) -> EncoderSettings {
