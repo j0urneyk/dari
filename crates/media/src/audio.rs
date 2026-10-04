@@ -43,6 +43,8 @@ const MAX_CONCEALED: u32 = 3;
 pub enum AudioError {
     #[error("capturing system audio needs macOS 14.6 or later")]
     UnsupportedOs,
+    #[error("the user has not allowed this app to record system audio")]
+    PermissionDenied,
     #[error("this platform cannot capture system audio")]
     Unsupported,
     #[error("no audio device is available")]
@@ -130,6 +132,11 @@ impl SystemAudioCapturer {
         stream
             .play()
             .map_err(|error| AudioError::Device(error.to_string()))?;
+        // A refused app still gets a tap, which records silence. Checked after opening, since
+        // the first open is what asks the user, and waits for the answer.
+        if crate::permission::system_audio_access() == crate::PermissionState::Denied {
+            return Err(AudioError::PermissionDenied);
+        }
         Ok(Self {
             _stream: stream,
             chunks,

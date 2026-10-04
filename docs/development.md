@@ -216,8 +216,10 @@ machines. The rest of `dari-check` can still be tried locally with `dari-check h
 the received sound is loud enough and strongest at 997 Hz. The host side needs a real output device (a VM needs a
 virtual sound card). On macOS the host must run from an app bundle that declares `NSAudioCaptureUsageDescription`,
 or macOS records silence without asking; `scripts/crosscheck/mac-check-app.sh` wraps `dari-check` in an ad-hoc
-signed `target/crosscheck/DariCheck.app`. Approve the system audio prompt once; rebuilding the bundle changes its
-signature, so macOS may ask again.
+signed `target/crosscheck/DariCheck.app`. Approve the system audio prompt once. An ad-hoc signature is tied to the
+binary, so after every rebuild of `dari-check` macOS asks again. While it asks, the host reports
+`AwaitingPermission` and `audio-view` waits up to two minutes for the answer; a refusal makes the host report
+`PermissionDenied`, which `audio-view` reports as a failure.
 
 ```bash
 scripts/crosscheck/mac-check-app.sh

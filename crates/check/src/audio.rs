@@ -28,6 +28,8 @@ use crate::scenario::Verdict;
 const RECORD_RATE: u32 = 48_000;
 /// How long the viewer listens once the host shares audio.
 const LISTEN: Duration = Duration::from_secs(6);
+/// How long the viewer waits for the host's user to answer macOS's permission prompt.
+const PROMPT_WAIT: Duration = Duration::from_secs(120);
 /// Loudness of the host's tone, low enough to be bearable in a room.
 const TONE_AMPLITUDE: f32 = 0.2;
 /// A received tone must be at least this loud (RMS)...
@@ -249,7 +251,7 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     .await
     .context("cannot connect")?;
 
-    let audio = tokio::time::timeout(Duration::from_secs(30), async {
+    let mut audio = tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(event) = events.recv().await {
             match event {
                 ViewerEvent::HostStatus(status) => return Some(status.audio),
@@ -265,12 +267,41 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     .await
     .ok()
     .flatten();
+    if audio == Some(Availability::Available) {
+        // The host only learns whether it may record once its capturer opens, and says so in a
+        // later status; the first open may wait for its user to answer macOS's prompt.
+        let mut listened = tokio::time::Instant::now() + LISTEN;
+        let give_up = tokio::time::Instant::now() + PROMPT_WAIT;
+        loop {
+            let wake = if audio == Some(Availability::AwaitingPermission) {
+                give_up
+            } else {
+                listened
+            };
+            match tokio::time::timeout_at(wake, events.recv()).await {
+                Ok(Some(ViewerEvent::HostStatus(status))) => {
+                    let was = audio.replace(status.audio);
+                    if status.audio == Availability::AwaitingPermission {
+                        println!("the host's user is being asked to allow recording its sound");
+                    } else if was == Some(Availability::AwaitingPermission) {
+                        // Listen afresh from the answer.
+                        samples
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clear();
+                        listened = tokio::time::Instant::now() + LISTEN;
+                    }
+                }
+                Ok(Some(ViewerEvent::Ended(_)) | None) | Err(_) => break,
+                Ok(Some(_)) => {}
+            }
+        }
+    }
     verdict.check(
         audio == Some(Availability::Available),
         format!("the host offers its sound (got {audio:?})"),
     );
     if audio == Some(Availability::Available) {
-        tokio::time::sleep(LISTEN).await;
         let recorded = std::mem::take(&mut *samples.lock().unwrap_or_else(PoisonError::into_inner));
         // The last half: the jitter buffer has settled and the codec has started.
         let tail = &recorded[recorded.len() / 2..];

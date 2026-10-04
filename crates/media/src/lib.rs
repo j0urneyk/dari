@@ -15,7 +15,7 @@
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
-    reason = "ScreenCaptureKit, CoreVideo, and VideoToolbox are C APIs"
+    reason = "ScreenCaptureKit, CoreVideo, VideoToolbox, and TCC are C APIs"
 )]
 mod apple;
 mod audio;
@@ -53,7 +53,9 @@ pub use display::{CaptureError, DisplayCapturer, DisplayInfo, list_displays};
 pub use frame::{CapturedFrame, RgbaFrame};
 #[cfg(any(target_os = "macos", windows))]
 pub use native::NativeFrame;
-pub use permission::{PermissionState, request_screen_capture_access, screen_capture_access};
+pub use permission::{
+    PermissionState, request_screen_capture_access, screen_capture_access, system_audio_access,
+};
 pub use scale::{FrameScaler, MAX_ENCODED_LONG_EDGE, fit_within};
 pub use stream::{
     CaptureStream, FRAMES_IN_FLIGHT, ScreenCapturer, StreamError, StreamSettings, StreamStats,
