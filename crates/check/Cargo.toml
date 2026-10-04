@@ -17,6 +17,7 @@ dari-session.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
+cpal.workspace = true
 enigo.workspace = true
 gethostname.workspace = true
 image = { workspace = true, features = ["png"] }
