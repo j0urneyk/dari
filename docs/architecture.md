@@ -158,14 +158,9 @@ running, averaged over 10 s after a 4 s warm-up (test source) or from 6 s on (sc
 | --- | --- | --- |
 | 1920×1246, test source at 2 fps (isolated frames) | 5.5 ms, 0.064 W | 12.6 ms, 0.018 W |
 | 1920×1246, test source at 30 fps | 4.7 ms, 0.079 W | 9.8 ms, 0.040 W |
-| 1920×1246, test source at 60 fps | 4.5 ms, 0.094 W | 10.8 ms, 0.041 W |
 | 1920×1246, test source at 144 fps | 144 fps, 4.5 ms, 0.138 W | 106 fps, 14 ms, 0.068 W |
-| 2560×1662, test source at 2 fps (isolated frames) | 8.5 ms, 0.065 W | 19.8 ms, 0.020 W |
-| 2560×1662, test source at 30 fps | 7.6 ms, 0.091 W | 18.2 ms, 0.039 W |
 | 2560×1662, test source at 144 fps | 144 fps, 8.0 ms, 0.200 W | 95 fps, 18 ms, 0.121 W |
-| 1920×1246, screen at 30 fps (`capture_bench`) | 7.9 ms, 0.084 W | 11.5–13.3 ms, 0.033–0.049 W |
-| 1920×1246, screen at 144 fps | 118 fps, 7.7 ms, 0.135 W | 98 fps, 14.5 ms, 0.057 W |
-| 2560×1662, screen at 120 fps | 109 fps, 12.4 ms, 0.173 W | 66 fps, 24.7 ms, 0.057 W |
+| 1920×1246, screen at 144 fps (`capture_bench`) | 118 fps, 7.7 ms, 0.135 W | 98 fps, 14.5 ms, 0.057 W |
 
 The clock only drops when the rest of the Mac is quiet. With a virtual machine and compilers keeping the CPU near
 20 W, real-time mode kept full speed and both modes measured the same, so compare the modes on an idle machine.
