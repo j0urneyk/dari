@@ -32,6 +32,8 @@ const DEFAULT_PORT: u16 = 47821;
 const POINTER_PAUSE: Duration = Duration::from_millis(400);
 /// Pause between key events, so the host's input method sees each one.
 const KEY_PAUSE: Duration = Duration::from_millis(60);
+/// How long the viewer waits for a new frame before asking the host for a keyframe.
+const KEYFRAME_AFTER: Duration = Duration::from_secs(1);
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
@@ -235,7 +237,7 @@ async fn run_scenario(
                 continue;
             }
         }
-        check_frame(args, display, &mut frames, verdict).await;
+        check_frame(args, viewer, display, &mut frames, verdict).await;
         for target in POINTER_TARGETS {
             viewer.send_input(InputEvent::PointerMove(pointer_position(target)));
             tokio::time::sleep(POINTER_PAUSE).await;
@@ -360,6 +362,7 @@ async fn clipboard_round_trip(args: &ViewArgs, session: &mut Session, verdict: &
 /// Checks the next frames of the active display: shaped like it, and not blank.
 async fn check_frame(
     args: &ViewArgs,
+    viewer: &ViewerHandle,
     display: &DisplayDescription,
     frames: &mut watch::Receiver<Option<Arc<DecodedFrame>>>,
     verdict: &mut Verdict,
@@ -369,8 +372,15 @@ async fn check_frame(
     // The first frames after a switch may still show the previous display.
     let mut seen = 0;
     let frame = loop {
-        match tokio::time::timeout_at(deadline, frames.changed()).await {
+        let wake = deadline.min(tokio::time::Instant::now() + KEYFRAME_AFTER);
+        match tokio::time::timeout_at(wake, frames.changed()).await {
             Ok(Ok(())) => {}
+            // Hosts send frames only when their screen changes; a still one is sent again on
+            // request.
+            Err(_) if wake < deadline => {
+                viewer.request_keyframe();
+                continue;
+            }
             Ok(Err(_)) | Err(_) => break None,
         }
         let Some(frame) = frames.borrow_and_update().clone() else {

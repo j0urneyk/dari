@@ -54,6 +54,32 @@ struct TestPlatform {
     audio_live: Arc<AtomicUsize>,
     /// How long opening the audio capturer takes, like macOS's permission prompt.
     audio_open_delay: Duration,
+    /// Capture like Windows.Graphics.Capture and ScreenCaptureKit: one frame, then nothing
+    /// until the screen changes, which it never does.
+    still_screen: bool,
+}
+
+/// A screen that never changes after its first frame.
+struct StillCapturer {
+    screen: SyntheticCapturer,
+    shown: bool,
+}
+
+impl ScreenCapturer for StillCapturer {
+    fn capture(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<dari_media::CapturedFrame>, CaptureError> {
+        if self.shown {
+            std::thread::sleep(timeout);
+            return Ok(None);
+        }
+        self.shown = true;
+        self.screen.capture(timeout)
+    }
+    fn paces_itself(&self) -> bool {
+        true
+    }
 }
 
 /// A synthetic tone that counts itself in `live` while open.
@@ -151,6 +177,12 @@ impl HostPlatform for TestPlatform {
         self.opened.lock().unwrap().push(settings);
         if self.deny_capture {
             return Err(CaptureError::PermissionDenied);
+        }
+        if self.still_screen {
+            return Ok(Box::new(StillCapturer {
+                screen: SyntheticCapturer::new(320, 180),
+                shown: false,
+            }));
         }
         Ok(Box::new(SyntheticCapturer::new(320, 180)))
     }
@@ -341,6 +373,37 @@ async fn viewer_sees_the_screen_and_controls_the_host() {
         HostEvent::PasswordChanged(Some(fresh)) => assert_ne!(fresh, host.password),
         other => panic!("expected a new password, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_still_screen_is_sent_again_when_the_viewer_asks_for_a_keyframe() {
+    let host = start(TestPlatform {
+        still_screen: true,
+        ..TestPlatform::default()
+    })
+    .await;
+    let (viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let mut frames = viewer.frames();
+    tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
+        .await
+        .unwrap()
+        .unwrap();
+    frames.borrow_and_update();
+
+    // Nothing changes on the host, so nothing new arrives...
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), frames.changed())
+            .await
+            .is_err()
+    );
+    // ...until the viewer asks.
+    viewer.request_keyframe();
+    tokio::time::timeout(Duration::from_secs(10), frames.changed())
+        .await
+        .expect("the host sent its still screen again")
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
