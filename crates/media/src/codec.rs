@@ -1,9 +1,10 @@
 //! H.264 encoding and decoding.
 //!
-//! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS) and
-//! OpenH264 otherwise. Decoding always uses OpenH264, and the `yuv` crate converts its output to
-//! BGRA. Both encoders emit the same Annex-B Constrained Baseline stream with BT.601
-//! limited-range color, so any viewer decodes any host.
+//! Encoding uses the platform's hardware encoder where there is one (VideoToolbox on macOS, a
+//! Media Foundation hardware encoder on Windows) and OpenH264 otherwise. Decoding always uses
+//! OpenH264, and the `yuv` crate converts its output to BGRA. Every encoder emits the same
+//! Annex-B Constrained Baseline stream with BT.601 limited-range color, so any viewer decodes any
+//! host.
 
 use openh264::OpenH264API;
 use openh264::decoder::Decoder;
@@ -18,7 +19,7 @@ use crate::frame::CapturedFrame;
 
 /// Largest frame the decoder accepts, matching what any Dari host can produce.
 const MAX_DECODED_PIXELS: usize = 3840 * 2160;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const ANNEX_B_START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 #[derive(Debug, Error)]
@@ -32,6 +33,8 @@ pub enum CodecError {
         operation: &'static str,
         status: i32,
     },
+    #[error("{operation} failed with HRESULT {code:#010x}")]
+    Windows { operation: &'static str, code: i32 },
     #[error("malformed encoder output: {0}")]
     MalformedOutput(&'static str),
     #[error("color conversion failed: {0}")]
@@ -98,14 +101,27 @@ enum Backend {
     OpenH264(Box<SoftwareEncoder>),
     #[cfg(target_os = "macos")]
     VideoToolbox(crate::apple::HardwareEncoder),
+    /// Encodes one frame at a time: each is delivered before `submit` returns.
+    #[cfg(windows)]
+    MediaFoundation(crate::win::HardwareEncoder),
 }
 
 impl VideoEncoder {
+    /// Creates an encoder. With `settings.hardware`, it uses the platform's hardware encoder if
+    /// the machine has one, and OpenH264 otherwise.
     pub fn new(settings: EncoderSettings) -> Result<Self, CodecError> {
         #[cfg(target_os = "macos")]
         if settings.hardware {
             return Ok(Self {
                 backend: Backend::VideoToolbox(crate::apple::HardwareEncoder::new(settings)),
+            });
+        }
+        #[cfg(windows)]
+        if settings.hardware
+            && let Some(encoder) = crate::win::HardwareEncoder::new(settings)
+        {
+            return Ok(Self {
+                backend: Backend::MediaFoundation(encoder),
             });
         }
         Ok(Self {
@@ -119,6 +135,8 @@ impl VideoEncoder {
             Backend::OpenH264(_) => false,
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(_) => true,
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => true,
         }
     }
 
@@ -128,6 +146,8 @@ impl VideoEncoder {
             Backend::OpenH264(encoder) => encoder.keyframe_requested = true,
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(encoder) => encoder.request_keyframe(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(encoder) => encoder.request_keyframe(),
         }
     }
 
@@ -135,9 +155,12 @@ impl VideoEncoder {
     /// OpenH264 and starts with a keyframe, so a still screen should submit its last frame again.
     pub fn has_lost_frames(&self) -> bool {
         match &self.backend {
+            // Media Foundation frames are re-encoded by OpenH264 as soon as they fail.
             Backend::OpenH264(_) => false,
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(encoder) => encoder.has_failed(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => false,
         }
     }
 
@@ -175,6 +198,21 @@ impl VideoEncoder {
                 self.backend = Backend::OpenH264(software);
                 deliver.map_or(Ok(()), |deliver| self.submit(frame, deliver))
             }
+            #[cfg(windows)]
+            Backend::MediaFoundation(encoder) => match encoder.encode(frame) {
+                Ok(encoded) => {
+                    if let Some(encoded) = encoded {
+                        deliver(encoded);
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "hardware encoding failed; falling back to OpenH264");
+                    let software = Box::new(SoftwareEncoder::new(encoder.settings())?);
+                    self.backend = Backend::OpenH264(software);
+                    self.submit(frame, deliver)
+                }
+            },
         }
     }
 
@@ -184,6 +222,8 @@ impl VideoEncoder {
             Backend::OpenH264(_) => {}
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(encoder) => encoder.flush(),
+            #[cfg(windows)]
+            Backend::MediaFoundation(_) => {}
         }
     }
 
@@ -269,7 +309,7 @@ impl SoftwareEncoder {
                 yuv.read_rgba8(RgbaSliceU8::new(frame.pixels(), dimensions));
                 yuv
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             CapturedFrame::Native(frame) => self.yuv.insert(YUVBuffer::from_vec(
                 frame.to_i420()?,
                 dimensions.0,
@@ -298,7 +338,7 @@ impl SoftwareEncoder {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 /// Converts RGBA pixels to I420 planes the way OpenH264 does (BT.601, limited range), so both
 /// encoders produce the same colors.
 pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
@@ -308,7 +348,53 @@ pub(crate) fn rgba_to_i420(frame: &crate::frame::RgbaFrame) -> YUVBuffer {
     yuv
 }
 
-#[cfg(any(target_os = "macos", test))]
+/// H.264's sequence parameter set NAL unit type.
+#[cfg(any(target_os = "macos", windows, test))]
+const NAL_SPS: u8 = 7;
+
+#[cfg(any(target_os = "macos", windows, test))]
+/// The highest H.264 level OpenH264 decodes (`level_idc` 52, level 5.2).
+const MAX_DECODABLE_LEVEL: u8 = 52;
+
+#[cfg(any(target_os = "macos", windows, test))]
+/// Lowers the level an SPS declares to [`MAX_DECODABLE_LEVEL`]. The automatic level follows the
+/// macroblock rate, so 2560×1662 at 144 fps comes out as level 6.0, whose parameter sets OpenH264
+/// rejects. The level only states a throughput the decoder must sustain; frame size and
+/// reference frames, which it does use, are within 5.2's limits for any stream Dari sends.
+pub(crate) fn cap_level(nal: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    // NAL header, profile_idc, constraint flags, level_idc: fixed bytes before any emulation
+    // prevention could shift them, since profile_idc is never zero.
+    match nal {
+        [header, _profile, _constraints, level, ..]
+            if header & 0x1f == NAL_SPS && *level > MAX_DECODABLE_LEVEL =>
+        {
+            let mut capped = nal.to_vec();
+            capped[3] = MAX_DECODABLE_LEVEL;
+            std::borrow::Cow::Owned(capped)
+        }
+        _ => std::borrow::Cow::Borrowed(nal),
+    }
+}
+
+/// Applies [`cap_level`] to every SPS in an Annex-B stream, in place.
+#[cfg(any(windows, test))]
+pub(crate) fn cap_annex_b_levels(annex_b: &mut [u8]) {
+    let starts: Vec<usize> = annex_b
+        .windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == [0, 0, 1])
+        .map(|(index, _)| index + 3)
+        .collect();
+    for start in starts {
+        if let Some(nal) = annex_b.get_mut(start..start + 4)
+            && let std::borrow::Cow::Owned(capped) = cap_level(nal)
+        {
+            nal.copy_from_slice(&capped);
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
 /// Rewrites one AVCC access unit (NAL units with big-endian length prefixes, as VideoToolbox
 /// emits them) as Annex-B, prefixing `parameter_sets` (SPS and PPS, for a keyframe).
 pub(crate) fn avcc_to_annex_b(
@@ -441,18 +527,30 @@ mod tests {
         encoders_with(EncoderSettings::default())
     }
 
+    /// One encoder per backend this machine has. On Windows, Media Foundation's own software
+    /// H.264 encoder also runs through the hardware backend, so its Media Foundation path is
+    /// exercised on machines without a hardware encoder (CI runners, VMs) too.
     fn encoders_with(settings: EncoderSettings) -> Vec<VideoEncoder> {
-        [false, true]
-            .into_iter()
-            .filter(|hardware| !hardware || cfg!(target_os = "macos"))
-            .map(|hardware| {
-                VideoEncoder::new(EncoderSettings {
-                    hardware,
-                    ..settings
-                })
-                .unwrap()
-            })
-            .collect()
+        let settings = |hardware| EncoderSettings {
+            hardware,
+            ..settings
+        };
+        let mut encoders = vec![VideoEncoder::new(settings(false)).unwrap()];
+        let hardware = VideoEncoder::new(settings(true)).unwrap();
+        assert!(
+            hardware.is_hardware() || !cfg!(target_os = "macos"),
+            "every Mac has VideoToolbox"
+        );
+        if hardware.is_hardware() {
+            encoders.push(hardware);
+        }
+        #[cfg(windows)]
+        encoders.push(VideoEncoder {
+            backend: Backend::MediaFoundation(crate::win::HardwareEncoder::microsoft_software(
+                settings(true),
+            )),
+        });
+        encoders
     }
 
     fn frame(capturer: &mut SyntheticCapturer) -> CapturedFrame {
@@ -686,6 +784,31 @@ mod tests {
                 Err(CodecError::UnsupportedDimensions { .. })
             ));
         }
+    }
+
+    #[test]
+    fn levels_above_5_2_are_capped() {
+        use std::borrow::Cow;
+        let level_6 = [0x27, 0x42, 0xc0, 0x3c, 0xab, 0x40];
+        assert_eq!(*cap_level(&level_6), [0x27, 0x42, 0xc0, 0x34, 0xab, 0x40]);
+        let level_5_1 = [0x27, 0x42, 0xc0, 0x33, 0xab, 0x40];
+        assert!(matches!(cap_level(&level_5_1), Cow::Borrowed(_)));
+        let pps = [0x28, 0xce, 0x3c, 0x80];
+        assert!(matches!(cap_level(&pps), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn levels_are_capped_inside_an_annex_b_stream() {
+        let mut stream = [
+            0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x3c, 0xab, 0, 0, 1, 0x65, 0x3c,
+        ];
+        cap_annex_b_levels(&mut stream);
+        assert_eq!(
+            stream,
+            [
+                0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x34, 0xab, 0, 0, 1, 0x65, 0x3c
+            ]
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ dari-relay ──► dari-net, dari-proto
 | --- | --- | --- | --- |
 | `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
-| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), fast_image_resize, openh264, yuv, cpal, opus-rs |
+| `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), windows (Windows.Graphics.Capture, Direct3D 11, Media Foundation), fast_image_resize, openh264, yuv, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
@@ -33,7 +33,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Async and networking | `tokio`, `tokio-util`, `quinn`, `rustls` (ring provider), `rcgen` |
 | Authentication and crypto | `spake2`, `hmac`, `sha2`, `subtle`, `zeroize`, `getrandom` |
 | Serialization | `serde`, `postcard` |
-| Screen capture and video | `xcap`, `openh264` (Cisco OpenH264 built from source), `fast_image_resize`, `yuv` (SIMD YUV to BGRA on the viewer); on macOS the `objc2` bindings for ScreenCaptureKit, CoreVideo, CoreMedia, and VideoToolbox |
+| Screen capture and video | `xcap` (display lists), `openh264` (Cisco OpenH264 built from source), `fast_image_resize`, `yuv` (SIMD YUV to BGRA on the viewer); on macOS the `objc2` bindings for ScreenCaptureKit, CoreVideo, CoreMedia, and VideoToolbox; on Windows the `windows` crate for Windows.Graphics.Capture, Direct3D 11, and Media Foundation |
 | System audio | `cpal` (WASAPI loopback, Core Audio process tap, playback), `opus-rs` (pure-Rust Opus) |
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
@@ -105,22 +105,22 @@ as before, and the second slot only lets the encoder overlap frames. Capture sit
 trait, which comes in two kinds:
 
 - **Polled** sources capture whenever asked. The thread paces them at the target frame rate and skips the capture
-  itself while the consumer is behind. xcap (Windows) and the test `SyntheticCapturer` are polled.
+  itself while the consumer is behind. The test `SyntheticCapturer` is polled.
 - **Self-paced** sources deliver frames on their own clock (`paces_itself`). The thread waits for the newest frame
   (up to 50 ms, so a stop request is noticed) and drops it if the consumer is behind. A still screen sends no frames,
-  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit is
-  self-paced.
+  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit and
+  Windows.Graphics.Capture are self-paced.
 
 | | macOS | Windows |
 | --- | --- | --- |
-| Capture | ScreenCaptureKit (`apple::ScreenCaptureKitCapturer`): frames arrive only when the screen changes, at most `max_fps`, already scaled and converted to NV12 on the GPU | xcap: a full RGBA screenshot per frame |
-| Scaling | Done by ScreenCaptureKit | `FrameScaler` on the CPU |
-| Encoding | VideoToolbox in hardware (`apple::HardwareEncoder`), reading the capture's IOSurface without a copy | OpenH264 |
+| Capture | ScreenCaptureKit (`apple::ScreenCaptureKitCapturer`): frames arrive only when the screen changes, at most `max_fps`, already scaled and converted to NV12 on the GPU | Windows.Graphics.Capture (`win::GraphicsCaptureCapturer`): frames arrive in a free-threaded frame pool only when the screen changes, and the capture thread takes the newest at most `max_fps` times a second (Windows 11 24H2 and later also stop drawing faster, through the session's minimum update interval) |
+| Scaling | Done by ScreenCaptureKit | Two pixel shader passes (`win::convert`) scale the frame and render it straight into the planes of an NV12 texture, with OpenH264's own coefficients and 2×2 chroma averaging |
+| Encoding | VideoToolbox in hardware (`apple::HardwareEncoder`), reading the capture's IOSurface without a copy | The adapter's Media Foundation hardware H.264 encoder (`win::HardwareEncoder`), reading the capture's texture without a copy; OpenH264 on machines without one |
 
 Downscaling works on the long edge, rounds width and height to even numbers, and stays within OpenH264's limit
 (3840×2160), which the decoder enforces too.
 
-Both encoders produce the same stream: H.264 Constrained Baseline, Annex-B, BT.601 limited-range color, keyframes
+Every encoder produces the same stream: H.264 Constrained Baseline, Annex-B, BT.601 limited-range color, keyframes
 only at the start, on a resolution change, and on request. OpenH264 runs in its `ScreenContentRealTime` mode. In
 this mode, frame skipping must be on for the encoder to hold its target bitrate; a skipped frame simply isn't
 output, so the reference chain is unaffected. Adaptive quantization and background detection, which screen content
@@ -170,7 +170,25 @@ If VideoToolbox fails, the encoder falls back to OpenH264 for the rest of the st
 Frames still in flight are delivered first, and anything VideoToolbox outputs after a failed frame is dropped. On a
 still screen the thread re-encodes its last frame so the picture is not lost. When the capture resolution changes,
 the old session is flushed and the new one starts with a keyframe. The `objc2` calls behind all of this live in
-`crates/media/src/apple/`, the only place in the crate that needs `unsafe`.
+`crates/media/src/apple/`.
+
+On Windows, the hardware encoder is found by what it does rather than by vendor: Media Foundation lists the hardware
+transforms that turn NV12 into H.264 on the adapter the capture's device belongs to, and the first one that starts
+is used (Intel Quick Sync, NVIDIA NVENC, AMD AMF, and Qualcomm all register one). It runs in low-latency mode with
+Constrained Baseline (Baseline where an encoder only knows the older name, which is the same without FMO and ASO), no
+B-frames, constant bitrate, and BT.601 limited-range color. Hardware transforms are asynchronous: they ask for input
+and announce output through events, which arrive on a Media Foundation thread and are waited for with a one-second
+limit, so a stuck encoder falls back to OpenH264 instead of stalling the stream. Each frame is still submitted and
+then waited for before the next: unlike VideoToolbox, the Windows encoder doesn't overlap frames, so it delivers
+each one before `submit` returns. Output is Annex-B already; the parameter sets from the output
+type are put in front of a keyframe that lacks them, and an SPS above level 5.2 is capped the same way as
+VideoToolbox's. A machine without a hardware encoder (a VM, a CI runner, a server
+without a GPU) uses OpenH264 from the start. The capture shares one Direct3D 11 device with the conversion and the
+encoder, and a lost device or a closed capture item restarts the capture on a new device; the encoder follows the
+frames to it. The shaders rather than Direct3D 11's video processor do the conversion because they run on any
+feature level 10 device, including WARP, the software rasterizer of VMs and CI runners, which have no video
+processor, so the same path is tested everywhere. The COM calls live in `crates/media/src/win/`. These two modules are
+the only places in the library that need `unsafe`.
 
 | Quality preset | Max long edge | Bitrate at 30 fps |
 | --- | --- | --- |

@@ -30,8 +30,8 @@ pub trait HostPlatform: Send + Sync + 'static {
     }
 }
 
-/// The real screen (ScreenCaptureKit on macOS, xcap elsewhere), input (enigo), and system audio
-/// (cpal loopback).
+/// The real screen (ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows), input
+/// (enigo), and system audio (cpal loopback).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemPlatform;
 

@@ -39,7 +39,8 @@ use objc2_video_toolbox::{
 
 use super::NativeFrame;
 use crate::codec::{
-    CodecError, EncodedFrame, EncoderSettings, FrameDelivery, avcc_to_annex_b, rgba_to_i420,
+    CodecError, EncodedFrame, EncoderSettings, FrameDelivery, avcc_to_annex_b, cap_level,
+    rgba_to_i420,
 };
 use crate::frame::CapturedFrame;
 
@@ -443,29 +444,6 @@ fn annex_b(sample: &CMSampleBuffer) -> Result<(Vec<u8>, bool), CodecError> {
     ))
 }
 
-/// The highest H.264 level OpenH264 decodes (`level_idc` 52, level 5.2).
-const MAX_DECODABLE_LEVEL: u8 = 52;
-
-/// Lowers the level an SPS declares to [`MAX_DECODABLE_LEVEL`]. The automatic level follows the
-/// macroblock rate, so 2560×1662 at 144 fps comes out as level 6.0, whose parameter sets OpenH264
-/// rejects. The level only states a throughput the decoder must sustain; frame size and
-/// reference frames, which it does use, are within 5.2's limits for any stream Dari sends.
-fn cap_level(nal: &[u8]) -> Cow<'_, [u8]> {
-    const SPS: u8 = 7;
-    // NAL header, profile_idc, constraint flags, level_idc: fixed bytes before any emulation
-    // prevention could shift them, since profile_idc is never zero.
-    match nal {
-        [header, _profile, _constraints, level, ..]
-            if header & 0x1f == SPS && *level > MAX_DECODABLE_LEVEL =>
-        {
-            let mut capped = nal.to_vec();
-            capped[3] = MAX_DECODABLE_LEVEL;
-            Cow::Owned(capped)
-        }
-        _ => Cow::Borrowed(nal),
-    }
-}
-
 /// A sample is a keyframe unless its attachments mark it as not a sync sample.
 fn is_keyframe(sample: &CMSampleBuffer) -> bool {
     // SAFETY: The sample buffer is valid; not creating the array avoids mutating it.
@@ -532,19 +510,4 @@ fn parameter_sets(format: &CMFormatDescription) -> Result<(Vec<&[u8]>, usize), C
     let length_size =
         usize::try_from(length_size).map_err(|_| CodecError::MalformedOutput("NAL length size"))?;
     Ok((sets, length_size))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn levels_above_5_2_are_capped() {
-        let level_6 = [0x27, 0x42, 0xc0, 0x3c, 0xab, 0x40];
-        assert_eq!(*cap_level(&level_6), [0x27, 0x42, 0xc0, 0x34, 0xab, 0x40]);
-        let level_5_1 = [0x27, 0x42, 0xc0, 0x33, 0xab, 0x40];
-        assert!(matches!(cap_level(&level_5_1), Cow::Borrowed(_)));
-        let pps = [0x28, 0xce, 0x3c, 0x80];
-        assert!(matches!(cap_level(&pps), Cow::Borrowed(_)));
-    }
 }

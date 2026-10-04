@@ -21,6 +21,13 @@ use dari_media::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Shows how the capture and the encoder were set up, and any fallback on the way.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "dari_media=debug".into()),
+        )
+        .init();
     let mut args = std::env::args().skip(1);
     let seconds: u64 = args
         .next()
