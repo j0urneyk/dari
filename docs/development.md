@@ -55,7 +55,7 @@ cargo deny check
   advisories only to direct dependencies, because we can't replace the crates GPUI pulls in transitively. It also
   checks the license allowlist and bans yanked crates, wildcard versions, and unknown registries or git sources.
 
-`unsafe` appears in three places, each behind its own `allow(unsafe_code)`:
+`unsafe` appears in four places, each behind its own `allow(unsafe_code)`:
 
 - Three OS API calls in `crates/input/src/backend.rs`: `AXIsProcessTrusted` on macOS (checks Accessibility
   permission), and on Windows `SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary
@@ -65,6 +65,8 @@ cargo deny check
 - The Windows capture and encoding module `crates/media/src/win/`, which drives Windows.Graphics.Capture's interop,
   Direct3D 11, and Media Foundation through the `windows` crate, which marks every COM call unsafe. Every unsafe block
   there carries a `SAFETY` comment too.
+- The development-only power sampler `crates/media/examples/power_sample.rs`, which calls the private
+  `libIOReport.dylib`. Its unsafe blocks carry `SAFETY` comments too.
 
 `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
 capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's
@@ -103,6 +105,24 @@ from a 144 Hz clock and checks that it keeps up after VideoToolbox settles:
 ```bash
 cargo test --release -p dari-media -- --ignored --nocapture hardware_stream_keeps_up
 ```
+
+To see what a change costs in power on Apple silicon, `power_sample` reads IOReport's "Energy Model" counters, the
+source `sudo powermetrics` uses, through the private `libIOReport.dylib`, so it needs no password. The arguments are
+the interval in milliseconds, the number of samples (0 runs until interrupted), and optionally the channels to
+print. `AVE` is the hardware video encoder (the media engine); `GPU Energy`, `DRAM`, and `CPU Energy` are the other
+useful ones, and leaving the names out prints every channel that used energy. Each line is a Unix timestamp and
+`CHANNEL=watts` for that interval, so you can average the lines inside a benchmark's window; with a fixed count, a
+final `mean` line averages the whole run. Idle, `AVE` reads about 0.001 W; streaming 1920×1246 at 144 fps on an M5,
+about 0.14 W.
+
+```bash
+cargo run --release -p dari-media --example power_sample -- 1000 0 AVE "GPU Energy" DRAM "CPU Energy"
+```
+
+Measure with the machine otherwise idle, and subtract an idle sample taken the same way. Busy machines hide
+differences: with a VM and compilers keeping the CPU near 20 W, VideoToolbox's real-time mode never lowered its clock,
+and real-time on and off measured the same. Leave a few seconds of warm-up out of the window, since the encoder
+takes a moment to settle.
 
 The session layer swaps screen and input through the `HostPlatform` trait, so even environments without screen
 permissions, like CI runners, verify the real path including QUIC and H.264. Time-dependent tests (allocation

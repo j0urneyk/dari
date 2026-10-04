@@ -144,7 +144,8 @@ encoder lowers the SPS's `level_idc` to 5.2. The level only states a throughput,
 frames stay within 5.2's limits.
 
 Turning real-time mode off costs little power. While streaming, the media engine (the `AVE` channel of IOReport's
-energy counters, the source `powermetrics` reads, which needs no sudo) draws 0.06–0.2 W with real-time mode off.
+energy counters, the source `powermetrics` reads; the `power_sample` example reads it without sudo, see
+[development.md](development.md)) draws 0.06–0.2 W with real-time mode off.
 Real-time mode saves 0.04–0.1 W of that, at most 0.1 Wh per hour of streaming, and it saves it by lowering the
 clock, which is where the latency comes from. Every frame gets slower, including isolated ones and frames of slow
 streams, so real-time mode can't be enabled only for low frame rates: a keystroke on a still screen would take more
@@ -187,7 +188,7 @@ encoder, and a lost device or a closed capture item restarts the capture on a ne
 frames to it. The shaders rather than Direct3D 11's video processor do the conversion because they run on any
 feature level 10 device, including WARP, the software rasterizer of VMs and CI runners, which have no video
 processor, so the same path is tested everywhere. The COM calls live in `crates/media/src/win/`. These two modules are
-the only places in the crate that need `unsafe`.
+the only places in the library that need `unsafe`.
 
 | Quality preset | Max long edge | Bitrate at 30 fps |
 | --- | --- | --- |
