@@ -17,6 +17,8 @@ pub enum Availability {
     Available,
     /// The host user has not granted the OS permission (macOS privacy settings).
     PermissionDenied,
+    /// The host's OS is asking its user for the permission right now (a macOS privacy prompt).
+    AwaitingPermission,
     Unavailable,
     /// The host user allowed this session to view only.
     NotAllowed,

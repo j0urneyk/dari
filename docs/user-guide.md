@@ -84,8 +84,10 @@ left is what actually arrives.
 
 When the remote computer shares its sound, **Sound on / Sound off** in the toolbar plays or mutes it; the choice is
 remembered for later sessions. Muting stops the remote side from recording its sound at all. Sound plays about a
-tenth of a second behind the remote computer and isn't synchronized with the picture. If a remote Mac hasn't allowed
-Dari to record its sound, the button reads **No sound permission** instead; hover it for where to allow it on that Mac.
+tenth of a second behind the remote computer and isn't synchronized with the picture. The first time a remote Mac shares
+its sound, macOS asks the person there whether Dari may record it; until they answer, the button reads **Waiting for
+sound permission**, and sound starts once they allow it. If they refused, it reads **No sound permission**; hover it
+for where to allow it on that Mac.
 
 In sessions that allow control, **Send file…** in the toolbar picks files to send, and files dragged onto the remote
 screen are sent too. They're saved in the remote computer's Downloads folder. A file the remote side sends appears

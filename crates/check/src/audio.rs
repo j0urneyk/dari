@@ -28,6 +28,8 @@ use crate::scenario::Verdict;
 const RECORD_RATE: u32 = 48_000;
 /// How long the viewer listens once the host shares audio.
 const LISTEN: Duration = Duration::from_secs(6);
+/// How long the viewer waits for the host's user to answer macOS's permission prompt.
+const PROMPT_WAIT: Duration = Duration::from_secs(120);
 /// Loudness of the host's tone, low enough to be bearable in a room.
 const TONE_AMPLITUDE: f32 = 0.2;
 /// A received tone must be at least this loud (RMS)...
@@ -267,14 +269,33 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     .flatten();
     if audio == Some(Availability::Available) {
         // The host only learns whether it may record once its capturer opens, and says so in a
-        // later status.
-        let listened = tokio::time::Instant::now() + LISTEN;
-        while let Ok(Some(event)) = tokio::time::timeout_at(listened, events.recv()).await {
-            if let ViewerEvent::HostStatus(status) = event {
-                audio = Some(status.audio);
+        // later status; the first open may wait for its user to answer macOS's prompt.
+        let mut listened = tokio::time::Instant::now() + LISTEN;
+        let give_up = tokio::time::Instant::now() + PROMPT_WAIT;
+        loop {
+            let wake = if audio == Some(Availability::AwaitingPermission) {
+                give_up
+            } else {
+                listened
+            };
+            match tokio::time::timeout_at(wake, events.recv()).await {
+                Ok(Some(ViewerEvent::HostStatus(status))) => {
+                    let was = audio.replace(status.audio);
+                    if status.audio == Availability::AwaitingPermission {
+                        println!("the host's user is being asked to allow recording its sound");
+                    } else if was == Some(Availability::AwaitingPermission) {
+                        // Listen afresh from the answer.
+                        samples
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clear();
+                        listened = tokio::time::Instant::now() + LISTEN;
+                    }
+                }
+                Ok(Some(ViewerEvent::Ended(_)) | None) | Err(_) => break,
+                Ok(Some(_)) => {}
             }
         }
-        tokio::time::sleep_until(listened).await;
     }
     verdict.check(
         audio == Some(Availability::Available),

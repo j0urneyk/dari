@@ -217,9 +217,9 @@ the received sound is loud enough and strongest at 997 Hz. The host side needs a
 virtual sound card). On macOS the host must run from an app bundle that declares `NSAudioCaptureUsageDescription`,
 or macOS records silence without asking; `scripts/crosscheck/mac-check-app.sh` wraps `dari-check` in an ad-hoc
 signed `target/crosscheck/DariCheck.app`. Approve the system audio prompt once. An ad-hoc signature is tied to the
-binary, so after every rebuild of `dari-check` macOS asks again; until it is answered the host's capturer waits, and a
-viewer that gives up first hears nothing. A refusal makes the host report `PermissionDenied`, which `audio-view`
-reports as a failure.
+binary, so after every rebuild of `dari-check` macOS asks again. While it asks, the host reports
+`AwaitingPermission` and `audio-view` waits up to two minutes for the answer; a refusal makes the host report
+`PermissionDenied`, which `audio-view` reports as a failure.
 
 ```bash
 scripts/crosscheck/mac-check-app.sh

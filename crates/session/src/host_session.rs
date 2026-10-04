@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
     AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame,
-    FRAMES_IN_FLIGHT, StreamError, StreamSettings, spawn_audio_stream, spawn_capture_stream,
+    FRAMES_IN_FLIGHT, PermissionState, StreamError, StreamSettings, spawn_audio_stream,
+    spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
@@ -655,7 +656,7 @@ impl HostSession {
             }
             ControlMessage::SetAudio(enabled) => {
                 if enabled {
-                    self.start_audio();
+                    self.start_audio().await?;
                 } else {
                     self.stop_audio().await;
                 }
@@ -704,22 +705,26 @@ impl HostSession {
     ///
     /// Opening can take as long as the user leaves macOS's permission prompt up, so it happens
     /// on a blocking thread and the session keeps serving input and control meanwhile; the
-    /// result comes back as an [`AudioOpened`].
-    fn start_audio(&mut self) {
-        if self.status.audio != Availability::Available {
-            return;
+    /// result comes back as an [`AudioOpened`]. When opening will ask, the viewer is told the
+    /// host is waiting for its user.
+    async fn start_audio(&mut self) -> Result<(), SessionEndReason> {
+        if !matches!(
+            self.status.audio,
+            Availability::Available | Availability::AwaitingPermission
+        ) {
+            return Ok(());
         }
         match &self.audio {
-            AudioState::Opening(_) => return,
+            AudioState::Opening(_) => return Ok(()),
             // The sender ends when the capture thread stopped (e.g. the device went away).
-            AudioState::On(audio) if !audio.sender.is_finished() => return,
+            AudioState::On(audio) if !audio.sender.is_finished() => return Ok(()),
             AudioState::On(_) | AudioState::Off => {}
         }
         if let AudioState::On(stale) = std::mem::replace(&mut self.audio, AudioState::Off) {
             stale.stop_in_background();
         }
         let Some(opened) = self.audio_opened.clone() else {
-            return;
+            return Ok(());
         };
         self.audio_generation += 1;
         let generation = self.audio_generation;
@@ -736,34 +741,55 @@ impl HostSession {
                 capture.stop();
             }
         });
+        if self.platform.audio_access() == PermissionState::NotDetermined
+            && self.status.audio != Availability::AwaitingPermission
+        {
+            self.status.audio = Availability::AwaitingPermission;
+            self.publish_status().await?;
+        }
+        Ok(())
     }
 
     /// Finishes [`HostSession::start_audio`]: starts sending if the capturer opened and the
     /// viewer still wants audio, or tells the viewer audio is unavailable.
+    ///
+    /// Any result settles a pending permission prompt, even one for an open the viewer has
+    /// since muted, so the viewer is never left waiting on an answer that already came.
     async fn audio_opened(&mut self, opened: AudioOpened) -> Result<(), SessionEndReason> {
         let current = matches!(self.audio, AudioState::Opening(generation) if generation == opened.generation);
-        match opened.result {
+        let status = match opened.result {
             Ok((capture, encoded)) if current => {
                 let sender = tokio::spawn(send_audio(self.link.streams(), encoded));
                 self.audio = AudioState::On(SharedAudio { capture, sender });
-                Ok(())
+                Availability::Available
             }
             // Muted, or asked again, while it was opening.
             Ok((capture, _)) => {
                 tokio::task::spawn_blocking(move || capture.stop());
-                Ok(())
+                Availability::Available
             }
-            Err(error) if current => {
+            Err(error) => {
                 warn!(%error, "system audio is unavailable");
-                self.audio = AudioState::Off;
-                self.status.audio = match error {
+                if current {
+                    self.audio = AudioState::Off;
+                }
+                match error {
                     AudioError::PermissionDenied => Availability::PermissionDenied,
-                    _ => Availability::Unavailable,
-                };
-                self.publish_status().await
+                    _ if current => Availability::Unavailable,
+                    // A stale failure says nothing about the open that replaced it.
+                    _ => Availability::Available,
+                }
             }
-            Err(_) => Ok(()),
+        };
+        let settles = self.status.audio == Availability::AwaitingPermission
+            && !matches!(self.audio, AudioState::Opening(_));
+        if self.status.audio != status
+            && (status == Availability::PermissionDenied || settles || current)
+        {
+            self.status.audio = status;
+            self.publish_status().await?;
         }
+        Ok(())
     }
 
     async fn stop_audio(&mut self) {

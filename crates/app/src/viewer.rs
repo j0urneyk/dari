@@ -305,12 +305,21 @@ impl ViewerView {
         cx.notify();
     }
 
-    /// Whether the host can share its sound in this session.
+    /// Whether the host can share its sound in this session, or will once its user answers the
+    /// OS's permission prompt; the toggle stays usable meanwhile.
     fn audio_available(&self) -> bool {
         self.session.is_some()
-            && self
-                .status
-                .is_some_and(|status| status.audio == Availability::Available)
+            && self.status.is_some_and(|status| {
+                matches!(
+                    status.audio,
+                    Availability::Available | Availability::AwaitingPermission
+                )
+            })
+    }
+
+    fn audio_awaiting_permission(&self) -> bool {
+        self.status
+            .is_some_and(|status| status.audio == Availability::AwaitingPermission)
     }
 
     /// Whether the host would share its sound but its user hasn't allowed recording it.
@@ -549,12 +558,18 @@ impl ViewerView {
                             AssetIcon::VolumeX
                         })
                         .selected(self.sound)
-                        .label(if self.sound {
-                            text().sound_on
-                        } else {
+                        .label(if !self.sound {
                             text().sound_off
+                        } else if self.audio_awaiting_permission() {
+                            text().sound_awaiting_permission
+                        } else {
+                            text().sound_on
                         })
-                        .tooltip(text().toggle_sound)
+                        .tooltip(if self.sound && self.audio_awaiting_permission() {
+                            text().remote_sound_awaiting_permission
+                        } else {
+                            text().toggle_sound
+                        })
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_sound(cx))),
                 )
             })
@@ -805,7 +820,9 @@ impl ViewerView {
             Availability::PermissionDenied => {
                 return Some(Notice::Info(text().remote_screen_permission));
             }
-            Availability::Unavailable | Availability::NotAllowed => {
+            Availability::Unavailable
+            | Availability::NotAllowed
+            | Availability::AwaitingPermission => {
                 return Some(Notice::Info(text().remote_screen_unavailable));
             }
             Availability::Available => {}
@@ -813,7 +830,9 @@ impl ViewerView {
         match status.input {
             Availability::Available => None,
             Availability::NotAllowed => Some(Notice::Info(text().view_only_session)),
-            Availability::PermissionDenied | Availability::Unavailable => {
+            Availability::PermissionDenied
+            | Availability::Unavailable
+            | Availability::AwaitingPermission => {
                 Some(Notice::Info(text().remote_input_unavailable))
             }
         }

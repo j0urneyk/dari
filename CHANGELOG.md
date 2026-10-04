@@ -75,7 +75,9 @@ All notable changes to this project are documented here. The format follows
 
 - A Mac host whose user refused system audio recording no longer streams silence as if sharing its sound. macOS still
   lets a refused app record, but only silence, so the host now asks macOS whether it was refused and tells the viewer,
-  whose toolbar shows **No sound permission** with where to allow it.
+  whose toolbar shows **No sound permission** with where to allow it. While macOS is still asking the host's user, the
+  viewer's sound button reads **Waiting for sound permission** instead of playing nothing, and sound starts once they
+  allow it. This adds an availability state to the unreleased session protocol 2.0.
 - A Mac host no longer quits when the viewer types. Each typed character made the host look up its key in the
   keyboard layout from the input thread, which macOS only allows on the main thread, so the app crashed; character
   keys are now pressed by their key code.

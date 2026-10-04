@@ -15,8 +15,8 @@ use std::time::Duration;
 use dari_input::{InjectError, InputBackend, RecordedAction};
 use dari_media::{
     AudioCapturer, AudioChunk, AudioError, AudioOutput, AudioOutputFactory, CaptureError,
-    DisplayInfo, PlaybackBuffer, ScreenCapturer, StreamSettings, SyntheticAudioCapturer,
-    SyntheticCapturer,
+    DisplayInfo, PermissionState, PlaybackBuffer, ScreenCapturer, StreamSettings,
+    SyntheticAudioCapturer, SyntheticCapturer,
 };
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
@@ -60,6 +60,8 @@ struct TestPlatform {
     audio_open_delay: Duration,
     /// The host user refused system audio recording (macOS privacy settings).
     deny_audio: bool,
+    /// The host user hasn't been asked about system audio yet, so opening it asks.
+    audio_unasked: bool,
     /// Capture like Windows.Graphics.Capture and ScreenCaptureKit: one frame, then nothing
     /// until the screen changes, which it never does.
     still_screen: bool,
@@ -197,6 +199,13 @@ impl HostPlatform for TestPlatform {
             return Err(InjectError::PermissionDenied);
         }
         Ok(Box::new(SharedRecorder(self.actions.clone())))
+    }
+    fn audio_access(&self) -> PermissionState {
+        if self.audio_unasked {
+            PermissionState::NotDetermined
+        } else {
+            PermissionState::NotRequired
+        }
     }
     fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
         std::thread::sleep(self.audio_open_delay);
@@ -1176,6 +1185,106 @@ async fn a_refused_sound_permission_reaches_the_viewer() {
         )
     })
     .await;
+}
+
+/// The viewer's view of the host's sound, following its status reports.
+struct AudioStatus(Option<Availability>);
+
+impl AudioStatus {
+    /// Waits for the host to report a different availability, and returns it.
+    async fn next_change(
+        &mut self,
+        events: &mut mpsc::UnboundedReceiver<ViewerEvent>,
+    ) -> Availability {
+        loop {
+            if let ViewerEvent::HostStatus(status) = next_event(events).await
+                && self.0.replace(status.audio) != Some(status.audio)
+            {
+                return status.audio;
+            }
+        }
+    }
+}
+
+/// A host whose OS asks its user before the first recording, answering after `delay`.
+fn asking_platform(refuse: bool) -> TestPlatform {
+    TestPlatform {
+        audio_unasked: true,
+        deny_audio: refuse,
+        audio_open_delay: Duration::from_millis(500),
+        ..TestPlatform::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_viewer_hears_once_the_host_user_allows_recording() {
+    let host = start(asking_platform(false)).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (_viewer, mut viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    let mut audio = AudioStatus(None);
+    let mut changes = Vec::new();
+    for _ in 0..3 {
+        changes.push(audio.next_change(&mut viewer_events).await);
+    }
+    assert_eq!(
+        changes,
+        [
+            Availability::Available,
+            Availability::AwaitingPermission,
+            Availability::Available
+        ]
+    );
+    wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_viewer_learns_the_host_user_refused_recording() {
+    let host = start(asking_platform(true)).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (_viewer, mut viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    let mut audio = AudioStatus(None);
+    let mut changes = Vec::new();
+    for _ in 0..3 {
+        changes.push(audio.next_change(&mut viewer_events).await);
+    }
+    assert_eq!(
+        changes,
+        [
+            Availability::Available,
+            Availability::AwaitingPermission,
+            Availability::PermissionDenied
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn muting_during_the_prompt_does_not_leave_the_viewer_waiting() {
+    let host = start(asking_platform(false)).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (viewer, mut viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    let mut audio = AudioStatus(None);
+    audio.next_change(&mut viewer_events).await;
+    assert_eq!(
+        audio.next_change(&mut viewer_events).await,
+        Availability::AwaitingPermission
+    );
+    viewer.set_audio(false);
+    // The answer still comes, and settles the status for a later unmute.
+    assert_eq!(
+        audio.next_change(&mut viewer_events).await,
+        Availability::Available
+    );
+    viewer.set_audio(true);
+    wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

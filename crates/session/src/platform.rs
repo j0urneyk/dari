@@ -2,8 +2,8 @@ use dari_input::{EnigoBackend, InjectError, InputBackend};
 
 use crate::clipboard::{ClipboardFactory, SystemClipboard};
 use dari_media::{
-    AudioCapturer, AudioError, CaptureError, DisplayCapturer, DisplayInfo, ScreenCapturer,
-    StreamSettings, SystemAudioCapturer, list_displays,
+    AudioCapturer, AudioError, CaptureError, DisplayCapturer, DisplayInfo, PermissionState,
+    ScreenCapturer, StreamSettings, SystemAudioCapturer, list_displays, system_audio_access,
 };
 
 /// The host machine's screen and input devices.
@@ -27,6 +27,11 @@ pub trait HostPlatform: Send + Sync + 'static {
     /// Opens a capturer for what the system is playing. Called on the audio thread.
     fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
         Err(AudioError::Unsupported)
+    }
+    /// Whether the OS lets this app record what the system plays, without asking.
+    /// [`PermissionState::NotDetermined`] means opening the capturer will ask the user and wait.
+    fn audio_access(&self) -> PermissionState {
+        PermissionState::NotRequired
     }
 }
 
@@ -58,5 +63,9 @@ impl HostPlatform for SystemPlatform {
 
     fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
         Ok(Box::new(SystemAudioCapturer::open()?))
+    }
+
+    fn audio_access(&self) -> PermissionState {
+        system_audio_access()
     }
 }
