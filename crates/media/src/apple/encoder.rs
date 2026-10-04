@@ -197,7 +197,8 @@ impl Session {
         let properties: [(&CFString, &CFType); 6] = unsafe {
             [
                 // Real-time mode lowers the encoder's clock after a few seconds to just keep up with
-                // the expected frame rate, so each frame took 8–11 ms instead of 4.5 ms.
+                // the expected frame rate, so each frame took 8–11 ms instead of 4.5 ms. That saves
+                // under 0.1 W; `MaximizePowerEfficiency` slows frames down the same way.
                 (kVTCompressionPropertyKey_RealTime, &**CFBoolean::new(false)),
                 (
                     kVTCompressionPropertyKey_ProfileLevel,
