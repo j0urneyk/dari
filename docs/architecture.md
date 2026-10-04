@@ -213,7 +213,8 @@ than through a manifest). When the display changes, the input coordinate space f
 and returns a `ViewerHandle` and a `ViewerEvent` channel.
 
 - Video stream → decode thread (queue of 4) → `watch::Sender<Option<Arc<DecodedFrame>>>`. The UI always sees only
-  the latest frame. A decode failure sends `RequestKeyframe`.
+  the latest frame, and takes it out of the channel with `ViewerHandle::take_frame` so its pixels move into the
+  `RenderImage` without a copy. A decode failure sends `RequestKeyframe`.
 - Input goes through a queue of 512, of which 128 slots are reserved for key and button events. Even when the
   network falls behind, pointer moves can't fill the queue and cause key releases to be dropped.
 - A cleanly ended video stream doesn't end the session; the control stream decides when the session is over.
@@ -265,9 +266,11 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 
 The viewer window creates a new `RenderImage` for every frame and releases the previous image from the GPU atlas
 with `window.drop_image`. A GUI test confirmed that without it, six seconds of streaming grows memory by about
-280 MB. The copies this costs are cheap at 1920×1246. On an M5, in a release build, copying the decoded frame into
-the `RenderImage` takes about 0.4 ms. Rendering the window, including the upload to a fresh atlas texture, takes
-about 0.25 ms. That is under 1 ms of the 6.9 ms a 144 fps frame allows on the main thread.
+280 MB. The decoded frame itself is not copied: the window takes it out of the frame channel
+(`ViewerHandle::take_frame`) instead of cloning its `Arc`, so the decoder's buffer becomes the image's. The copy it
+used to make cost about 0.4 ms at 1920×1246 inside the app, and about 0.3 ms at 2560×1662 for a bare copy of a
+freshly decoded buffer, on the main thread of an M5 in a release build. Rendering the window, including the upload
+to a fresh atlas texture, takes about 0.25 ms of the 6.9 ms a 144 fps frame allows on the main thread.
 
 gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and copying. In the remote screen's key
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window
