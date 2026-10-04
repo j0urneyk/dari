@@ -26,7 +26,7 @@ while ((SECONDS < deadline)); do
     reply=$(ssh "${ssh_options[@]}" "dari@$ip" 'Test-Path C:\dari-check\bootstrap-done' 2>&1) || true
     if [[ $reply == *True* ]]; then
       echo "$name is ready at $ip."
-      echo "scripts/crosscheck/crosscheck.sh --windows dari@$ip --identity $state/id_ed25519 --known-hosts $state/known_hosts --build"
+      echo "scripts/crosscheck/crosscheck.sh --a local --b windows:dari@$ip --identity $state/id_ed25519 --known-hosts $state/known_hosts --build"
       exit 0
     fi
     # The guest has an address but this Mac can't reach it at all: retrying won't help.

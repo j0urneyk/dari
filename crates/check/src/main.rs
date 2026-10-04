@@ -5,7 +5,7 @@
 //! pointer targets, then clicking, scrolling, typing, and copying in an input window the host
 //! opens, and a clipboard round trip), and each side checks what it can observe on its own
 //! machine. Each prints `PASS`/`FAIL` lines and exits non-zero on any
-//! failure. `scripts/crosscheck/crosscheck.sh` drives both sides from a Mac.
+//! failure. `scripts/crosscheck/crosscheck.sh` drives both sides from a Mac or Linux machine.
 
 #![allow(
     clippy::print_stdout,

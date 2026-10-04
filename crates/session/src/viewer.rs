@@ -173,6 +173,12 @@ impl ViewerHandle {
         let _sent = self.outgoing.try_send(Outgoing::SelectDisplay(id));
     }
 
+    /// Asks the host to send a keyframe. A host whose screen is still sends nothing new on its
+    /// own; this makes it send its current picture again.
+    pub fn request_keyframe(&self) {
+        let _sent = self.outgoing.try_send(Outgoing::RequestKeyframe);
+    }
+
     /// Asks the host for a different stream quality.
     pub fn set_quality(&self, preset: QualityPreset) {
         let _sent = self.outgoing.try_send(Outgoing::SetQuality(preset));

@@ -1,12 +1,18 @@
 name: Cross-device check
 
-# Sessions between a macOS runner and an x64 Windows runner, in both directions
-# (scripts/crosscheck/crosscheck.sh). Hosted runners can't reach each other, so both join the
-# tailnet through Tailscale workload identity federation with GitHub's OIDC token; no Tailscale
-# secret is stored: the TS_CLIENT_ID and TS_AUDIENCE repository variables name a federated
-# credential allowed to create keys for the tag in TS_TAGS (tag:ci by default). The Windows job
-# prepares SSH and waits; the macOS job drives it like the Mac does a local VM, then tells it to
-# finish.
+# Sessions between two hosted runners, in both directions, for every pairing Dari supports:
+# macOS and Windows, two macOS runners, and two x64 Windows runners
+# (scripts/crosscheck/crosscheck.sh). Hosted runners can't reach each other, so all of them join
+# the tailnet through Tailscale workload identity federation with GitHub's OIDC token; no
+# Tailscale secret is stored: the TS_CLIENT_ID and TS_AUDIENCE repository variables name a
+# federated credential allowed to create keys for the tag in TS_TAGS (tag:ci by default).
+#
+# For each pairing, peer jobs prepare SSH and wait, and a driver job drives them, then tells them
+# to finish. When a pairing has a macOS side, the driver is that macOS runner itself (peer A);
+# two Windows peers are driven from Linux, which also runs the relay. A macOS peer runs
+# macos/interactive.sh serve in a step, since a program started over SSH there can't capture the
+# screen. The repository is public, so runner minutes are free and every pairing runs on pull
+# requests too.
 on:
   schedule:
     # Every night, 03:07 in Korea.
@@ -32,8 +38,8 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  # Both other jobs need the key, and they run at the same time, so neither can make it for the
-  # other. It is good for this run only and only opens SSH on a runner that answers tailnet
+  # The other jobs need the key, and they run at the same time, so none can make it for the
+  # others. It is good for this run only and only opens SSH on a runner that answers tailnet
   # addresses alone.
   ssh-key:
     name: SSH key for this run
@@ -50,10 +56,18 @@ jobs:
           echo "public=$(cat key.pub)" >>"$GITHUB_OUTPUT"
           echo "private=$(base64 -w0 key)" >>"$GITHUB_OUTPUT"
 
-  windows-peer:
-    name: Windows peer
+  peer:
+    name: ${{ matrix.pairing }} peer ${{ matrix.side }} (${{ matrix.os }})
     needs: ssh-key
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pairing: mac-windows, side: b, os: windows }
+          - { pairing: mac-mac, side: b, os: macos }
+          - { pairing: windows-windows, side: a, os: windows }
+          - { pairing: windows-windows, side: b, os: windows }
+    runs-on: ${{ matrix.os }}-latest
     timeout-minutes: 90
     permissions:
       contents: read
@@ -67,10 +81,13 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.event_name == 'schedule' }}
+          key: ${{ matrix.os }}
+          # One peer job per OS saves the cache; the others build the same thing.
+          save-if: ${{ github.event_name == 'schedule' && matrix.pairing != 'windows-windows' }}
       - name: Build dari-check
         run: cargo build -p dari-check --locked
-      - name: Let the macOS job drive this runner over SSH
+      - name: Let the driver reach this Windows runner over SSH
+        if: matrix.os == 'windows'
         shell: powershell
         env:
           SSH_PUBLIC_KEY: ${{ needs.ssh-key.outputs.public }}
@@ -80,34 +97,71 @@ jobs:
           .\scripts\crosscheck\windows\prepare-peer.ps1 -PublicKey $env:SSH_PUBLIC_KEY -AllowFrom '100.64.0.0/10', 'fd7a:115c:a1e0::/48'
           Copy-Item target\debug\dari-check.exe C:\dari-check\dari-check.exe
           Copy-Item scripts\crosscheck\windows\interactive.ps1 C:\dari-check\interactive.ps1
+      - name: Let the driver reach this Mac over SSH
+        if: matrix.os == 'macos'
+        env:
+          SSH_PUBLIC_KEY: ${{ needs.ssh-key.outputs.public }}
+        run: |
+          scripts/crosscheck/macos/prepare-peer.sh "$SSH_PUBLIC_KEY"
+          cp target/debug/dari-check ~/dari-check/dari-check
       # Joining last means the runner shows up on the tailnet only once it is ready.
       - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
           oauth-client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
           tags: ${{ vars.TS_TAGS || 'tag:ci' }}
-          hostname: dari-check-${{ github.run_id }}
+          hostname: dari-check-${{ github.run_id }}-${{ matrix.pairing }}-${{ matrix.side }}
           # Peers are found with `tailscale ip`, not MagicDNS; keep the runner's own resolver.
           args: --accept-dns=false
-      - name: Wait for the macOS job to finish
+      # On macOS the action points the Ethernet DNS at MagicDNS (100.100.100.100) regardless,
+      # which resolves nothing here, and GitHub's artifact host stopped resolving. Peers are found
+      # with `tailscale ip`, so give the runner its own DNS back.
+      - name: Restore the runner's DNS
+        if: matrix.os == 'macos'
+        run: |
+          sudo networksetup -setdnsservers Ethernet Empty
+          sudo networksetup -setsearchdomains Ethernet Empty
+          dscacheutil -q host -a name github.com | head -n 2
+      - name: Wait for the driver to finish
+        if: matrix.os == 'windows'
         shell: powershell
         run: |
           $deadline = (Get-Date).AddMinutes(50)
           while (-not (Test-Path C:\dari-check\done) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
-          if (-not (Test-Path C:\dari-check\done)) { throw 'the macOS job did not finish within 50 minutes' }
+          if (-not (Test-Path C:\dari-check\done)) { throw 'the driver did not finish within 50 minutes' }
+      # Runs what the driver asks for from this step, whose processes may capture the screen and
+      # inject input, until the driver finishes.
+      - name: Run programs for the driver until it finishes
+        if: matrix.os == 'macos'
+        run: scripts/crosscheck/macos/interactive.sh serve --until ~/dari-check/done --timeout 3000
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
+        if: always() && matrix.os == 'windows'
         with:
-          name: crosscheck-windows
+          name: crosscheck-${{ matrix.pairing }}-${{ matrix.side }}
           path: |
             C:\dari-check\logs
             C:\dari-check\frames
           if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && matrix.os == 'macos'
+        with:
+          name: crosscheck-${{ matrix.pairing }}-${{ matrix.side }}
+          path: |
+            ~/dari-check/logs
+            ~/dari-check/frames
+          if-no-files-found: ignore
 
-  mac-driver:
-    name: macOS driver
+  driver:
+    name: ${{ matrix.pairing }} driver (${{ matrix.os }})
     needs: ssh-key
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pairing: mac-windows, os: macos, a: local, b: windows }
+          - { pairing: mac-mac, os: macos, a: local, b: macos }
+          - { pairing: windows-windows, os: ubuntu, a: windows, b: windows }
+    runs-on: ${{ matrix.os }}-latest
     timeout-minutes: 90
     permissions:
       contents: read
@@ -120,32 +174,33 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.event_name == 'schedule' }}
-      - name: Build dari-check and dari-relay
-        run: cargo build -p dari-check -p dari-relay --locked
+          key: ${{ matrix.os }}
+          save-if: ${{ github.event_name == 'schedule' && matrix.pairing != 'mac-mac' }}
+      # Only a driver that is also a peer needs dari-check.
+      - name: Build
+        run: cargo build -p dari-relay ${{ matrix.a == 'local' && '-p dari-check' || '' }} --locked
       - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
           oauth-client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
           tags: ${{ vars.TS_TAGS || 'tag:ci' }}
-          hostname: dari-check-${{ github.run_id }}-mac
+          hostname: dari-check-${{ github.run_id }}-${{ matrix.pairing }}-driver
           args: --accept-dns=false
-      # On macOS the action points the Ethernet DNS at MagicDNS (100.100.100.100) regardless,
-      # which resolves nothing here, and GitHub's artifact host stopped resolving. Peers are found
-      # with `tailscale ip`, so give the runner its own DNS back.
       - name: Restore the runner's DNS
+        if: matrix.os == 'macos'
         run: |
           sudo networksetup -setdnsservers Ethernet Empty
           sudo networksetup -setsearchdomains Ethernet Empty
           dscacheutil -q host -a name github.com | head -n 2
-      - name: Run the cross-device checks against the Windows peer
+      - name: Run the cross-device checks
         env:
           SSH_PRIVATE_KEY: ${{ needs.ssh-key.outputs.private }}
-          PEER: dari-check-${{ github.run_id }}
+          PEER_A: ${{ matrix.a == 'local' && 'local' || format('{0}:dari-check-{1}-{2}-a', matrix.a, github.run_id, matrix.pairing) }}
+          PEER_B: ${{ format('{0}:dari-check-{1}-{2}-b', matrix.b, github.run_id, matrix.pairing) }}
         run: scripts/crosscheck/ci-driver.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: crosscheck-mac
+          name: crosscheck-${{ matrix.pairing }}-driver
           path: target/crosscheck
           if-no-files-found: ignore

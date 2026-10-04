@@ -45,7 +45,8 @@ In the sidebar, **Recent** lists the last five addresses, and **Nearby devices**
 same network. Picking one opens this form with the address filled in and the cursor in the password field. Nearby-device information is an unauthenticated display hint; connecting always checks the password.
 
 **Translate ⌘ and Ctrl shortcuts** (on by default) swaps ⌘ and Ctrl between macOS and Windows. When a Mac controls
-Windows, ⌘C arrives as Ctrl+C and copies as usual.
+Windows, ⌘C arrives as Ctrl+C and copies as usual. Between two Macs or two Windows PCs there is nothing to swap, so
+shortcuts arrive as you press them.
 
 ### Settings
 
@@ -77,7 +78,8 @@ The frame rate menu caps how many frames per second the host sends: **Auto**, 30
 the fastest display on your computer, so a 120 Hz screen asks for 120. The host never streams faster than its own
 display refreshes, and the button shows the rate it settled on (`Auto · 60 fps`). Higher rates use more bandwidth:
 the bitrate grows with the frame rate. A macOS host encodes in hardware and reaches 100–120 fps at the Balanced
-quality; a Windows host still captures and encodes on the CPU, so it reaches much less. The measured rate on the
+quality; a Windows host encodes with its graphics card's hardware encoder when it has one, and on the CPU otherwise,
+which reaches much less. The measured rate on the
 left is what actually arrives.
 
 When the remote computer shares its sound, **Sound on / Sound off** in the toolbar plays or mutes it; the choice is
