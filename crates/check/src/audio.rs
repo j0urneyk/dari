@@ -249,7 +249,7 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     .await
     .context("cannot connect")?;
 
-    let audio = tokio::time::timeout(Duration::from_secs(30), async {
+    let mut audio = tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(event) = events.recv().await {
             match event {
                 ViewerEvent::HostStatus(status) => return Some(status.audio),
@@ -265,12 +265,22 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     .await
     .ok()
     .flatten();
+    if audio == Some(Availability::Available) {
+        // The host only learns whether it may record once its capturer opens, and says so in a
+        // later status.
+        let listened = tokio::time::Instant::now() + LISTEN;
+        while let Ok(Some(event)) = tokio::time::timeout_at(listened, events.recv()).await {
+            if let ViewerEvent::HostStatus(status) = event {
+                audio = Some(status.audio);
+            }
+        }
+        tokio::time::sleep_until(listened).await;
+    }
     verdict.check(
         audio == Some(Availability::Available),
         format!("the host offers its sound (got {audio:?})"),
     );
     if audio == Some(Availability::Available) {
-        tokio::time::sleep(LISTEN).await;
         let recorded = std::mem::take(&mut *samples.lock().unwrap_or_else(PoisonError::into_inner));
         // The last half: the jitter buffer has settled and the codec has started.
         let tail = &recorded[recorded.len() / 2..];

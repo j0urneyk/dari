@@ -41,6 +41,10 @@ const DISPLAY: DisplayInfo = DisplayInfo {
 };
 
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches, each simulating one host condition"
+)]
 struct TestPlatform {
     actions: Arc<Mutex<Vec<RecordedAction>>>,
     deny_input: bool,
@@ -54,6 +58,8 @@ struct TestPlatform {
     audio_live: Arc<AtomicUsize>,
     /// How long opening the audio capturer takes, like macOS's permission prompt.
     audio_open_delay: Duration,
+    /// The host user refused system audio recording (macOS privacy settings).
+    deny_audio: bool,
     /// Capture like Windows.Graphics.Capture and ScreenCaptureKit: one frame, then nothing
     /// until the screen changes, which it never does.
     still_screen: bool,
@@ -194,6 +200,9 @@ impl HostPlatform for TestPlatform {
     }
     fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
         std::thread::sleep(self.audio_open_delay);
+        if self.deny_audio {
+            return Err(AudioError::PermissionDenied);
+        }
         self.audio_live.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(LiveAudio {
             tone: SyntheticAudioCapturer::new(440.),
@@ -1145,6 +1154,28 @@ async fn the_hosts_audio_plays_on_the_viewer_and_stops_when_muted() {
     wait_until(|| live.load(Ordering::SeqCst) == 1).await;
     drop(viewer);
     wait_until(|| live.load(Ordering::SeqCst) == 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_sound_permission_reaches_the_viewer() {
+    let host = start(TestPlatform {
+        deny_audio: true,
+        ..TestPlatform::default()
+    })
+    .await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (_viewer, mut viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    // Not "unavailable": the viewer can tell the host user what to allow.
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(
+            event,
+            ViewerEvent::HostStatus(status) if status.audio == Availability::PermissionDenied
+        )
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

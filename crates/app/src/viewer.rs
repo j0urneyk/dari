@@ -313,6 +313,14 @@ impl ViewerView {
                 .is_some_and(|status| status.audio == Availability::Available)
     }
 
+    /// Whether the host would share its sound but its user hasn't allowed recording it.
+    fn audio_permission_missing(&self) -> bool {
+        self.session.is_some()
+            && self
+                .status
+                .is_some_and(|status| status.audio == Availability::PermissionDenied)
+    }
+
     fn toggle_sound(&mut self, cx: &mut Context<Self>) {
         self.sound = !self.sound;
         if let Some(session) = &self.session {
@@ -548,6 +556,16 @@ impl ViewerView {
                         })
                         .tooltip(text().toggle_sound)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_sound(cx))),
+                )
+            })
+            .when(self.audio_permission_missing(), |actions| {
+                actions.child(
+                    Button::new("sound")
+                        .small()
+                        .ghost()
+                        .icon(AssetIcon::VolumeX)
+                        .label(text().sound_not_allowed)
+                        .tooltip(text().remote_sound_permission),
                 )
             })
             .when(self.files_available(), |actions| {

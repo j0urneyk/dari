@@ -756,7 +756,10 @@ impl HostSession {
             Err(error) if current => {
                 warn!(%error, "system audio is unavailable");
                 self.audio = AudioState::Off;
-                self.status.audio = Availability::Unavailable;
+                self.status.audio = match error {
+                    AudioError::PermissionDenied => Availability::PermissionDenied,
+                    _ => Availability::Unavailable,
+                };
                 self.publish_status().await
             }
             Err(_) => Ok(()),

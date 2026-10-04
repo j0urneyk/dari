@@ -84,7 +84,8 @@ left is what actually arrives.
 
 When the remote computer shares its sound, **Sound on / Sound off** in the toolbar plays or mutes it; the choice is
 remembered for later sessions. Muting stops the remote side from recording its sound at all. Sound plays about a
-tenth of a second behind the remote computer and isn't synchronized with the picture.
+tenth of a second behind the remote computer and isn't synchronized with the picture. If a remote Mac hasn't allowed
+Dari to record its sound, the button reads **No sound permission** instead; hover it for where to allow it on that Mac.
 
 In sessions that allow control, **Send file…** in the toolbar picks files to send, and files dragged onto the remote
 screen are sent too. They're saved in the remote computer's Downloads folder. A file the remote side sends appears
@@ -166,6 +167,7 @@ Set the log level with the `RUST_LOG` environment variable (default `info`), for
 | "Too many failed attempts. Try again later" | After several wrong attempts you're blocked for a while (up to 5 minutes). Wait and try again |
 | "The remote device is already in a session" | Only one session at a time is allowed |
 | The screen is black or shows only the wallpaper | The remote Mac needs Screen Recording permission, and the app must be restarted after granting it |
+| **No sound permission** instead of the sound button | The remote Mac refused Dari system audio recording. On that Mac, turn Dari on under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only |
 | The screen is visible but control doesn't work | Check the remote Mac's Accessibility permission, or whether the other side chose "View only" |
 | UAC prompts or the lock screen don't appear on Windows | A known limitation: regular apps can't capture or control the secure desktop |
 | The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
