@@ -48,6 +48,9 @@ All notable changes to this project are documented here. The format follows
   screenshot and encoding it on the CPU for every frame. On an M5 MacBook the Balanced quality went from 18 fps to
   the full refresh rate of its 120 Hz display, and the encoder keeps up with 144 fps; the host only sends frames
   when the screen changes. Windows hosts are unchanged.
+- Viewers convert decoded frames to screen pixels about four times faster, on macOS and Windows alike. On an M5
+  MacBook a 2560×1662 stream (the Quality preset) went from about 9.6 ms to 2.4 ms per frame, so viewers now keep
+  up with 144 fps hosts instead of stalling near 110 fps. Colors are unchanged.
 - Dari now requires macOS 13 or later (was 12).
 - Relayed sessions survive NAT rebinding: both sides refresh their relay binding every 10 seconds, and the relay
   follows a side to its new public address.

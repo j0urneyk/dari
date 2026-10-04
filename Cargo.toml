@@ -71,6 +71,7 @@ windows = "0.62"
 # Only dari-check's input window; macOS and Windows need no optional platform features.
 winit = { version = "0.30", default-features = false }
 xcap = "0.9"
+yuv = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
