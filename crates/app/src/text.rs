@@ -1,10 +1,13 @@
-//! User-facing strings in Korean and English, chosen from the system locale.
+//! User-facing strings in Korean and English, chosen in the settings or from the system locale.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use dari_net::PasswordError;
 use dari_proto::RejectReason;
 use dari_session::SessionEndReason;
+
+use crate::settings::LanguagePreference;
 
 pub(crate) struct Text {
     pub(crate) this_device: &'static str,
@@ -102,6 +105,8 @@ pub(crate) struct Text {
     pub(crate) sound_on: &'static str,
     pub(crate) sound_off: &'static str,
     pub(crate) toggle_sound: &'static str,
+    pub(crate) language: &'static str,
+    pub(crate) language_system: &'static str,
     korean: bool,
 }
 
@@ -268,7 +273,7 @@ static KOREAN: Text = Text {
     approval_hint: "30초 안에 응답하지 않으면 자동으로 거부됩니다.",
     background_unreadable: "이미지를 열 수 없습니다",
     settings_title: "설정",
-    settings_subtitle: "Dari의 모양을 바꿉니다",
+    settings_subtitle: "Dari의 모양과 언어를 바꿉니다",
     appearance: "모양",
     theme: "테마",
     theme_system: "시스템",
@@ -302,6 +307,8 @@ static KOREAN: Text = Text {
     sound_on: "소리 켜짐",
     sound_off: "소리 꺼짐",
     toggle_sound: "원격 기기의 소리 켜기/끄기",
+    language: "언어",
+    language_system: "시스템",
     korean: true,
 };
 
@@ -367,7 +374,7 @@ static ENGLISH: Text = Text {
     approval_hint: "Declined automatically after 30 seconds without an answer.",
     background_unreadable: "Can't open this picture",
     settings_title: "Settings",
-    settings_subtitle: "Change how Dari looks",
+    settings_subtitle: "Change how Dari looks and which language it uses",
     appearance: "Appearance",
     theme: "Theme",
     theme_system: "System",
@@ -401,14 +408,45 @@ static ENGLISH: Text = Text {
     sound_on: "Sound on",
     sound_off: "Sound off",
     toggle_sound: "Play or mute the remote device's sound",
+    language: "Language",
+    language_system: "System",
     korean: false,
 };
 
-/// Strings for the system language.
-pub(crate) fn text() -> &'static Text {
-    static CHOICE: OnceLock<bool> = OnceLock::new();
-    let korean = *CHOICE.get_or_init(|| {
+/// Each language's name in that language, for the language choice.
+pub(crate) const KOREAN_NAME: &str = "한국어";
+pub(crate) const ENGLISH_NAME: &str = "English";
+
+const FOLLOW_SYSTEM: u8 = 0;
+const USE_KOREAN: u8 = 1;
+const USE_ENGLISH: u8 = 2;
+
+/// The language [`text`] answers in, as last set by [`set_language`].
+static LANGUAGE: AtomicU8 = AtomicU8::new(FOLLOW_SYSTEM);
+
+/// Switches every later [`text`] call to `preference`. Windows show it on their next render.
+pub(crate) fn set_language(preference: LanguagePreference) {
+    let value = match preference {
+        LanguagePreference::System => FOLLOW_SYSTEM,
+        LanguagePreference::Korean => USE_KOREAN,
+        LanguagePreference::English => USE_ENGLISH,
+    };
+    LANGUAGE.store(value, Ordering::Relaxed);
+}
+
+fn system_is_korean() -> bool {
+    static KOREAN_SYSTEM: OnceLock<bool> = OnceLock::new();
+    *KOREAN_SYSTEM.get_or_init(|| {
         sys_locale::get_locale().is_some_and(|locale| locale.to_ascii_lowercase().starts_with("ko"))
-    });
+    })
+}
+
+/// Strings for the language chosen in the settings, or the system's.
+pub(crate) fn text() -> &'static Text {
+    let korean = match LANGUAGE.load(Ordering::Relaxed) {
+        USE_KOREAN => true,
+        USE_ENGLISH => false,
+        _ => system_is_korean(),
+    };
     if korean { &KOREAN } else { &ENGLISH }
 }

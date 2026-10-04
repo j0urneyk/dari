@@ -597,8 +597,9 @@ mod macos {
         save(&mut cx, window, "home-background-opaque-dark");
     }
 
-    /// The settings page switches the theme and the window's translucency, and remembers both.
-    pub(super) fn settings_change_the_theme_and_translucency() {
+    /// The settings page switches the theme, the language, and the window's translucency, and
+    /// remembers all three.
+    pub(super) fn settings_change_the_theme_language_and_translucency() {
         let data = tempfile::tempdir().unwrap();
         Settings {
             port: 0,
@@ -618,6 +619,7 @@ mod macos {
             window.click("nav-settings", cx);
             window.render_frame(cx);
             window.click("theme-dark", cx);
+            window.click("language-korean", cx);
             window.click("translucent-window", cx);
         })
         .unwrap();
@@ -625,7 +627,17 @@ mod macos {
         assert!(cx.update(|cx| gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
         let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
         assert!(saved.contains(r#"theme = "dark""#), "{saved}");
+        assert!(saved.contains(r#"language = "korean""#), "{saved}");
         assert!(saved.contains("translucent_window = false"), "{saved}");
+        save(&mut cx, window, "settings-korean");
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("language-english", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let saved = std::fs::read_to_string(data.path().join("settings.toml")).unwrap();
+        assert!(saved.contains(r#"language = "english""#), "{saved}");
         save(&mut cx, window, "settings");
     }
 
@@ -794,8 +806,8 @@ mod macos {
                 home_window_shows_a_background_picture,
             ),
             (
-                "settings_change_the_theme_and_translucency",
-                settings_change_the_theme_and_translucency,
+                "settings_change_the_theme_language_and_translucency",
+                settings_change_the_theme_language_and_translucency,
             ),
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",

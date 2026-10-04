@@ -22,7 +22,7 @@ What you can do with it:
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
   host.
 
-The UI follows the system language: Korean or English.
+The UI is in Korean or English: it follows the system language unless you pick one in the settings.
 
 ## Status
 
@@ -32,8 +32,6 @@ GUI tests render the app on macOS. Some things haven't been checked on real hard
 - A session between a physical Mac and a physical Windows 11 PC.
 - Screen sharing and input injection with the macOS permissions actually granted.
 - The Windows installer produced by the release workflow.
-- Sound from a real host: system audio capture opens and streams on a Mac, but recording actual sound needs the
-  System Audio Recording permission granted to the app bundle, which automated tests can't do.
 
 ## Install
 

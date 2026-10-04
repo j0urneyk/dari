@@ -33,10 +33,10 @@ use crate::config::{
 };
 use crate::permissions::{self, LocalPermissions};
 use crate::runtime::TokioRuntime;
-use crate::settings::ThemePreference;
+use crate::settings::{LanguagePreference, ThemePreference};
 use crate::state::AppState;
 use crate::style;
-use crate::text::text;
+use crate::text::{self, text};
 use crate::transfers::{TransferAction, TransferActions, TransferList};
 use crate::viewer::{open_viewer_window, pick_files};
 
@@ -404,6 +404,22 @@ impl Home {
         cx.notify();
     }
 
+    fn set_language(
+        &self,
+        language: LanguagePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        AppState::update_settings(cx, |settings| settings.language = language);
+        text::set_language(language);
+        // Placeholders are copied into the inputs, so they don't follow on their own.
+        self.host
+            .update(cx, |host, cx| host.relabel_inputs(window, cx));
+        self.connect
+            .update(cx, |connect, cx| connect.relabel_inputs(window, cx));
+        cx.refresh_windows();
+    }
+
     fn set_translucent(translucent: bool, window: &mut Window, cx: &mut Context<Self>) {
         AppState::update_settings(cx, |settings| settings.translucent_window = translucent);
         window.set_background_appearance(style::window_background(cx));
@@ -446,6 +462,33 @@ impl Home {
             }),
             cx,
         );
+        let languages = [
+            (
+                LanguagePreference::System,
+                "language-system",
+                text().language_system,
+            ),
+            (
+                LanguagePreference::Korean,
+                "language-korean",
+                text::KOREAN_NAME,
+            ),
+            (
+                LanguagePreference::English,
+                "language-english",
+                text::ENGLISH_NAME,
+            ),
+        ];
+        let language_choice = style::segmented(
+            languages.into_iter().map(|(language, id, label)| {
+                style::segment(id, label, settings.language == language, cx)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_language(language, window, cx);
+                    }))
+                    .test_support()
+            }),
+            cx,
+        );
         let translucency = div()
             .v_flex()
             .gap_1()
@@ -472,6 +515,7 @@ impl Home {
             style::row_list(
                 [
                     style::setting_row(IconName::Palette, text().theme, theme_choice, cx),
+                    style::setting_row(AssetIcon::Languages, text().language, language_choice, cx),
                     translucency,
                 ],
                 cx,
@@ -677,6 +721,12 @@ pub(crate) struct HostPanel {
 }
 
 impl HostPanel {
+    fn relabel_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.relay_input.update(cx, |input, cx| {
+            input.set_placeholder(text().relay_placeholder, window, cx);
+        });
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let relay_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1481,6 +1531,15 @@ pub(crate) struct ConnectPanel {
 }
 
 impl ConnectPanel {
+    fn relabel_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.address.update(cx, |input, cx| {
+            input.set_placeholder(text().address_placeholder, window, cx);
+        });
+        self.password.update(cx, |input, cx| {
+            input.set_placeholder(text().password_placeholder, window, cx);
+        });
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let recent = AppState::settings(cx)
             .recent_addresses

@@ -2,7 +2,8 @@
 
 Installation and the basic flow are in the [README](../README.md#install). This guide covers each part of the
 screens, the settings, where files are stored, and what to check when something goes wrong. The UI is in Korean
-when the system language is Korean, and in English otherwise, and it follows the system's light or dark appearance.
+when the system language is Korean, and in English otherwise, unless **Language** in the settings picks one; it
+follows the system's light or dark appearance unless **Theme** picks one.
 
 The home window has a sidebar and a page beside it. **This device** in the sidebar sums up its state (accepting
 connections, a pending connection request, a connected viewer, or remote access off) and opens the page for sharing
@@ -51,6 +52,7 @@ Windows, ⌘C arrives as Ctrl+C and copies as usual.
 | Item | Description |
 | --- | --- |
 | **Theme** | **System** (follows macOS or Windows), **Light**, or **Dark** |
+| **Language** | **System** (Korean when the system language is Korean, English otherwise), **한국어**, or **English**. Every open window switches right away |
 | **Translucent window** | On by default. What is behind the window shows through, blurred, through the background picture too. Viewer windows opened afterwards follow it too |
 | **Background picture** | A PNG, JPEG, or WebP picture shown behind the home window. It fills the top half of the window and fades out into the theme's own surface below. The page's panels and the sidebar show it as frosted glass, so text stays readable over any picture. Pictures taller than 3:2 show their middle. **Choose…** picks one, **Remove** goes back |
 | **Blur the picture** | Off by default. Blurs the whole picture, not just where it fades out |

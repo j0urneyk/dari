@@ -31,6 +31,7 @@ impl AppState {
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let settings = Settings::load(&data_directory);
+        crate::text::set_language(settings.language);
         cx.set_global(Self {
             data_directory,
             identity,

@@ -95,14 +95,19 @@ are retried for up to 30 seconds, after which `HostStatus` reports `PermissionDe
 
 ### Capture and backpressure
 
-The capture thread captures and encodes only when the channel has room. When the network falls behind, frames are
-skipped **before encoding**, because dropping an encoded frame would break the reference chain for the next
-P-frame. Capture sits behind the `ScreenCapturer` trait, which comes in two kinds:
+The capture thread encodes a frame only when the consumer is keeping up: no encoded frame is waiting in the channel,
+and fewer than `FRAMES_IN_FLIGHT` (2) frames are being encoded. Each frame reserves its channel slot (a tokio
+`OwnedPermit`) before it goes to the encoder, and the encoder sends it into that slot the moment it is done, so a
+frame never waits for the one after it. When the network falls behind, frames are skipped **before encoding**,
+because dropping an encoded frame would break the reference chain for the next P-frame. The host session's video
+channel holds `FRAMES_IN_FLIGHT` frames; with the rule above, at most one encoded frame waits there for the network,
+as before, and the second slot only lets the encoder overlap frames. Capture sits behind the `ScreenCapturer`
+trait, which comes in two kinds:
 
 - **Polled** sources capture whenever asked. The thread paces them at the target frame rate and skips the capture
-  itself while the channel is full. xcap (Windows) and the test `SyntheticCapturer` are polled.
+  itself while the consumer is behind. xcap (Windows) and the test `SyntheticCapturer` are polled.
 - **Self-paced** sources deliver frames on their own clock (`paces_itself`). The thread waits for the newest frame
-  (up to 50 ms, so a stop request is noticed) and drops it if the channel is full. A still screen sends no frames,
+  (up to 50 ms, so a stop request is noticed) and drops it if the consumer is behind. A still screen sends no frames,
   so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit is
   self-paced.
 
@@ -119,12 +124,29 @@ Both encoders produce the same stream: H.264 Constrained Baseline, Annex-B, BT.6
 only at the start, on a resolution change, and on request. OpenH264 runs in its `ScreenContentRealTime` mode. In
 this mode, frame skipping must be on for the encoder to hold its target bitrate; a skipped frame simply isn't
 output, so the reference chain is unaffected. Adaptive quantization and background detection, which screen content
-doesn't support, are turned off. VideoToolbox runs a real-time session without frame reordering. Its low-latency
-rate control is left off: it made each encode 15–20% slower on Apple silicon. Each frame is encoded synchronously (`CompleteFrames`), which keeps the
-one-frame-at-a-time backpressure above. Its output is AVCC with the SPS and PPS kept in the format description, so
-the encoder rewrites it as Annex-B and puts the parameter sets in front of each keyframe. If VideoToolbox fails, the
-encoder falls back to OpenH264 for the rest of the stream and carries on with a keyframe. When the capture resolution
-changes, the encoder is recreated and starts with a keyframe. The `objc2` calls behind all of this live in
+doesn't support, are turned off.
+
+VideoToolbox runs without frame reordering and with its real-time mode **off**. In real-time mode the encoder lowers
+its clock after about three seconds to just keep up with `ExpectedFrameRate`, assuming frames overlap: a frame that
+took 4.5 ms at first took 8–11 ms once it settled when frames were encoded one at a time, and 16 ms with three in
+flight. Without it, a 1920×1246 frame stays at about 4.5 ms. Frames are submitted without waiting
+(`VTCompressionSessionEncodeFrame` and no `CompleteFrames`), and the output callback hands each one, in order, to
+the delivery it was submitted with. An isolated frame, like a keystroke on a still screen, leaves as soon as it is
+encoded. The low-latency rate control (`EnableLowLatencyRateControl`) is left off. Measured with real-time mode
+off, it made each frame slower (4.6 → 6.4 ms at 1920×1246 and 7.6 → 12.8 ms at 2560×1662 with the 144 Hz test
+source, so 2560×1662 fell to 122 fps; 7.8 → 9.5 ms and 12 → 14.7 ms on the screen). On screen content it spent
+only about a fifth of the target bitrate (0.65 instead of 3.5 Mbit/s at 4 Mbit/s). What it does well is even out
+frame sizes: the largest frame was 32–53 KB instead of 109–130 KB, so it is worth trying again if bursts ever
+overwhelm slow links. The output is AVCC with the SPS and PPS kept in the format description, so the encoder rewrites it as
+Annex-B and puts the parameter sets in front of each keyframe. VideoToolbox picks the H.264 level from the
+macroblock rate, and 2560×1662 at 144 fps comes out as level 6.0, whose parameter sets OpenH264 rejects. The
+encoder lowers the SPS's `level_idc` to 5.2. The level only states a throughput, and frame size and reference
+frames stay within 5.2's limits.
+
+If VideoToolbox fails, the encoder falls back to OpenH264 for the rest of the stream and carries on with a keyframe.
+Frames still in flight are delivered first, and anything VideoToolbox outputs after a failed frame is dropped. On a
+still screen the thread re-encodes its last frame so the picture is not lost. When the capture resolution changes,
+the old session is flushed and the new one starts with a keyframe. The `objc2` calls behind all of this live in
 `crates/media/src/apple/`, the only place in the crate that needs `unsafe`.
 
 | Quality preset | Max long edge | Bitrate at 30 fps |
@@ -141,10 +163,26 @@ grows with the frame rate as `bitrate × (fps / 30)^0.75`, up to 50 Mbps: a fast
 than proportionally more, because consecutive frames differ less. The host maps all of this in
 `host_session.rs` (`stream_settings`).
 
-On an M5 MacBook, encoding a 1920×1246 frame takes about 8 ms, enough for about 120 fps, and a 2560×1662 frame
-about 10 ms (about 100 fps). Before ScreenCaptureKit and VideoToolbox, the same Mac streamed 18 and 13.5 fps. Encoding one frame at a time is what limits it: the
-hardware itself encodes faster when frames overlap. Measure your own setup with `capture_bench`
-([development guide](development.md#tests)).
+Measured on an M5 MacBook (built-in 120 Hz display) with `capture_bench` and the ignored
+`hardware_stream_keeps_up_with_144_fps` test, which feeds the real stream path prepared frames from a 144 Hz
+clock ([development guide](development.md#tests)):
+
+| | Before: one frame at a time, real-time mode | Now |
+| --- | --- | --- |
+| 1920×1246, 144 Hz source (test), after it settles | 84 fps, 9.3 ms per frame | 144 fps, 4.5 ms per frame |
+| 2560×1662, 144 Hz source (test), after it settles | 59 fps, 13.4 ms per frame | 144 fps, 7.7 ms per frame |
+| 1920×1246, screen, 10 s (`capture_bench`) | 96 fps, 10 ms per frame | 117 fps, 7.8 ms per frame |
+| 2560×1662, screen, 10 s (`capture_bench`) | 76 fps, 13 ms per frame, and viewers couldn't decode it | 118 fps, 12.3 ms per frame |
+
+The test's "before" figures come from the new code with `FRAMES_IN_FLIGHT` set to 1 and real-time mode on; the
+screen's come from the previous commit. Five-second runs used to look better (about 111 fps at 1920×1246), because
+the slowdown starts about three seconds in. On the screen, the 120 Hz panel and the moving content cap the frame
+rate, and real screen content takes longer to encode than the test's pattern. Both fixes are needed: with real-time
+mode off but one frame at a time, 2560×1662 managed only 73 fps, because 8 ms per frame is longer than a 144 fps
+frame interval. Before ScreenCaptureKit and VideoToolbox, the same Mac streamed 18 and 13.5 fps.
+
+On the viewer, OpenH264 decodes a 1920×1246 screen to BGRA in about 4.7 ms (about 210 fps) on the decode thread, and
+a 2560×1662 one in about 8.6 ms, which limits the Quality preset to about 115 fps whatever the host sends.
 
 ### Input coordinates and DPI
 
@@ -206,14 +244,16 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
 | `permissions.rs` | Checking and requesting macOS Screen Recording and Accessibility permissions (refreshed every 3 seconds) |
-| `text.rs` | Korean and English UI strings (chosen by system locale) |
+| `text.rs` | Korean and English UI strings (chosen in the settings, or by system locale) |
 | `backdrop.rs` | Prepares the background picture off the main thread: the picture, sharp at the top and softening and fading out towards the window's middle, a small blurred copy faded the same way for the sidebar, and the average color of the part that shows, which tints the veil and sets how much it covers; it also holds the loaded picture as a global, so every page's panels can frost it |
 | `style.rs` | Dari's mostly monochrome light and dark palette over gpui-kit's theme (follows the system appearance), the 14px rem that sets the app's density, window options (transparent title bar, blurred translucent background), the extra Lucide icons and app icon the app embeds, and shared building blocks such as frosted-glass panels, sidebar rows, setting rows, callouts, and the segmented control |
 | `cli.rs` | Headless `host`/`connect` |
 
 The viewer window creates a new `RenderImage` for every frame and releases the previous image from the GPU atlas
 with `window.drop_image`. A GUI test confirmed that without it, six seconds of streaming grows memory by about
-280 MB.
+280 MB. The copies this costs are cheap at 1920×1246. On an M5, in a release build, copying the decoded frame into
+the `RenderImage` takes about 0.4 ms. Rendering the window, including the upload to a fresh atlas texture, takes
+about 0.25 ms. That is under 1 ms of the 6.9 ms a 144 fps frame allows on the main thread.
 
 gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and copying. In the remote screen's key
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window

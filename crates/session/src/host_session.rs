@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
-    AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame, StreamError,
-    StreamSettings, spawn_audio_stream, spawn_capture_stream,
+    AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame,
+    FRAMES_IN_FLIGHT, StreamError, StreamSettings, spawn_audio_stream, spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
@@ -154,7 +154,9 @@ pub(crate) async fn serve_viewer(
         capture: None,
         frames: None,
         pump: None,
-        audio: None,
+        audio: AudioState::Off,
+        audio_generation: 0,
+        audio_opened: None,
         clipboard: None,
     };
 
@@ -199,14 +201,50 @@ struct HostSession {
     frames: Option<mpsc::Sender<Result<EncodedFrame, StreamError>>>,
     pump: Option<JoinHandle<Result<(), String>>>,
     /// System audio, while the viewer asks for it.
-    audio: Option<SharedAudio>,
+    audio: AudioState,
+    /// Counts audio starts, so a capturer that finishes opening after a mute is recognized.
+    audio_generation: u64,
+    /// Where opened capturers report back; set while the session runs.
+    audio_opened: Option<mpsc::UnboundedSender<AudioOpened>>,
     clipboard: Option<ClipboardSync>,
+}
+
+enum AudioState {
+    Off,
+    /// The capturer for this generation is opening on a blocking thread.
+    Opening(u64),
+    On(SharedAudio),
+}
+
+/// A capturer that finished opening (or failed to), with the generation that asked for it.
+struct AudioOpened {
+    generation: u64,
+    result: Result<(AudioStream, mpsc::Receiver<Vec<u8>>), AudioError>,
 }
 
 /// The audio capture thread and the task sending its packets as datagrams.
 struct SharedAudio {
     capture: AudioStream,
     sender: JoinHandle<()>,
+}
+
+impl SharedAudio {
+    fn stop_in_background(self) {
+        self.sender.abort();
+        tokio::task::spawn_blocking(move || self.capture.stop());
+    }
+}
+
+/// Sends encoded audio as datagrams until the capture thread stops.
+async fn send_audio(streams: SessionStreams, mut encoded: mpsc::Receiver<Vec<u8>>) {
+    let mut sequence = 0u32;
+    while let Some(data) = encoded.recv().await {
+        let packet = AudioPacket { sequence, data };
+        sequence = sequence.wrapping_add(1);
+        if let Err(error) = streams.send_audio(&packet) {
+            debug!(%error, "cannot send audio");
+        }
+    }
 }
 
 impl HostSession {
@@ -320,6 +358,8 @@ impl HostSession {
         let control_allowed = decision == ApprovalDecision::AllowControl;
         let (status_updates, mut status_receiver) = mpsc::channel(4);
         let (clipboard_out, mut clipboard_changes) = mpsc::channel(4);
+        let (audio_opened, mut opened_audio) = mpsc::unbounded_channel();
+        self.audio_opened = Some(audio_opened);
         let mut incoming_files = match self
             .start(control_allowed, status_updates, clipboard_out)
             .await
@@ -344,6 +384,12 @@ impl HostSession {
                 text = clipboard_changes.recv() => {
                     let Some(text) = text else { continue };
                     if let Err(reason) = self.send(&ControlMessage::Clipboard(text)).await {
+                        return reason;
+                    }
+                }
+                opened = opened_audio.recv() => {
+                    let Some(opened) = opened else { continue };
+                    if let Err(reason) = self.audio_opened(opened).await {
                         return reason;
                     }
                 }
@@ -434,7 +480,9 @@ impl HostSession {
                 .open_video_sender()
                 .await
                 .map_err(|error| SessionEndReason::ConnectionLost(error.to_string()))?;
-            let (frames, frame_receiver) = mpsc::channel(1);
+            // Room for the frames the encoder overlaps; the capture thread still drops a frame
+            // before encoding while an encoded one waits for the network.
+            let (frames, frame_receiver) = mpsc::channel(FRAMES_IN_FLIGHT);
             self.frames = Some(frames);
             self.pump = Some(tokio::spawn(pump_video(
                 frame_receiver,
@@ -607,7 +655,7 @@ impl HostSession {
             }
             ControlMessage::SetAudio(enabled) => {
                 if enabled {
-                    self.start_audio().await?;
+                    self.start_audio();
                 } else {
                     self.stop_audio().await;
                 }
@@ -652,51 +700,72 @@ impl HostSession {
         Ok(())
     }
 
-    /// Starts sharing system audio if the policy allows it and it isn't running yet. If the
-    /// platform can't capture, the viewer is told through `HostStatus.audio`.
-    async fn start_audio(&mut self) -> Result<(), SessionEndReason> {
+    /// Starts sharing system audio if the policy allows it and it isn't running or opening yet.
+    ///
+    /// Opening can take as long as the user leaves macOS's permission prompt up, so it happens
+    /// on a blocking thread and the session keeps serving input and control meanwhile; the
+    /// result comes back as an [`AudioOpened`].
+    fn start_audio(&mut self) {
         if self.status.audio != Availability::Available {
-            return Ok(());
+            return;
         }
         match &self.audio {
+            AudioState::Opening(_) => return,
             // The sender ends when the capture thread stopped (e.g. the device went away).
-            Some(audio) if !audio.sender.is_finished() => return Ok(()),
-            Some(_) => self.stop_audio().await,
-            None => {}
+            AudioState::On(audio) if !audio.sender.is_finished() => return,
+            AudioState::On(_) | AudioState::Off => {}
         }
-        let (packets, mut encoded) = mpsc::channel(AUDIO_QUEUE);
+        if let AudioState::On(stale) = std::mem::replace(&mut self.audio, AudioState::Off) {
+            stale.stop_in_background();
+        }
+        let Some(opened) = self.audio_opened.clone() else {
+            return;
+        };
+        self.audio_generation += 1;
+        let generation = self.audio_generation;
+        self.audio = AudioState::Opening(generation);
         let platform = self.platform.clone();
-        let opened = tokio::task::spawn_blocking(move || {
-            spawn_audio_stream(move || platform.open_audio(), packets)
-        })
-        .await
-        .unwrap_or_else(|error| Err(AudioError::Device(error.to_string())));
-        match opened {
-            Ok(capture) => {
-                let streams = self.link.streams();
-                let sender = tokio::spawn(async move {
-                    let mut sequence = 0u32;
-                    while let Some(data) = encoded.recv().await {
-                        let packet = AudioPacket { sequence, data };
-                        sequence = sequence.wrapping_add(1);
-                        if let Err(error) = streams.send_audio(&packet) {
-                            debug!(%error, "cannot send audio");
-                        }
-                    }
-                });
-                self.audio = Some(SharedAudio { capture, sender });
+        tokio::task::spawn_blocking(move || {
+            let (packets, encoded) = mpsc::channel(AUDIO_QUEUE);
+            let result = spawn_audio_stream(move || platform.open_audio(), packets)
+                .map(|capture| (capture, encoded));
+            if let Err(unsent) = opened.send(AudioOpened { generation, result })
+                && let Ok((capture, _)) = unsent.0.result
+            {
+                // The session ended while the capturer was opening.
+                capture.stop();
+            }
+        });
+    }
+
+    /// Finishes [`HostSession::start_audio`]: starts sending if the capturer opened and the
+    /// viewer still wants audio, or tells the viewer audio is unavailable.
+    async fn audio_opened(&mut self, opened: AudioOpened) -> Result<(), SessionEndReason> {
+        let current = matches!(self.audio, AudioState::Opening(generation) if generation == opened.generation);
+        match opened.result {
+            Ok((capture, encoded)) if current => {
+                let sender = tokio::spawn(send_audio(self.link.streams(), encoded));
+                self.audio = AudioState::On(SharedAudio { capture, sender });
                 Ok(())
             }
-            Err(error) => {
+            // Muted, or asked again, while it was opening.
+            Ok((capture, _)) => {
+                tokio::task::spawn_blocking(move || capture.stop());
+                Ok(())
+            }
+            Err(error) if current => {
                 warn!(%error, "system audio is unavailable");
+                self.audio = AudioState::Off;
                 self.status.audio = Availability::Unavailable;
                 self.publish_status().await
             }
+            Err(_) => Ok(()),
         }
     }
 
     async fn stop_audio(&mut self) {
-        if let Some(audio) = self.audio.take() {
+        // An opening capturer is stopped when its result arrives and no longer matches.
+        if let AudioState::On(audio) = std::mem::replace(&mut self.audio, AudioState::Off) {
             audio.sender.abort();
             // Stopping joins the capture thread; keep that off the async workers.
             let _joined = tokio::task::spawn_blocking(move || audio.capture.stop()).await;

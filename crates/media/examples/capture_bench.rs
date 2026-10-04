@@ -1,4 +1,5 @@
-//! Captures and encodes the primary display for a few seconds and reports throughput.
+//! Captures and encodes the primary display for a few seconds and reports throughput, then
+//! decodes what it received the way a viewer does and reports how long that takes.
 //!
 //! ```sh
 //! cargo run --release -p dari-media --example capture_bench -- [seconds] [max-long-edge] [fps] [hardware|software]
@@ -13,7 +14,10 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use dari_media::{DisplayCapturer, StreamSettings, list_displays, spawn_capture_stream};
+use dari_media::{
+    DisplayCapturer, FRAMES_IN_FLIGHT, StreamSettings, VideoDecoder, list_displays,
+    spawn_capture_stream,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..StreamSettings::default()
     };
     println!("settings: {settings:?}");
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(FRAMES_IN_FLIGHT);
     let stream = spawn_capture_stream(
         move || DisplayCapturer::open(None, &settings),
         settings,
@@ -58,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let started = Instant::now();
     let (mut frames, mut bytes, mut size) = (0u64, 0u64, (0, 0));
+    let mut received = Vec::new();
     while let Some(remaining) = Duration::from_secs(seconds).checked_sub(started.elapsed()) {
         let Ok(Some(frame)) = tokio::time::timeout(remaining, receiver.recv()).await else {
             break;
@@ -66,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         frames += 1;
         bytes += frame.data.len() as u64;
         size = (frame.width, frame.height);
+        received.push(frame.data);
     }
     let elapsed = started.elapsed().as_secs_f64();
     let stats = stream.stats();
@@ -81,15 +87,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         size.0, size.1
     );
     println!(
-        "encoder: {}, {encode_ms:.2} ms per frame (≈{:.0} fps of encoding capacity), {} skipped",
+        "encoder: {}, {encode_ms:.2} ms from capture to encoded frame, {} skipped",
         if stats.hardware_encoding.load(Ordering::Relaxed) {
             "hardware"
         } else {
             "software"
         },
-        1000.0 / encode_ms.max(0.001),
         stats.frames_skipped.load(Ordering::Relaxed),
     );
     stream.stop();
+
+    let mut decoder = VideoDecoder::new()?;
+    let decoding = Instant::now();
+    for data in &received {
+        decoder.decode(data)?;
+    }
+    #[expect(clippy::cast_precision_loss, reason = "report only")]
+    let decode_ms = decoding.elapsed().as_secs_f64() * 1000.0 / received.len().max(1) as f64;
+    println!(
+        "viewer decoding to BGRA: {decode_ms:.2} ms per frame (≈{:.0} fps)",
+        1000.0 / decode_ms.max(0.001)
+    );
     Ok(())
 }

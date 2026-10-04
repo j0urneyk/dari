@@ -38,6 +38,8 @@ pub struct Settings {
     pub relay_address: String,
     /// Light, dark, or following the system.
     pub theme: ThemePreference,
+    /// Korean, English, or the system's language.
+    pub language: LanguagePreference,
     /// Whether what is behind the windows shows through them, blurred.
     pub translucent_window: bool,
     /// A picture shown behind the home window, in place of what is behind the window.
@@ -57,6 +59,17 @@ pub enum ThemePreference {
     Dark,
 }
 
+/// Which language the app's text is in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LanguagePreference {
+    /// Korean when the system language is Korean, English otherwise.
+    #[default]
+    System,
+    Korean,
+    English,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -72,6 +85,7 @@ impl Default for Settings {
             lan_discovery: true,
             relay_address: String::new(),
             theme: ThemePreference::System,
+            language: LanguagePreference::System,
             translucent_window: true,
             background_image: None,
             blur_background: false,

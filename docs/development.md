@@ -84,13 +84,21 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
 Real capture and encoding performance is measured with an example that captures and encodes the primary display
-for a few seconds and prints the frame rate, bitrate, encoder (hardware or software), and the time spent encoding
-each frame. The arguments are seconds, the longest edge, the frame rate, and `hardware` or `software`. Capture only
-produces frames while the screen changes, so keep something moving on the primary display (a video, scrolling).
-On macOS the terminal needs Screen Recording permission.
+for a few seconds and prints the frame rate, bitrate, encoder (hardware or software), the time from capture to
+encoded frame, and then how long the viewer's decoder takes per frame. The arguments are seconds, the longest
+edge, the frame rate, and `hardware` or `software`. Capture only produces frames while the screen changes, so keep
+something moving on the primary display (a video, scrolling). On macOS the terminal needs Screen Recording
+permission. The display's refresh rate caps the result.
 
 ```bash
-cargo run --release -p dari-media --example capture_bench -- 5 1920 120 hardware
+cargo run --release -p dari-media --example capture_bench -- 5 1920 144 hardware
+```
+
+To measure the hardware stream past the display's refresh rate, an ignored test feeds the stream prepared frames
+from a 144 Hz clock and checks that it keeps up after VideoToolbox settles:
+
+```bash
+cargo test --release -p dari-media -- --ignored --nocapture hardware_stream_keeps_up
 ```
 
 The session layer swaps screen and input through the `HostPlatform` trait, so even environments without screen
@@ -161,6 +169,41 @@ restored. The terminal running the script needs Screen Recording and Accessibili
 A host and a viewer on the same machine share one clipboard, so the clipboard round trip only passes between two
 machines. The rest of `dari-check` can still be tried locally with `dari-check host --port 0 --approve view-only
 --nonce x` and `dari-check view 127.0.0.1:<port> --approve view-only --nonce x`.
+
+#### Audio check
+
+`dari-check audio-host` plays a 997 Hz tone through this machine's speakers and shares its system audio;
+`dari-check audio-view ADDRESS` connects, asks for audio, records what arrives instead of playing it, and passes when
+the received sound is loud enough and strongest at 997 Hz. The host side needs a real output device (a VM needs a
+virtual sound card). On macOS the host must run from an app bundle that declares `NSAudioCaptureUsageDescription`,
+or macOS records silence without asking; `scripts/crosscheck/mac-check-app.sh` wraps `dari-check` in an ad-hoc
+signed `target/crosscheck/DariCheck.app`. Approve the system audio prompt once; rebuilding the bundle changes its
+signature, so macOS may ask again.
+
+```bash
+scripts/crosscheck/mac-check-app.sh
+```
+
+```bash
+open -n --stdout target/crosscheck/host.log target/crosscheck/DariCheck.app --args audio-host --port 0
+```
+
+Then run `dari-check audio-view 127.0.0.1:PORT` with the port and password from `host.log` (here, or from another
+machine with this Mac's address). The tone is audible during the run.
+
+On the Windows VM, give it a sound card first; `create-vm.sh` doesn't, and without one the host reports audio
+Unavailable. This shuts the VM down, restarts UTM with an `intel-hda` device, and starts the VM again (it does nothing
+if the VM already has one):
+
+```bash
+scripts/crosscheck/vm/add-sound.sh
+```
+
+Run the Windows host in the desktop session (`interactive.ps1 start -Name audio-host -Exe
+C:\dari-check\dari-check.exe -Arguments 'audio-host','--port','47821' -Log ...`), since WASAPI loopback needs the
+signed-in user's audio session, and the viewer anywhere. A copy of `dari-check.exe` outside `C:\dari-check` needs its
+own firewall program rule, as `prepare-peer.ps1` makes for that path: otherwise Windows answers the first listen with
+block rules and the viewer times out.
 
 #### Local Windows 11 VM
 

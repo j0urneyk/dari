@@ -52,6 +52,8 @@ struct TestPlatform {
     opened: Arc<Mutex<Vec<StreamSettings>>>,
     /// Audio capturers open right now.
     audio_live: Arc<AtomicUsize>,
+    /// How long opening the audio capturer takes, like macOS's permission prompt.
+    audio_open_delay: Duration,
 }
 
 /// A synthetic tone that counts itself in `live` while open.
@@ -159,6 +161,7 @@ impl HostPlatform for TestPlatform {
         Ok(Box::new(SharedRecorder(self.actions.clone())))
     }
     fn open_audio(&self) -> Result<Box<dyn AudioCapturer>, AudioError> {
+        std::thread::sleep(self.audio_open_delay);
         self.audio_live.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(LiveAudio {
             tone: SyntheticAudioCapturer::new(440.),
@@ -705,7 +708,7 @@ async fn clipboard_text_flows_both_ways_when_control_is_allowed() {
 }
 
 async fn wait_until(mut condition: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..400 {
         if condition() {
             return;
         }
@@ -1206,4 +1209,41 @@ async fn a_cancelled_folder_leaves_nothing_behind() {
         files_in(session.viewer_downloads.path()),
         Vec::<String>::new()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_audio_device_does_not_stall_the_session() {
+    let platform = TestPlatform {
+        audio_open_delay: Duration::from_secs(3),
+        ..TestPlatform::default()
+    };
+    let live = platform.audio_live.clone();
+    let actions = platform.actions.clone();
+    let host = start(platform).await;
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (viewer, mut viewer_events) =
+        connect_viewer(audio_viewer_config(&host, &peak), &host.password)
+            .await
+            .unwrap();
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::HostStatus(_))
+    })
+    .await;
+
+    // While the capturer is still opening, input keeps flowing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let opened_at = std::time::Instant::now();
+    assert!(viewer.send_input(InputEvent::Text("while audio opens".into())));
+    wait_for(&actions, &RecordedAction::Text("while audio opens".into())).await;
+    assert!(opened_at.elapsed() < Duration::from_secs(2));
+    assert_eq!(live.load(Ordering::SeqCst), 0);
+
+    // Muting before it opened means the capturer is closed as soon as it does.
+    viewer.set_audio(false);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(live.load(Ordering::SeqCst), 0);
+
+    // Asking again opens it for real.
+    viewer.set_audio(true);
+    wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
 }
