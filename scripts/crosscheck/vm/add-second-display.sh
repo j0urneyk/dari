@@ -49,4 +49,4 @@ win '$id = $null;
   New-Item -Force -Path $key | Out-Null;
   Set-ItemProperty -Path $key -Name DpiValue -Value 2 -Type DWord'
 restart
-echo "Done. Pass --expect-windows-displays 2 to crosscheck.sh."
+echo "Done. Pass --b-displays 2 to crosscheck.sh (with the VM as --b)."
