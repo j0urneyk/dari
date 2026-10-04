@@ -12,6 +12,7 @@
     reason = "the check's report is its output, read by people and by the driving script"
 )]
 
+mod audio;
 mod host;
 mod probe;
 mod scenario;
@@ -35,6 +36,10 @@ enum Command {
     Host(host::HostArgs),
     /// Connect to a `dari-check host` and run the scenario.
     View(viewer::ViewArgs),
+    /// Play a tone and share this machine's sound.
+    AudioHost(audio::AudioHostArgs),
+    /// Connect to a `dari-check audio-host` and check its tone arrives.
+    AudioView(audio::AudioViewArgs),
 }
 
 fn main() -> ExitCode {
@@ -48,6 +53,8 @@ fn main() -> ExitCode {
         Command::Host(args) if args.wants_probe() => host_with_probe(args),
         Command::Host(args) => block_on(host::run(args, None)),
         Command::View(args) => block_on(viewer::run(args)),
+        Command::AudioHost(args) => block_on(audio::host(args)),
+        Command::AudioView(args) => block_on(audio::view(args)),
     };
     match outcome {
         Ok(code) => code,

@@ -105,7 +105,7 @@ that hasn't been sent yet.
 | `SetQuality(preset)` | Viewer → host | `Speed` / `Balanced` / `Quality` |
 | `SetAudio(on)` | Viewer → host | Start or stop sending system audio. Hosts send none until asked |
 | `Clipboard(text)` | Both | Clipboard text changed (at most 1 MiB, no NUL) |
-| `FileOffer { id, name, size }` | Both | The sender would like to transfer a file (see below) |
+| `FileOffer { id, name, size, contents }` | Both | The sender would like to transfer a file or a folder (see below) |
 | `FileAccept(id)` | Both | The receiver accepted; the sender opens the file's stream |
 | `FileDone(id)` | Both | The receiver saved the whole file |
 | `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
@@ -119,9 +119,9 @@ that hasn't been sent yet.
 
 ```text
 sender                                         receiver
-  │── FileOffer {id, name, size} ─────────────►│  checks policy; asks its user (viewer) or accepts (host)
+  │── FileOffer {id, name, size, contents} ───►│  checks policy; asks its user (viewer) or accepts (host)
   │◄─────────────────────────── FileAccept(id) ─│  (or FileCancel {Declined})
-  │══ File stream: id, bytes…, finish ════════►│  writes <name>.part, checks the size, renames
+  │══ File stream: id, bytes…, finish ════════►│  writes <name>.part (or <name>.part/…), checks sizes, renames
   │◄───────────────────────────── FileDone(id) ─│  (or FileCancel {Failed})
 ```
 
@@ -140,6 +140,21 @@ sender                                         receiver
   names are shortened to 200 bytes, keeping the extension. A file never replaces an existing one; it is saved as
   `name (1).ext`, `name (2).ext`, and so on.
 - A receiver tracks at most 32 offers at once and declines the rest.
+
+### Folders
+
+`contents` is `None` for a single file. For a folder it lists the folder's files as `FolderFile { path, size }`:
+`path` is the file's location below the folder, one name per component, and the stream carries every file's bytes
+back to back in the listed order, so the receiver splits it by the sizes. `size` is their sum. Each component follows
+the same rules as `name`; paths are 1 to 32 components deep, an offer lists at most 10,000 files, and all components
+together stay within 1 MiB. Empty subfolders aren't transferred.
+
+- Senders walk the folder in name order and don't follow symbolic links, so a link can't loop or pull in files from
+  outside the folder.
+- Receivers write into a `<name>.part` folder and rename it to `name` (or `name (1)`, …) only when every file
+  arrived with exactly its size. Each component is sanitized like a file name; files whose sanitized paths collide,
+  including ones differing only in case (which macOS and Windows treat as the same), or that would take a
+  folder's name, are numbered (`a (1).txt`). Nothing is written outside the part folder.
 
 ## Input events
 
