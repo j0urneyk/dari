@@ -267,7 +267,7 @@ where
         }
 
         let wait = match &still {
-            Some(screen) if !consumer_is_behind(sink, control) => {
+            Some(screen) if !hidden_reported && !consumer_is_behind(sink, control) => {
                 screen.capture_timeout(refinement, now)
             }
             _ => SOURCE_WAIT,
