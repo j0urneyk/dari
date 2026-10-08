@@ -39,8 +39,9 @@ The Dari host is a per-user process. The NSIS installer runs with `installer-mod
 (`crates/app/Cargo.toml`), so `dari.exe` lives under `%LOCALAPPDATA%` and runs with the user's medium-integrity
 token. Three things fail for it on the secure desktop:
 
-- Windows.Graphics.Capture (`crates/media/src/win/capture.rs`) delivers no frames. It reports no error, which is why
-  PR 36 probes the input desktop with `OpenInputDesktop` after 300 ms without a frame.
+- Windows.Graphics.Capture (`crates/media/src/win/capture.rs`) can't see the secure desktop. Behind the lock screen
+  it delivers no frames, and behind a UAC prompt it keeps delivering the dimmed desktop. It reports no error in either
+  case, which is why PR 36 checks the input desktop with `OpenInputDesktop` every 300 ms.
 - `SendInput`, which enigo calls (`crates/input/src/backend.rs`), injects only into the calling thread's desktop. A
   process that can't open `Winlogon` can't attach a thread to it, so its input never reaches the prompt.
 - Ctrl+Alt+Del is the secure attention sequence. Windows handles it below the input queue, so no injected key event
@@ -251,8 +252,6 @@ an administrator or a Group Policy chose that. The service then refuses, never w
 Both pipes carry `dari-proto`'s length-bounded postcard framing with a 64 KiB limit, and every message passes
 `Validate`. Frames never travel on a pipe; they go through the shared section.
 
-| Pipe | From app | To app |
-| --- | --- | --- |
 | Pipe and server | From app | To app |
 | --- | --- | --- |
 | `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
@@ -285,8 +284,8 @@ service at all.
   the user.
 - Installing now shows a UAC prompt, and a user without administrator rights can't install Dari. That is the price
   of the service.
-- `platform.yml`'s installer smoke test already looks for `dari.exe` under `%ProgramFiles%`. It also checks that
-  `DariService` runs and that the install folder's ACL denies users write access.
+- `platform.yml`'s installer smoke test already looks for `dari.exe` under `%ProgramFiles%`. The test must also
+  check that `DariService` runs and that the install folder's ACL denies users write access.
 
 ### Protocol and UI changes
 
