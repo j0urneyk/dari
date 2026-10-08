@@ -709,16 +709,19 @@ mod tests {
 
     struct HiddenScreen {
         inner: SyntheticCapturer,
-        showed_first_frame: bool,
-        hidden_captures_left: u32,
+        hidden_since: Option<Instant>,
+        hidden_for: Duration,
+        hidden_captures: Arc<AtomicU64>,
     }
 
     impl ScreenCapturer for HiddenScreen {
         fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
-            if std::mem::replace(&mut self.showed_first_frame, true)
-                && self.hidden_captures_left > 0
-            {
-                self.hidden_captures_left -= 1;
+            let Some(since) = self.hidden_since else {
+                self.hidden_since = Some(Instant::now());
+                return self.inner.capture(timeout);
+            };
+            if since.elapsed() < self.hidden_for {
+                self.hidden_captures.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(timeout);
                 return Err(CaptureError::SecureDesktop);
             }
@@ -732,13 +735,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_secure_desktop_is_reported_once_and_the_stream_goes_on() {
+        let hidden_for = Duration::from_millis(600);
+        let hidden_captures = Arc::new(AtomicU64::new(0));
+        let counted = hidden_captures.clone();
         let (sender, mut receiver) = mpsc::channel(4);
         let stream = spawn_capture_stream(
-            || {
+            move || {
                 Ok(HiddenScreen {
                     inner: SyntheticCapturer::new(64, 64),
-                    showed_first_frame: false,
-                    hidden_captures_left: 8,
+                    hidden_since: None,
+                    hidden_for,
+                    hidden_captures: counted,
                 })
             },
             settings(),
@@ -757,7 +764,13 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(notices, 1, "eight hidden captures make one notice");
+        assert_eq!(notices, 1, "one notice for the whole hidden stretch");
+        // The first frame's refinement falls due while the screen is hidden; waiting for it must
+        // not turn into polling the capturer without a timeout.
+        let polls = hidden_captures.load(Ordering::Relaxed);
+        let at_source_wait =
+            u64::try_from(hidden_for.as_millis() / SOURCE_WAIT.as_millis()).unwrap();
+        assert!(polls <= 2 * at_source_wait, "{polls} captures while hidden");
         stream.stop();
     }
 
