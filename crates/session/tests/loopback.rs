@@ -65,6 +65,25 @@ struct TestPlatform {
     /// Capture like Windows.Graphics.Capture and ScreenCaptureKit: one frame, then nothing
     /// until the screen changes, which it never does.
     still_screen: bool,
+    secure_desktop: Arc<AtomicBool>,
+}
+
+struct HideableCapturer {
+    screen: SyntheticCapturer,
+    hidden: Arc<AtomicBool>,
+}
+
+impl ScreenCapturer for HideableCapturer {
+    fn capture(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<dari_media::CapturedFrame>, CaptureError> {
+        if self.hidden.load(Ordering::SeqCst) {
+            std::thread::sleep(timeout);
+            return Err(CaptureError::SecureDesktop);
+        }
+        self.screen.capture(timeout)
+    }
 }
 
 /// A screen that never changes after its first frame.
@@ -192,7 +211,10 @@ impl HostPlatform for TestPlatform {
                 shown: false,
             }));
         }
-        Ok(Box::new(SyntheticCapturer::new(320, 180)))
+        Ok(Box::new(HideableCapturer {
+            screen: SyntheticCapturer::new(320, 180),
+            hidden: self.secure_desktop.clone(),
+        }))
     }
     fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
         if self.deny_input {
@@ -1187,23 +1209,67 @@ async fn a_refused_sound_permission_reaches_the_viewer() {
     .await;
 }
 
-/// The viewer's view of the host's sound, following its status reports.
-struct AudioStatus(Option<Availability>);
+struct StatusChanges {
+    field: fn(dari_proto::HostStatus) -> Availability,
+    last: Option<Availability>,
+}
 
-impl AudioStatus {
+impl StatusChanges {
+    fn of(field: fn(dari_proto::HostStatus) -> Availability) -> Self {
+        Self { field, last: None }
+    }
+
     /// Waits for the host to report a different availability, and returns it.
     async fn next_change(
         &mut self,
         events: &mut mpsc::UnboundedReceiver<ViewerEvent>,
     ) -> Availability {
         loop {
-            if let ViewerEvent::HostStatus(status) = next_event(events).await
-                && self.0.replace(status.audio) != Some(status.audio)
-            {
-                return status.audio;
+            if let ViewerEvent::HostStatus(status) = next_event(events).await {
+                let current = (self.field)(status);
+                if self.last.replace(current) != Some(current) {
+                    return current;
+                }
             }
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secure_desktop_on_the_host_is_reported_until_frames_resume() {
+    let platform = TestPlatform::default();
+    let secure_desktop = platform.secure_desktop.clone();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let mut screen = StatusChanges::of(|status| status.screen);
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::Available
+    );
+    let mut frames = viewer.frames();
+    tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
+        .await
+        .unwrap()
+        .unwrap();
+
+    secure_desktop.store(true, Ordering::SeqCst);
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::SecureDesktop
+    );
+    frames.mark_unchanged();
+
+    secure_desktop.store(false, Ordering::SeqCst);
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::Available
+    );
+    tokio::time::timeout(Duration::from_secs(10), frames.changed())
+        .await
+        .expect("frames resume once the secure desktop is gone")
+        .unwrap();
 }
 
 /// A host whose OS asks its user before the first recording, answering after `delay`.
@@ -1224,7 +1290,7 @@ async fn the_viewer_hears_once_the_host_user_allows_recording() {
         connect_viewer(audio_viewer_config(&host, &peak), &host.password)
             .await
             .unwrap();
-    let mut audio = AudioStatus(None);
+    let mut audio = StatusChanges::of(|status| status.audio);
     let mut changes = Vec::new();
     for _ in 0..3 {
         changes.push(audio.next_change(&mut viewer_events).await);
@@ -1248,7 +1314,7 @@ async fn the_viewer_learns_the_host_user_refused_recording() {
         connect_viewer(audio_viewer_config(&host, &peak), &host.password)
             .await
             .unwrap();
-    let mut audio = AudioStatus(None);
+    let mut audio = StatusChanges::of(|status| status.audio);
     let mut changes = Vec::new();
     for _ in 0..3 {
         changes.push(audio.next_change(&mut viewer_events).await);
@@ -1271,7 +1337,7 @@ async fn muting_during_the_prompt_does_not_leave_the_viewer_waiting() {
         connect_viewer(audio_viewer_config(&host, &peak), &host.password)
             .await
             .unwrap();
-    let mut audio = AudioStatus(None);
+    let mut audio = StatusChanges::of(|status| status.audio);
     audio.next_change(&mut viewer_events).await;
     assert_eq!(
         audio.next_change(&mut viewer_events).await,

@@ -18,7 +18,7 @@ use dari_net::{
 };
 use dari_proto::{
     AudioPacket, Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
-    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, TransferId, VideoPacket,
+    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, ProtocolVersion, QualityPreset, TransferId, VideoPacket,
     sanitize_display_text,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -145,6 +145,7 @@ pub(crate) async fn serve_viewer(
             files: Availability::Unavailable,
             audio: Availability::Unavailable,
         },
+        peer_version: peer.version,
         displays: Vec::new(),
         active_display: None,
         request: ViewerRequest::default(),
@@ -189,6 +190,7 @@ struct HostSession {
     options: SessionOptions,
     events: mpsc::UnboundedSender<HostEvent>,
     status: HostStatus,
+    peer_version: ProtocolVersion,
     displays: Vec<DisplayInfo>,
     active_display: Option<u32>,
     request: ViewerRequest,
@@ -377,9 +379,11 @@ impl HostSession {
                 }
                 screen = status_receiver.recv() => {
                     let Some(screen) = screen else { continue };
-                    self.status.screen = screen;
-                    if let Err(reason) = self.publish_status().await {
-                        return reason;
+                    if self.status.screen != screen {
+                        self.status.screen = screen;
+                        if let Err(reason) = self.publish_status().await {
+                            return reason;
+                        }
                     }
                 }
                 text = clipboard_changes.recv() => {
@@ -538,7 +542,10 @@ impl HostSession {
 
     async fn publish_status(&mut self) -> Result<(), SessionEndReason> {
         let _sent = self.events.send(HostEvent::SessionStatus(self.status));
-        self.send(&ControlMessage::HostStatus(self.status)).await
+        self.send(&ControlMessage::HostStatus(
+            self.status.for_version(self.peer_version),
+        ))
+        .await
     }
 
     /// Tells the viewer the frame rate the stream now runs at.
@@ -864,12 +871,14 @@ fn geometry(display: &DisplayInfo) -> DisplayGeometry {
 fn availability_of_capture(error: &StreamError) -> Availability {
     match error {
         StreamError::Capture(CaptureError::PermissionDenied) => Availability::PermissionDenied,
-        StreamError::Capture(_) | StreamError::Codec(_) => Availability::Unavailable,
+        StreamError::Capture(CaptureError::SecureDesktop) => Availability::SecureDesktop,
+        StreamError::Capture(
+            CaptureError::DisplayNotFound(_) | CaptureError::NoDisplay | CaptureError::Backend(_),
+        )
+        | StreamError::Codec(_) => Availability::Unavailable,
     }
 }
 
-/// Forwards encoded frames to the viewer for the whole session, across capture restarts. A
-/// capture failure is reported as a status change; a transport failure ends the session.
 async fn pump_video(
     mut frames: mpsc::Receiver<Result<EncodedFrame, StreamError>>,
     mut video: MessageSender<VideoPacket>,
@@ -877,9 +886,14 @@ async fn pump_video(
 ) -> Result<(), String> {
     let started = Instant::now();
     let mut sequence = 0u64;
+    let mut reported = Availability::Available;
     while let Some(frame) = frames.recv().await {
         match frame {
             Ok(frame) => {
+                if reported != Availability::Available {
+                    reported = Availability::Available;
+                    let _sent = status.send(reported).await;
+                }
                 let packet = VideoPacket {
                     sequence,
                     timestamp_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
@@ -895,8 +909,9 @@ async fn pump_video(
                     .map_err(|error| error.to_string())?;
             }
             Err(error) => {
-                warn!(%error, "screen capture stopped");
-                let _sent = status.send(availability_of_capture(&error)).await;
+                warn!(%error, "screen capture interrupted");
+                reported = availability_of_capture(&error);
+                let _sent = status.send(reported).await;
             }
         }
     }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version spoken by this build.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 2, minor: 0 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 2, minor: 1 };
 
 /// Protocol version advertised during the handshake.
 ///
@@ -16,6 +16,11 @@ pub struct ProtocolVersion {
 impl ProtocolVersion {
     pub fn is_compatible_with(self, other: ProtocolVersion) -> bool {
         self.major == other.major
+    }
+
+    /// Whether a peer speaking this version decodes what `since` introduced.
+    pub fn supports(self, since: ProtocolVersion) -> bool {
+        self.major == since.major && self.minor >= since.minor
     }
 }
 
@@ -33,8 +38,17 @@ mod tests {
     fn compatibility_follows_major_version() {
         let v1_0 = ProtocolVersion { major: 1, minor: 0 };
         let v1_3 = ProtocolVersion { major: 1, minor: 3 };
-        let v2_0 = ProtocolVersion { major: 2, minor: 0 };
+        let v2_0 = ProtocolVersion { major: 2, minor: 1 };
         assert!(v1_0.is_compatible_with(v1_3));
         assert!(!v1_0.is_compatible_with(v2_0));
+    }
+
+    #[test]
+    fn support_needs_the_same_major_and_at_least_the_minor() {
+        let v2_1 = ProtocolVersion { major: 2, minor: 1 };
+        assert!(v2_1.supports(ProtocolVersion { major: 2, minor: 0 }));
+        assert!(v2_1.supports(v2_1));
+        assert!(!v2_1.supports(ProtocolVersion { major: 2, minor: 2 }));
+        assert!(!ProtocolVersion { major: 3, minor: 5 }.supports(v2_1));
     }
 }

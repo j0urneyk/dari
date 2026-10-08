@@ -63,8 +63,8 @@ cargo deny check
 - The macOS capture and encoding module `crates/media/src/apple/`, which drives ScreenCaptureKit, CoreVideo,
   CoreMedia, and VideoToolbox through the objc2 bindings. Every unsafe block there carries a `SAFETY` comment.
 - The Windows capture and encoding module `crates/media/src/win/`, which drives Windows.Graphics.Capture's interop,
-  Direct3D 11, and Media Foundation through the `windows` crate, which marks every COM call unsafe. Every unsafe block
-  there carries a `SAFETY` comment too.
+  Direct3D 11, Media Foundation, and the input-desktop probe through the `windows` crate, which marks every COM and
+  Win32 call unsafe. Every unsafe block there carries a `SAFETY` comment too.
 - The development-only power sampler `crates/media/examples/power_sample.rs`, which calls the private
   `libIOReport.dylib`. Its unsafe blocks carry `SAFETY` comments too.
 

@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dari_proto::{
-    AudioPacket, CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, StreamKind, TransferId,
-    VIDEO_FRAME_LIMIT, Validate, VideoPacket,
+    AudioPacket, CONTROL_FRAME_LIMIT, ControlMessage, MessageCodec, Os, ProtocolVersion,
+    StreamKind, TransferId, VIDEO_FRAME_LIMIT, Validate, VideoPacket,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -26,6 +26,7 @@ pub type MessageReceiver<T> = FramedRead<quinn::RecvStream, MessageCodec<T>>;
 pub struct PeerInfo {
     pub name: String,
     pub os: Os,
+    pub version: ProtocolVersion,
     pub address: SocketAddr,
     /// The host's certificate fingerprint. Only known on the viewer side.
     pub fingerprint: Option<Fingerprint>,

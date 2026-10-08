@@ -19,6 +19,10 @@ pub enum CaptureError {
     DisplayNotFound(u32),
     #[error("no display is connected")]
     NoDisplay,
+    /// The OS switched to a desktop this app cannot capture (Windows' secure desktop, shown for
+    /// a UAC prompt, the lock screen, or Ctrl+Alt+Del). Frames resume once it is dismissed.
+    #[error("the screen is behind a secure desktop")]
+    SecureDesktop,
     #[error("screen capture failed: {0}")]
     Backend(String),
 }
