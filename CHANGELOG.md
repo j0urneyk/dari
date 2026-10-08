@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format follows
 - Switching the Mac's input source with Ctrl+Space no longer opens the Start menu on a Windows host.
 - When the Windows host shows a User Account Control prompt, the lock screen, or Ctrl+Alt+Del, the viewer says so
   instead of showing a frozen picture.
+- A second User Account Control prompt that follows an unchanged screen is reported too, instead of leaving the viewer
+  on a frozen picture.
 
 ## [0.0.3] - 2026-10-08
 

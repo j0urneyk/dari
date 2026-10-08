@@ -272,10 +272,9 @@ where
             }
             _ => SOURCE_WAIT,
         };
-        let (captured, resend) = match capturer.capture(wait) {
+        let (captured, resend) = match capturer.capture(wait).inspect(|_| hidden_reported = false) {
             Ok(Some(frame)) => {
                 failing_since = None;
-                hidden_reported = false;
                 if paced_by_source {
                     still = Some(StillScreen::new(frame.clone()));
                 }
