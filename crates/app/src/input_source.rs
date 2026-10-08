@@ -112,8 +112,13 @@ mod tests {
         let mut tracker = InputSourceTracker::default();
         assert_eq!(tracker.observe(Some(ABC), true, false), None);
         assert_eq!(tracker.observe(Some(KOREAN), true, false), None);
-        // Control granted later: the first source seen is the baseline, not a switch.
-        assert_eq!(tracker.observe(Some(ABC), true, true), None);
+    }
+
+    #[test]
+    fn the_first_switch_after_control_is_granted_taps_hangul() {
+        // The window activates before the host says whether it allows control.
+        let mut tracker = InputSourceTracker::default();
+        assert_eq!(tracker.observe(Some(ABC), true, false), None);
         assert_eq!(tracker.observe(Some(KOREAN), true, true), Some(HANGUL_TAP));
     }
 }
