@@ -297,6 +297,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
 | `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |
+| `input_source.rs` (macOS) | Reads the Mac's selected keyboard input source and decides when a switch of it becomes a Hangul/English tap on the host |
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
 | `permissions.rs` | Checking and requesting macOS Screen Recording and Accessibility permissions (refreshed every 3 seconds) |
@@ -316,6 +317,14 @@ to a fresh atlas texture, takes about 0.25 ms of the 6.9 ms a 144 fps frame allo
 gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and copying. In the remote screen's key
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window
 loses focus, every held key, button, and modifier is released so nothing stays pressed on the remote side.
+
+macOS consumes the keys that switch its input source (Caps Lock, Ctrl+Space, the Globe key), so no Hangul/English
+key ever reaches the viewer. Instead, the viewer subscribes to GPUI's `on_keyboard_layout_change`, which the macOS
+platform fires on `NSTextInputContextKeyboardSelectionDidChangeNotification`, and reads the selected source from
+`NSTextInputContext`. While the viewer window is active and control is allowed, a source id that differs from the
+one recorded when the window became active sends one `HangulMode` press and release. The notification also fires
+when the window activates (macOS restores the window's own source) and twice per Ctrl+Space, with the same id both
+times; comparing ids ignores both.
 
 ## Relay
 

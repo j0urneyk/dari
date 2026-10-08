@@ -7,6 +7,8 @@ mod backdrop;
 mod cli;
 mod config;
 mod home;
+#[cfg(target_os = "macos")]
+mod input_source;
 mod keymap;
 mod permissions;
 mod runtime;
