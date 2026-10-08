@@ -1,6 +1,7 @@
 # Answering the Windows secure desktop from a viewer
 
-Status: proposed. Nothing here is built yet.
+Status: option B and a per-machine-only installer are approved. The default for secure-screen control is still
+open. Nothing here is built yet.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
@@ -356,7 +357,9 @@ Two controls limit it further:
 
 - An `HKLM` policy value, `SecureDesktopControl`, that only an administrator can set. At 0 the service starts helpers
   with input off and refuses `SendSas`, so viewers can still see the secure desktop but not answer it. The installer
-  offers it as a checkbox, **Let viewers answer UAC prompts and the lock screen**.
+  offers it as a checkbox, **Let viewers answer UAC prompts and the lock screen**. Later, the host's settings change
+  it through `dari-service.exe policy on` or `policy off`, started with `runas`, so every change shows a UAC prompt.
+  While the value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
 - The service writes an Application event log entry each time it starts a helper with input, and each `SendSAS`.
   These entries record that something used the feature. They can't prove that a remote viewer did.
 
@@ -444,12 +447,33 @@ helper. Phase 2 is useful alone too: seeing the prompt tells the user what to as
 | Installing now needs administrator rights | Users on managed PCs can't install | Accepted. Those users can't install a service anyway |
 | A Windows update changes how the secure desktop behaves | Capture or input stops working on the secure desktop | The VM cases catch it, and the fallback is PR 36's notice, not a broken session |
 
-## Open questions for the approver
+## Decisions
 
-- Is the default for **Let viewers answer UAC prompts and the lock screen** on or off? This document proposes on,
-  because the feature exists for a user who can't walk to the host, and the residual risk only affects a machine
-  that malware already runs on. Off is the safer choice for machines where several people share one administrator
-  account.
-- Should installing require administrator rights for everyone, or should the installer keep a per-user option
-  without the service? This document proposes per-machine only, to keep one install layout to test. A per-user
-  option would keep PR 36's notice for those users.
+- Option B is approved: the host stays a per-user process, and a SYSTEM service and helper handle only the secure
+  desktop.
+- The installer is per-machine only. A user without administrator rights can't install Dari, and no per-user
+  layout needs testing.
+
+## Open question: the default for secure-screen control
+
+The `SecureDesktopControl` policy decides whether a viewer can answer the secure desktop. Seeing it is always on.
+The question is its value after an install that nobody customized, including a silent install.
+
+| Option | Default | Who gets what | Cost |
+| --- | --- | --- | --- |
+| 1. On | The installer's checkbox is checked | The reported case works right after install | Every per-machine install has the local elevation path described in "What this design can't stop" |
+| 2. Off | The checkbox is unchecked | Safe by default. A user turns it on in the installer or in settings, with a UAC prompt | A user who skipped the checkbox finds out while away from the host, the one moment they can't turn it on. They see the prompt but can't answer it |
+| 3. Off for UAC consent prompts only | Lock screen, credential prompts, and Ctrl+Alt+Del on. Consent prompts need opt-in | Closes the risky case by default, because only a consent prompt can be answered without a password | The reported case is a consent prompt, so it fails by default. The helper must tell `consent.exe` apart from `LogonUI.exe` on `Winlogon`, which is fragile |
+
+The recommendation is option 1, with the checkbox's explanation shown on its installer page. Three reasons support
+it:
+
+- Dari is for one person reaching their own PC, and the person who installs it is the person who will connect.
+  Option 2 fails that person at the worst moment. Option 3 fails the exact case this design exists for.
+- The extra risk applies only when malware already runs in an administrator's session in UAC's default consent
+  mode. Such malware already has documented auto-elevation bypasses, so Dari adds one more, not the first.
+- Every way to change the value needs an administrator. An organization can set it to 0 with Group Policy, and a
+  user can turn it off in settings.
+
+Option 2 is the better choice if Dari is ever pitched to organizations or shared PCs, where the person who installs
+it is not the person who connects.
