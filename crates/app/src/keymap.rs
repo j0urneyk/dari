@@ -1,5 +1,8 @@
 //! Translates GPUI keyboard events into protocol key events.
 
+#[cfg(target_os = "macos")]
+use std::time::Duration;
+
 use dari_proto::{InputEvent, KeyCode, MAX_FUNCTION_KEY, NamedKey};
 use gpui_kit::{Keystroke, Modifiers};
 
@@ -70,6 +73,18 @@ pub(crate) fn modifier_changes(previous: Modifiers, current: Modifiers) -> Vec<I
             pressed,
         })
         .collect()
+}
+
+/// How long ago a key went down on this Mac, counting the ones macOS kept for itself.
+#[cfg(target_os = "macos")]
+pub(crate) fn since_last_key_down() -> Duration {
+    use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
+
+    let seconds = CGEventSource::seconds_since_last_event_type(
+        CGEventSourceStateID::HIDSystemState,
+        CGEventType::KeyDown,
+    );
+    Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
 }
 
 #[cfg(test)]

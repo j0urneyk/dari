@@ -30,6 +30,8 @@ use tokio::sync::mpsc;
 use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
 #[cfg(target_os = "macos")]
 use crate::input_source::{InputSourceTracker, selected_input_source};
+#[cfg(target_os = "macos")]
+use crate::keymap::since_last_key_down;
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
 use crate::style;
@@ -493,6 +495,23 @@ impl ViewerView {
     }
 
     fn on_modifiers(&mut self, modifiers: Modifiers) {
+        if modifiers == self.modifiers {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        self.modifiers_changed(modifiers, since_last_key_down());
+        #[cfg(not(target_os = "macos"))]
+        self.send_modifiers(modifiers);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn modifiers_changed(&mut self, modifiers: Modifiers, last_key_down: Duration) {
+        let _ = last_key_down;
+        self.send_modifiers(modifiers);
+    }
+
+    fn send_modifiers(&mut self, modifiers: Modifiers) {
         for event in modifier_changes(self.modifiers, modifiers) {
             self.send(event);
         }
