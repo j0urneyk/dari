@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The macOS app downloaded from a release no longer reports that it is damaged. Builds without a developer
+  certificate are now ad-hoc signed as a whole bundle, so macOS lets you open the app from Privacy & Security.
+
 ## [0.0.2] - 2026-10-05
 
 ### Added

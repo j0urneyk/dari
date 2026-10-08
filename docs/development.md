@@ -469,11 +469,13 @@ Release steps:
    (`--clobber`).
 4. Check that the draft notes match the CHANGELOG section, then publish.
 
-The macOS app is signed and notarized only when the repository secrets include an Apple certificate
-(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`) and notarization credentials
-(`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); otherwise the app is unsigned. Running `workflow_dispatch` on a
-branch only checks packaging, without the publish step. To attach missing assets to an already published tag,
-re-run the workflow on the tag; the publish step then adds the assets to the existing release.
+The macOS app is ad-hoc signed, which macOS lets the user allow in Privacy & Security. Developer ID signing and
+notarization aren't set up: cargo-packager signs only when `signing-identity` is set under
+`[package.metadata.packager.macos]`, and the ad-hoc step in `release.yml` would then have to go.
+
+Running `workflow_dispatch` on a branch only checks packaging, without the publish step. To attach missing assets to
+an already published tag, re-run the workflow on the tag; the publish step then adds the assets to the existing
+release.
 
 ```bash
 gh workflow run release.yml --ref vX.Y.Z
