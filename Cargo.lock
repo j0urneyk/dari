@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "dari"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "dari-check"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "dari-input"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "dari-proto",
  "enigo",
@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "dari-media"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "block2 0.6.2",
  "cpal",
@@ -1792,7 +1792,7 @@ dependencies = [
 
 [[package]]
 name = "dari-net"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "dari-proto",
  "futures-util",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "dari-proto"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytes",
  "postcard",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "dari-relay"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "dari-session"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "arboard",
  "dari-input",
