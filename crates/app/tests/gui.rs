@@ -36,7 +36,7 @@ mod macos {
         CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer,
     };
     use dari_net::{AccessPassword, DeviceIdentity};
-    use dari_proto::{KeyCode, MouseButton as RemoteButton, NamedKey};
+    use dari_proto::{KeyCode, MAX_FUNCTION_KEY, MouseButton as RemoteButton, NamedKey};
     use dari_session::{
         HostConfig, HostEvent, HostPlatform, HostPolicy, TransferDirection, TransferState,
         ViewerConfig, ViewerTarget, connect_viewer, start_host,
@@ -398,6 +398,77 @@ mod macos {
                 .count(),
             2,
             "one switch is one press and one release"
+        );
+
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let long_ago = Duration::from_secs(60);
+        let just_now = Duration::ZERO;
+        let control_key = |pressed| RecordedAction::Key(KeyCode::Named(NamedKey::Control), pressed);
+        let mask_key = |pressed| {
+            RecordedAction::Key(
+                KeyCode::Named(NamedKey::Function(MAX_FUNCTION_KEY)),
+                pressed,
+            )
+        };
+        let recorded_before = actions.lock().unwrap().len();
+        cx.update(|cx| {
+            view.update(cx, |view, _| {
+                view.modifiers_changed(control, long_ago);
+                view.modifiers_changed(Modifiers::default(), just_now);
+                view.modifiers_changed(control, long_ago);
+                view.modifiers_changed(Modifiers::default(), long_ago);
+                view.modifiers_changed(control, long_ago);
+            });
+        });
+        let control_a = Keystroke {
+            key: "a".into(),
+            modifiers: control,
+            key_char: None,
+        };
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke: control_a.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::KeyUp(KeyUpEvent {
+                    keystroke: control_a,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.update(|cx| {
+            view.update(cx, |view, _| {
+                view.modifiers_changed(Modifiers::default(), just_now);
+            });
+        });
+        let expected = [
+            control_key(true),
+            mask_key(true),
+            mask_key(false),
+            control_key(false),
+            control_key(true),
+            control_key(false),
+            control_key(true),
+            RecordedAction::Key(KeyCode::Character('a'), true),
+            RecordedAction::Key(KeyCode::Character('a'), false),
+            control_key(false),
+        ];
+        pump(&mut cx, Duration::from_secs(5), |_| {
+            actions.lock().unwrap()[recorded_before..].ends_with(&expected[expected.len() - 3..])
+        });
+        assert_eq!(
+            actions.lock().unwrap()[recorded_before..],
+            expected,
+            "only the chord macOS consumed gets a key inside it"
         );
 
         // Every frame becomes a new GPU texture (~1.4 MB here). If replaced frames were not

@@ -296,7 +296,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) and the overlays for waiting, approval, and a finished session |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
-| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode` |
+| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode`, and on macOS, telling a modifier chord macOS consumed from a deliberate modifier tap |
 | `input_source.rs` (macOS) | Reads the Mac's selected keyboard input source and decides when a switch of it becomes a Hangul/English tap on the host |
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
@@ -326,6 +326,16 @@ window became active sends one `HangulMode` press and release if the host allows
 before the host's status arrives, so the source is followed even before control is known. The notification also fires
 when the window activates (macOS restores the window's own source) and twice per Ctrl+Space, with the same id both
 times; comparing ids ignores both.
+
+macOS also keeps the key of some modifier chords for itself (Ctrl+Space, ⌘Space for Spotlight), so the viewer sees
+only the modifiers go down and up. Forwarded as they are, they reach the host as a lone modifier tap. On Windows a
+lone Win tap opens Start, and with shortcut translation on, the Mac's Control becomes Win. The input source
+notification arrives only after Control is up (5 to 210 ms later in testing), too late to put the Hangul key
+inside the chord. Instead, on every modifier change the viewer asks Core Graphics how long ago a key went down at the
+HID level (`CGEventSourceSecondsSinceLastEventType`), which counts the keys macOS kept. If a key went down while the
+modifiers were held and none reached the viewer, it taps F20, a key no shortcut uses, before the modifiers come up.
+A deliberate modifier tap has no key under it and still reaches the host as a tap. Releasing everything when the
+window loses focus takes the same path, so the record of held modifiers starts over.
 
 ## Relay
 
