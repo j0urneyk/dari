@@ -3,7 +3,8 @@
 //!
 //! These are the only OS bindings in the crate that need `unsafe`: Direct3D 11, Media
 //! Foundation, and the capture interop are COM APIs, and the `windows` crate marks every COM
-//! call unsafe. Every unsafe block states what it relies on.
+//! call unsafe, as it does the Win32 desktop calls that detect the secure desktop. Every unsafe
+//! block states what it relies on.
 
 mod capture;
 mod convert;

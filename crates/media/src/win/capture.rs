@@ -4,6 +4,10 @@
 //! the pool's callback keeps just the newest one. The capture thread takes it at most `max_fps`
 //! times a second, and shaders scale it to the stream size and convert it to NV12 on the GPU
 //! (see `convert`), ready for the hardware encoder.
+//!
+//! While Windows shows its secure desktop (a UAC prompt, the lock screen, Ctrl+Alt+Del) the
+//! session simply delivers nothing, so a screen that has been still for a while is checked
+//! against the input desktop to tell the two apart.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -16,10 +20,14 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
-use windows::Win32::Foundation::{LPARAM, RECT};
+use windows::Win32::Foundation::{HANDLE, LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+use windows::Win32::System::StationsAndDesktops::{
+    CloseDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, GetUserObjectInformationW,
+    OpenInputDesktop, UOI_NAME,
+};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -39,6 +47,8 @@ use crate::stream::ScreenCapturer;
 /// one the capture thread is converting.
 const POOL_BUFFERS: i32 = 3;
 const CAPTURE_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
+/// How long the screen stays still before the input desktop is checked, and how often after.
+const SECURE_DESKTOP_PROBE_INTERVAL: Duration = Duration::from_millis(300);
 
 /// Captures one display with Windows.Graphics.Capture.
 pub(crate) struct GraphicsCaptureCapturer {
@@ -52,6 +62,8 @@ pub(crate) struct GraphicsCaptureCapturer {
     /// When the last frame was handed out. Windows versions before 11 24H2 ignore the session's
     /// minimum update interval, so the frame rate limit is also kept here.
     last_delivered: Option<Instant>,
+    /// When a still screen is next checked for the secure desktop.
+    next_probe: Instant,
 }
 
 impl std::fmt::Debug for GraphicsCaptureCapturer {
@@ -89,6 +101,7 @@ impl GraphicsCaptureCapturer {
             running: Some(running),
             converter: None,
             last_delivered: None,
+            next_probe: Instant::now() + SECURE_DESKTOP_PROBE_INTERVAL,
         })
     }
 
@@ -175,13 +188,24 @@ impl ScreenCapturer for GraphicsCaptureCapturer {
         }
         let frame = match self.next_frame(timeout) {
             Ok(Some(frame)) => frame,
-            Ok(None) => return Ok(None),
+            Ok(None) => {
+                let now = Instant::now();
+                if now >= self.next_probe {
+                    self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
+                    if input_desktop_is_secure() {
+                        return Err(CaptureError::SecureDesktop);
+                    }
+                }
+                return Ok(None);
+            }
             Err(error) => {
                 self.stop();
                 return Err(error);
             }
         };
-        self.last_delivered = Some(Instant::now());
+        let now = Instant::now();
+        self.last_delivered = Some(now);
+        self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
         let converted = self.convert(&frame);
         // Hands the buffer back to the pool now rather than whenever the last reference goes.
         let _closed = frame.Close();
@@ -360,6 +384,38 @@ impl Drop for RunningCapture {
         let _removed = self.item.RemoveClosed(self.closed);
         let _closed = self.session.Close();
         let _closed = self.pool.Close();
+    }
+}
+
+/// Whether the desktop receiving input is one a user process cannot capture: Winlogon's secure
+/// desktop, which shows UAC prompts, the lock screen, and Ctrl+Alt+Del. Winlogon's desktop
+/// refuses to be opened by a user process; any other desktop is recognized by its name.
+fn input_desktop_is_secure() -> bool {
+    // SAFETY: Win32 calls with valid arguments. The desktop handle is closed before returning,
+    // and `name` outlives the call that writes at most its size into it.
+    unsafe {
+        let Ok(desktop) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS)
+        else {
+            return true;
+        };
+        let mut name = [0u16; 64];
+        let mut needed = 0u32;
+        let read = GetUserObjectInformationW(
+            HANDLE(desktop.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr().cast()),
+            u32::try_from(std::mem::size_of_val(&name)).unwrap_or(0),
+            Some(&raw mut needed),
+        );
+        let _closed = CloseDesktop(desktop);
+        if read.is_err() {
+            return false;
+        }
+        let len = name
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(name.len());
+        !String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("default")
     }
 }
 

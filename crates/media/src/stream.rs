@@ -154,8 +154,9 @@ pub const FRAMES_IN_FLIGHT: usize = 2;
 /// delivered as the last item. A frame is only encoded while no encoded frame is waiting in
 /// `sink` and fewer than [`FRAMES_IN_FLIGHT`] are being encoded, with room reserved for each, so
 /// a slow network drops whole frames *before* encoding and the H.264 reference chain stays
-/// intact. Transient capture failures (a secure desktop on Windows, a display mode change) are
-/// retried for up to 30 seconds.
+/// intact. Transient capture failures (a display mode change) are retried for up to 30 seconds.
+/// A screen hidden behind a secure desktop is not a failure: [`CaptureError::SecureDesktop`] is
+/// delivered once, frames stop, and the next frame marks the screen visible again.
 pub fn spawn_capture_stream<C, F>(
     open_capturer: F,
     settings: StreamSettings,
@@ -205,6 +206,7 @@ where
     let interval = Duration::from_secs(1) / settings.max_fps.max(1);
     let mut next_frame = Instant::now();
     let mut failing_since: Option<Instant> = None;
+    let mut hidden_reported = false;
     // A self-paced source sends nothing while the screen is still, so its last frame is kept
     // to answer a keyframe request.
     let mut last_frame: Option<CapturedFrame> = None;
@@ -227,6 +229,7 @@ where
         let captured = match capturer.capture(SOURCE_WAIT) {
             Ok(Some(frame)) => {
                 failing_since = None;
+                hidden_reported = false;
                 if paced_by_source {
                     last_frame = Some(frame.clone());
                 }
@@ -241,6 +244,13 @@ where
                 }
                 _ => continue,
             },
+            Err(CaptureError::SecureDesktop) => {
+                if !hidden_reported {
+                    hidden_reported = true;
+                    deliver_error(sink, control, CaptureError::SecureDesktop.into());
+                }
+                continue;
+            }
             Err(error @ CaptureError::Backend(_))
                 if now.duration_since(*failing_since.get_or_insert(now))
                     < CAPTURE_FAILURE_LIMIT =>
@@ -259,44 +269,68 @@ where
             }
         };
 
-        if consumer_is_behind(sink, control) {
-            control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        let permit = match sink.clone().try_reserve_owned() {
-            Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                debug!("capture sink closed");
+        match encode(
+            captured,
+            &mut scaler,
+            &mut encoder,
+            &settings,
+            sink,
+            control,
+        ) {
+            Ok(true) => {}
+            Ok(false) => return Ok(()),
+            Err(error) => {
+                warn!(%error, "capture stream stopped");
+                deliver_error(sink, control, error.into());
                 return Ok(());
             }
-        };
-        let deliver = delivery(permit, control.clone());
-        let frame = match captured {
-            CapturedFrame::Rgba(frame) => {
-                CapturedFrame::Rgba(scaler.fit(frame, settings.max_long_edge))
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            native @ CapturedFrame::Native(_) => native,
-        };
-        if control.keyframe_requested.swap(false, Ordering::Relaxed) {
-            encoder.request_keyframe();
-        }
-        let submitted = encoder.submit(&frame, deliver);
-        control
-            .stats
-            .hardware_encoding
-            .store(encoder.is_hardware(), Ordering::Relaxed);
-        if let Err(error) = submitted {
-            warn!(%error, "capture stream stopped");
-            deliver_error(sink, control, error.into());
-            return Ok(());
         }
     }
     Ok(())
+}
+
+/// Scales and encodes `captured` into the room `sink` has for it, or drops it while the
+/// consumer is behind. `Ok(false)` once the sink is closed.
+fn encode(
+    captured: CapturedFrame,
+    scaler: &mut FrameScaler,
+    encoder: &mut VideoEncoder,
+    settings: &StreamSettings,
+    sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
+    control: &Arc<StreamControl>,
+) -> Result<bool, CodecError> {
+    if consumer_is_behind(sink, control) {
+        control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
+        return Ok(true);
+    }
+    let permit = match sink.clone().try_reserve_owned() {
+        Ok(permit) => permit,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
+            return Ok(true);
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            debug!("capture sink closed");
+            return Ok(false);
+        }
+    };
+    let deliver = delivery(permit, control.clone());
+    let frame = match captured {
+        CapturedFrame::Rgba(frame) => {
+            CapturedFrame::Rgba(scaler.fit(frame, settings.max_long_edge))
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        native @ CapturedFrame::Native(_) => native,
+    };
+    if control.keyframe_requested.swap(false, Ordering::Relaxed) {
+        encoder.request_keyframe();
+    }
+    let submitted = encoder.submit(&frame, deliver);
+    control
+        .stats
+        .hardware_encoding
+        .store(encoder.is_hardware(), Ordering::Relaxed);
+    submitted.map(|()| true)
 }
 
 /// Sends one encoded frame into the room reserved for it, and counts it.
@@ -348,8 +382,8 @@ impl Drop for InFlight {
     }
 }
 
-/// Delivers the stream's last item, an error, without blocking on a consumer that may itself be
-/// waiting for this thread to stop.
+/// Delivers an error without blocking on a consumer that may itself be waiting for this thread
+/// to stop.
 fn deliver_error(
     sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
     control: &StreamControl,
