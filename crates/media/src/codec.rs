@@ -632,7 +632,6 @@ mod tests {
         }
     }
 
-    /// The viewer's per-frame cost of decoding a synthetic `width`×`height` stream to BGRA.
     fn decode_time(width: u32, height: u32) -> std::time::Duration {
         let mut encoder = VideoEncoder::new(EncoderSettings {
             max_fps: 144.0,
@@ -657,9 +656,6 @@ mod tests {
         per_frame
     }
 
-    /// Measures the viewer's per-frame cost of decoding a Quality stream to BGRA, from a
-    /// 2560-px Retina screen and from a 4K one:
-    /// `cargo test --release -p dari-media -- --ignored --nocapture decoding_keeps_up`.
     #[test]
     #[ignore = "a release-mode throughput measurement"]
     fn decoding_keeps_up_with_144_fps() {
@@ -678,8 +674,6 @@ mod tests {
 
     #[test]
     fn keyframes_come_only_at_the_start() {
-        // VideoToolbox's default interval put a keyframe every 30 frames: each cost as much as
-        // the first and dropped the picture's quality for a second.
         for mut encoder in encoders() {
             let hardware = encoder.is_hardware();
             let mut capturer = SyntheticCapturer::new(320, 240);
@@ -792,7 +786,6 @@ mod tests {
     #[test]
     fn a_large_fast_stream_stays_decodable() {
         // At 144 fps both sizes are past level 5.2's macroblock rate, the highest OpenH264 knows.
-        // 3840×2160 is what the Quality preset sends from a 4K screen.
         for (width, height) in [(2560, 1662), (3840, 2160)] {
             for mut encoder in encoders_with(EncoderSettings {
                 max_fps: 144.0,

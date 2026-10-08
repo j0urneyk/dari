@@ -8,18 +8,9 @@
 //! `-` instead of a PNG path renders a deterministic text-like test image (2560×1440; `-WxH`
 //! picks another size). The scenarios are `still` (the image once, then a still screen) and
 //! `scroll[:K:PX]` (the image, then K frames each scrolled up by another PX pixels, then a still
-//! screen; defaults K = 30, PX = 4). The frames go through the capture stream the host runs
-//! (`spawn_capture_stream`), from a source on its own clock that delivers them at the frame
-//! rate and then nothing, like ScreenCaptureKit and Windows.Graphics.Capture on a still screen.
-//! So what comes out is what a viewer receives, including the frames the stream re-encodes to
-//! refine a still screen (`StillRefinement`). A `@DELAY:INTERVAL:FRAMES` suffix on the scenario
+//! screen; defaults K = 30, PX = 4). A `@DELAY:INTERVAL:FRAMES` suffix on the scenario
 //! (milliseconds, milliseconds, count) tries another refinement policy than the stream's
 //! default: `still@100:33:12`.
-//!
-//! Frames take the in-memory path: `FrameScaler::fit` to the Quality preset's size by default,
-//! then `rgba_to_i420` (BT.601 limited range) into NV12 for a hardware encoder. The Mac and
-//! Windows hosts scale and convert on the GPU instead, which is tested to produce the same
-//! colors, so the probe measures the codec, not the platform's scaler.
 //!
 //! Each line prints one delivered frame: when it arrived, its type and encoded size, and the
 //! PSNR of the decoded picture against the frame's source. A marker drawn into the top-left
@@ -42,10 +33,7 @@ use dari_media::{
 };
 use tokio::sync::mpsc;
 
-/// PSNR reported for a frame identical to its source.
 const IDENTICAL_PSNR: f64 = 99.0;
-/// The marker naming a frame's source: `MARKER_BITS` blocks of `MARKER_BLOCK` pixels, black for
-/// a 0 bit and white for a 1 bit, which survive any quantization the codec applies.
 const MARKER_BLOCK: u32 = 16;
 const MARKER_BITS: u32 = 12;
 
@@ -81,9 +69,7 @@ impl Scenario {
         }
     }
 
-    /// How far each frame the source delivers has scrolled up. The last one is the end of
-    /// motion; the stream's refinement frames repeat it.
-    fn plan(self) -> Vec<u32> {
+    fn scroll_offsets(self) -> Vec<u32> {
         match self {
             Self::Still => vec![0],
             Self::Scroll { steps, pixels } => (0..=steps).map(|index| index * pixels).collect(),
@@ -110,11 +96,8 @@ fn parse_refinement(text: &str) -> Result<StillRefinement, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Moving,
-    /// The last frame with new content: the keyframe of `still`, the final scroll position of
-    /// `scroll`. Without refinement, this picture stays on the viewer.
     MotionEnd,
-    /// A refinement frame: the end of motion encoded again.
-    Settled,
+    Refinement,
 }
 
 impl Phase {
@@ -122,7 +105,7 @@ impl Phase {
         match self {
             Self::Moving => "moving",
             Self::MotionEnd => "motion-end",
-            Self::Settled => "settled",
+            Self::Refinement => "refinement",
         }
     }
 }
@@ -150,8 +133,7 @@ struct Psnr {
 
 #[derive(Debug, Clone, Copy)]
 struct Measurement {
-    /// Index in the plan of the frame's source, read from its marker.
-    source: usize,
+    plan_index: usize,
     arrived: Duration,
     kind: FrameKind,
     bytes: usize,
@@ -236,7 +218,6 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Shows which encoder was set up and any fallback on the way.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -293,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             " (the stream's default)"
         }
     );
-    let plan = args.scenario.plan();
+    let plan = args.scenario.scroll_offsets();
     let stem = format!(
         "{}-{}-{}bps-{}fps",
         args.scenario.name(),
@@ -312,7 +293,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         next: 0,
     };
     let stream = spawn_capture_stream(move || Ok(planned), settings, sender)?;
-    // Nothing more comes once the screen is still and refined.
     let quiet = refinement.delay + 2 * refinement.interval + Duration::from_secs(1);
     let mut arrivals: Vec<(Instant, EncodedFrame)> = Vec::new();
     while let Ok(Some(frame)) = tokio::time::timeout(quiet, receiver.recv()).await {
@@ -340,12 +320,10 @@ fn backend_name(hardware: bool) -> &'static str {
     if hardware { "hardware" } else { "software" }
 }
 
-/// A source on its own clock: the planned frames one frame interval apart, then a still screen.
 struct PlannedSource {
     source: RgbaFrame,
     plan: Vec<u32>,
     interval: Duration,
-    /// When the first frame was delivered; the clock the rest are due by.
     started: Option<Instant>,
     next: usize,
 }
@@ -371,9 +349,6 @@ impl ScreenCapturer for PlannedSource {
     }
 }
 
-/// Decodes every delivered frame the way the viewer does and measures it against its source.
-/// Saves the decoded picture at the end of motion, at the first refinement frame, and at the
-/// last frame.
 fn measure(
     arrivals: &[(Instant, EncodedFrame)],
     source: &RgbaFrame,
@@ -388,7 +363,7 @@ fn measure(
     let mut decoder = VideoDecoder::new()?;
     let mut measurements = Vec::new();
     let mut motion_ended = false;
-    let mut settled_saved = false;
+    let mut refinement_saved = false;
     let first_arrival = arrivals.first().map(|(at, _)| *at);
     for (index, (arrived, encoded)) in arrivals.iter().enumerate() {
         let Some(decoded) = decoder.decode(&encoded.data)? else {
@@ -404,13 +379,13 @@ fn measure(
         let phase = if source_index + 1 < plan.len() {
             Phase::Moving
         } else if std::mem::replace(&mut motion_ended, true) {
-            Phase::Settled
+            Phase::Refinement
         } else {
             Phase::MotionEnd
         };
         let psnr = psnr_decoded(&frame_for(source, source_index, scrolled), &decoded)?;
         let measurement = Measurement {
-            source: source_index,
+            plan_index: source_index,
             arrived: arrived.saturating_duration_since(first_arrival.unwrap_or(*arrived)),
             kind: if encoded.keyframe {
                 FrameKind::Key
@@ -424,7 +399,7 @@ fn measure(
         measurements.push(measurement);
         println!(
             "{:>5} {:>7} {:>4} {:>8} {:>9.2} {:>9.2}  {}",
-            measurement.source,
+            measurement.plan_index,
             measurement.arrived.as_millis(),
             measurement.kind,
             measurement.bytes,
@@ -434,9 +409,9 @@ fn measure(
         );
         let snapshot = match phase {
             Phase::MotionEnd => Some("motion-end"),
-            Phase::Settled if !settled_saved => {
-                settled_saved = true;
-                Some("settled")
+            Phase::Refinement if !refinement_saved => {
+                refinement_saved = true;
+                Some("refinement")
             }
             _ => None,
         };
@@ -456,7 +431,6 @@ fn measure(
     Ok(measurements)
 }
 
-/// A PSNR column: `-` while nothing has been decoded.
 fn db(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| format!("{value:.2}"))
 }
@@ -468,32 +442,29 @@ fn summarize(measurements: &[Measurement], budget: u32) {
         .filter(|m| matches!(m.kind, FrameKind::Key))
         .count();
     let at = |phase: Phase| measurements.iter().find(|m| m.phase == phase);
-    let settled: Vec<&Measurement> = measurements
+    let refinements: Vec<&Measurement> = measurements
         .iter()
-        .filter(|m| m.phase == Phase::Settled)
+        .filter(|m| m.phase == Phase::Refinement)
         .collect();
-    let refinement_bytes: usize = settled.iter().map(|m| m.bytes).sum();
-    let refinement_span = match (at(Phase::MotionEnd), settled.last()) {
+    let refinement_bytes: usize = refinements.iter().map(|m| m.bytes).sum();
+    let refinement_span = match (at(Phase::MotionEnd), refinements.last()) {
         (Some(end), Some(last)) => Some(last.arrived.saturating_sub(end.arrived)),
         _ => None,
     };
     #[expect(clippy::cast_precision_loss, reason = "report only")]
     let mean_bytes = total as f64 / measurements.len().max(1) as f64;
     println!(
-        "summary: {} frames ({keyframes} key), {total} bytes, mean {mean_bytes:.0} bytes per frame (budget {budget}); PSNR Y at motion end {} dB, first settled {} dB, last {} dB, worst settled {} dB; refinement {} frames, {refinement_bytes} bytes, over {}",
+        "summary: {} frames ({keyframes} key), {total} bytes, mean {mean_bytes:.0} bytes per frame (budget {budget}); PSNR Y at motion end {} dB, first refinement {} dB, last {} dB, worst refinement {} dB; refinement {} frames, {refinement_bytes} bytes, over {}",
         measurements.len(),
         db(at(Phase::MotionEnd).map(|m| m.psnr.y)),
-        db(at(Phase::Settled).map(|m| m.psnr.y)),
+        db(at(Phase::Refinement).map(|m| m.psnr.y)),
         db(measurements.last().map(|m| m.psnr.y)),
-        db(settled.iter().map(|m| m.psnr.y).reduce(f64::min)),
-        settled.len(),
+        db(refinements.iter().map(|m| m.psnr.y).reduce(f64::min)),
+        refinements.len(),
         refinement_span.map_or_else(|| "-".to_owned(), |span| format!("{} ms", span.as_millis())),
     );
 }
 
-/// The frame the source delivers for plan step `index`: the image scrolled up by `scrolled`
-/// rows, the rows that left at the top coming back in at the bottom so the frame stays full of
-/// text, with the marker naming the step.
 fn frame_for(source: &RgbaFrame, index: usize, scrolled: u32) -> RgbaFrame {
     let width = source.width();
     let stride = width as usize * 4;
@@ -515,12 +486,10 @@ fn frame_for(source: &RgbaFrame, index: usize, scrolled: u32) -> RgbaFrame {
         .unwrap_or_else(|| unreachable!("the rotated buffer keeps its size"))
 }
 
-/// The plan step a decoded frame's marker names.
 fn read_marker(frame: &DecodedFrame) -> usize {
     let half = MARKER_BLOCK / 2;
     (0..MARKER_BITS)
         .filter(|bit| {
-            // The center of the block, away from edges the codec may blur.
             let mut sum = 0u32;
             for y in half / 2..half + half / 2 {
                 for x in bit * MARKER_BLOCK + half / 2..bit * MARKER_BLOCK + half + half / 2 {
@@ -537,8 +506,6 @@ fn luma(r: u8, g: u8, b: u8) -> f64 {
     0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)
 }
 
-/// PSNR of luma (Rec. 601 weights on the RGB values) and of the RGB channels, between two
-/// frames given as `(r, g, b)` iterators of equal length.
 fn psnr_pixels(pairs: impl Iterator<Item = ([u8; 3], [u8; 3])>) -> Psnr {
     let (mut y_error, mut rgb_error, mut count) = (0.0f64, 0.0f64, 0usize);
     for ([r1, g1, b1], [r2, g2, b2]) in pairs {

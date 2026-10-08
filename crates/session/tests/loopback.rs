@@ -432,8 +432,6 @@ async fn a_still_screen_is_sent_again_when_the_viewer_asks_for_a_keyframe() {
         .unwrap();
     frames.borrow_and_update();
 
-    // Nothing changes on the host, so after the frames that refine the still picture nothing
-    // new arrives...
     let quiet = Instant::now();
     while tokio::time::timeout(Duration::from_millis(500), frames.changed())
         .await

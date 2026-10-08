@@ -1,6 +1,3 @@
-//! Test pictures: a capturer that renders a moving pattern, for tests and machines without a
-//! display, and a page of text-like strokes for measuring what the codec does to text.
-
 use std::time::Duration;
 
 use crate::display::CaptureError;
@@ -86,7 +83,6 @@ pub fn render_text_page(width: u32, height: u32) -> RgbaFrame {
     let mut line_top = TITLE_BAR + 8;
     let mut line_index = 0u32;
     while line_top + LINE_HEIGHT <= height {
-        // Paragraph breaks and ragged right edges, like prose.
         let paragraph_break = line_index % 9 == 8;
         let line_width = if line_index % 9 == 7 {
             width / 2 + random.below(width / 3)
@@ -114,8 +110,6 @@ pub fn render_text_page(width: u32, height: u32) -> RgbaFrame {
         .unwrap_or_else(|| unreachable!("the page fills exactly width * height pixels"))
 }
 
-/// Two to four 1 px strokes in a 5×8 box: verticals, horizontals, and a diagonal, like the
-/// stems and bars of Latin letters.
 fn draw_glyph(
     set: &mut impl FnMut(u32, u32, [u8; 3]),
     random: &mut Lcg,
@@ -157,7 +151,6 @@ fn draw_glyph(
     }
 }
 
-/// A tiny deterministic generator, so every run draws the same page.
 struct Lcg(u32);
 
 impl Lcg {

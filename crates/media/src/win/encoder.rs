@@ -974,7 +974,6 @@ mod tests {
     use crate::stream::StillRefinement;
     use crate::synthetic::render_text_page;
 
-    /// PSNR of luma (Rec. 601 weights on the RGB values), as the quality_probe example reports.
     fn psnr_y(source: &RgbaFrame, decoded: &DecodedFrame) -> f64 {
         let luma = |r: u8, g: u8, b: u8| {
             0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)
@@ -994,11 +993,6 @@ mod tests {
         10.0 * (255.0f64.powi(2) / mse).log10()
     }
 
-    /// Measures what Media Foundation's software encoder makes of a still screen under the
-    /// stream's refinement policy, the way the quality_probe example measures VideoToolbox
-    /// and OpenH264: the frame once, then again at each refinement time, on the real clock
-    /// the encoder's rate control sees. `cargo test --release -p dari-media
-    /// --target x86_64-pc-windows-msvc -- --ignored --nocapture still_screen_refinement`.
     #[test]
     #[ignore = "a release-mode quality measurement"]
     fn still_screen_refinement_through_media_foundation() {

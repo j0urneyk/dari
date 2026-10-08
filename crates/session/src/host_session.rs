@@ -87,7 +87,6 @@ fn stream_settings(
         None => (base.max_long_edge, base.bitrate_bps, base.max_fps),
         Some(QualityPreset::Speed) => (1280, 1_500_000, PRESET_FRAME_RATE),
         Some(QualityPreset::Balanced) => (1920, 4_000_000, PRESET_FRAME_RATE),
-        // Native up to the encoder's limit: downscaling a Retina screen blurs 1-px text strokes.
         Some(QualityPreset::Quality) => (MAX_ENCODED_LONG_EDGE, 10_000_000, PRESET_FRAME_RATE),
     };
     let requested = request.frame_rate.map_or(base.max_fps, u32::from);

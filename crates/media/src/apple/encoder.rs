@@ -195,9 +195,6 @@ impl Session {
         )]
         let frame_rate = CFNumber::new_i32(settings.max_fps.round().max(1.0) as i32);
         let bitrate = CFNumber::new_i32(i32::try_from(settings.bitrate_bps).unwrap_or(i32::MAX));
-        // Left to its default, VideoToolbox put a keyframe every 30 frames: each cost as much as
-        // the first and dropped the picture's quality for a second. The transport is reliable;
-        // keyframes are only needed on start, resize, and request.
         let keyframe_interval = CFNumber::new_i32(i32::MAX);
         // SAFETY: Reading immutable static VideoToolbox and CoreVideo constants.
         let properties: [(&CFString, &CFType); 7] = unsafe {
