@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Text on a still remote screen sharpens within half a second after it stops changing, and the Quality preset streams
+  screens up to 3840x2160 at their full resolution instead of scaling them to 2560 pixels.
+
 ### Fixed
 
 - The remote computer's sound plays smoothly instead of in short fragments with ticks between them.
