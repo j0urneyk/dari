@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-10-08
+
 ### Fixed
 
 - The macOS app downloaded from a release no longer reports that it is damaged. Builds without a developer
@@ -120,6 +122,7 @@ The first release of Dari.
   network declarations, and a tag-triggered release workflow that also ships the Linux relay.
 - Licensed under MIT OR Apache-2.0.
 
-[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/j0urneyk/dari/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/j0urneyk/dari/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/j0urneyk/dari/releases/tag/v0.0.1
