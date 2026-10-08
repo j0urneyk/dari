@@ -58,7 +58,7 @@ pub use permission::{
 };
 pub use scale::{FrameScaler, MAX_ENCODED_LONG_EDGE, fit_within};
 pub use stream::{
-    CaptureStream, FRAMES_IN_FLIGHT, ScreenCapturer, StreamError, StreamSettings, StreamStats,
-    spawn_capture_stream,
+    CaptureStream, FRAMES_IN_FLIGHT, ScreenCapturer, StillRefinement, StreamError, StreamSettings,
+    StreamStats, spawn_capture_stream,
 };
-pub use synthetic::SyntheticCapturer;
+pub use synthetic::{SyntheticCapturer, render_text_page};

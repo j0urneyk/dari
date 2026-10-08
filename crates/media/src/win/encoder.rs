@@ -969,6 +969,79 @@ mod callback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::{DecodedFrame, VideoDecoder};
+    use crate::frame::RgbaFrame;
+    use crate::stream::StillRefinement;
+    use crate::synthetic::render_text_page;
+
+    /// PSNR of luma (Rec. 601 weights on the RGB values), as the quality_probe example reports.
+    fn psnr_y(source: &RgbaFrame, decoded: &DecodedFrame) -> f64 {
+        let luma = |r: u8, g: u8, b: u8| {
+            0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)
+        };
+        let error: f64 = source
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(decoded.bgra.as_chunks::<4>().0)
+            .map(|(rgba, bgra)| {
+                (luma(rgba[0], rgba[1], rgba[2]) - luma(bgra[2], bgra[1], bgra[0])).powi(2)
+            })
+            .sum();
+        #[expect(clippy::cast_precision_loss, reason = "pixel counts")]
+        let mse = error / (source.pixels().len() / 4) as f64;
+        10.0 * (255.0f64.powi(2) / mse).log10()
+    }
+
+    /// Measures what Media Foundation's software encoder makes of a still screen under the
+    /// stream's refinement policy, the way the quality_probe example measures VideoToolbox
+    /// and OpenH264: the frame once, then again at each refinement time, on the real clock
+    /// the encoder's rate control sees. `cargo test --release -p dari-media
+    /// --target x86_64-pc-windows-msvc -- --ignored --nocapture still_screen_refinement`.
+    #[test]
+    #[ignore = "a release-mode quality measurement"]
+    fn still_screen_refinement_through_media_foundation() {
+        let settings = EncoderSettings {
+            bitrate_bps: 10_000_000,
+            max_fps: 30.0,
+            hardware: true,
+        };
+        let refinement = StillRefinement::default();
+        let source = render_text_page(2560, 1440);
+        let frame = CapturedFrame::Rgba(source.clone());
+        let mut encoder = HardwareEncoder::microsoft_software(settings);
+        let mut decoder = VideoDecoder::new().unwrap();
+        println!(
+            "{:>5} {:>7} {:>4} {:>8} {:>7}",
+            "frame", "t_ms", "type", "bytes", "psnr_y"
+        );
+        let went_still = Instant::now();
+        let mut shown = None;
+        for sent in 0..=refinement.frames {
+            if let Some(due) = sent
+                .checked_sub(1)
+                .and_then(|sent| refinement.due_after(sent))
+            {
+                std::thread::sleep((went_still + due).saturating_duration_since(Instant::now()));
+            }
+            let encoded = encoder.encode(&frame).unwrap();
+            if let Some(encoded) = &encoded {
+                shown = decoder.decode(&encoded.data).unwrap().or(shown);
+            }
+            let psnr = shown
+                .as_ref()
+                .map_or(f64::NAN, |shown| psnr_y(&source, shown));
+            println!(
+                "{sent:>5} {:>7} {:>4} {:>8} {psnr:>7.2}",
+                went_still.elapsed().as_millis(),
+                encoded.as_ref().map_or("skip", |encoded| {
+                    if encoded.keyframe { "I" } else { "P" }
+                }),
+                encoded.as_ref().map_or(0, |encoded| encoded.data.len()),
+            );
+        }
+    }
 
     #[test]
     fn nal_unit_types_are_found_after_either_start_code() {

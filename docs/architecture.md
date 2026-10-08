@@ -112,8 +112,24 @@ trait, which comes in two kinds:
   itself while the consumer is behind. The test `SyntheticCapturer` is polled.
 - **Self-paced** sources deliver frames on their own clock (`paces_itself`). The thread waits for the newest frame
   (up to 50 ms, so a stop request is noticed) and drops it if the consumer is behind. A still screen sends no frames,
-  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit and
-  Windows.Graphics.Capture are self-paced.
+  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one, and to refine the
+  picture (below). ScreenCaptureKit and Windows.Graphics.Capture are self-paced.
+
+The frame that ends a change (the last scroll step, the keyframe of a page that just opened) is encoded under the
+bitrate budget of a moving screen, and nothing follows it while the screen is still, so the viewer would keep that
+coarse picture until the next change. Once a self-paced source has delivered nothing for 100 ms, the thread
+re-encodes its last frame 12 times, 33 ms apart, and then goes quiet again (`StillRefinement`, explicit state in
+the capture loop; a keyframe sent on request is refined the same way). The encoder spends the bits a still screen
+saves on the picture it already shows. Measured with the `quality_probe` example (a synthetic 2560×1440 page of
+1 px text, 10 Mbps, 30 fps, PSNR-Y of the decoded picture against the source): VideoToolbox lifts a still page from
+35.1 dB to 40.5 dB with 12 refinement frames (0.71 MB, 0.4 s); more frames or wider spacing add nothing, and the
+same 12 frames reach 40.6 dB at 60 fps and 42.8 dB at 144 fps, where the bitrate is higher. OpenH264 skips most of
+the refinement frames to pay off the keyframe and only reaches 35.1 dB (35.8 dB with 20 frames), and sends nothing
+at all when they are 100 ms or more apart. Media Foundation's software encoder (the ignored
+`still_screen_refinement_through_media_foundation` test, on a Windows 11 VM without a hardware encoder) spends
+42 KB on the first refinement frame, from 36.5 dB to 39.1 dB, and 64 bytes on each of the rest; the hardware
+encoders of real Windows machines are not measured. The 100 ms delay is three frame intervals at 30 fps, so a dropped frame
+does not start a refinement, whose first frame costs about 110 KB; a slow scroll with longer pauses does.
 
 | | macOS | Windows |
 | --- | --- | --- |
@@ -130,7 +146,10 @@ this mode, frame skipping must be on for the encoder to hold its target bitrate;
 output, so the reference chain is unaffected. Adaptive quantization and background detection, which screen content
 doesn't support, are turned off.
 
-VideoToolbox runs without frame reordering and with its real-time mode **off**. In real-time mode the encoder lowers
+VideoToolbox's key frame interval is set to its maximum: left at the default, it put a keyframe every 30 frames,
+each as large as the stream's first and encoded under a moving screen's budget, so once a second the picture fell
+back to 29.8 dB from the 42 dB the P-frames had reached (`quality_probe`, scrolling at 10 Mbps). VideoToolbox runs
+without frame reordering and with its real-time mode **off**. In real-time mode the encoder lowers
 its clock after about three seconds to just keep up with `ExpectedFrameRate`, assuming frames overlap: a frame that
 took 4.5 ms at first took 8–11 ms once it settled when frames were encoded one at a time, and 16 ms with three in
 flight. Without it, a 1920×1246 frame stays at about 4.5 ms. Frames are submitted without waiting

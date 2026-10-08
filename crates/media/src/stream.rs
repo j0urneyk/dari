@@ -50,6 +50,7 @@ pub struct StreamSettings {
     /// Encode with the platform's hardware encoder where there is one (VideoToolbox on macOS, a
     /// Media Foundation hardware encoder on Windows), falling back to OpenH264.
     pub hardware_encoder: bool,
+    pub still_refinement: StillRefinement,
 }
 
 impl Default for StreamSettings {
@@ -59,7 +60,45 @@ impl Default for StreamSettings {
             max_fps: 30,
             bitrate_bps: 4_000_000,
             hardware_encoder: true,
+            still_refinement: StillRefinement::default(),
         }
+    }
+}
+
+/// How the stream sharpens a screen that has stopped changing.
+///
+/// The frame that ends a change is encoded under the bitrate budget of a moving screen, and a
+/// self-paced source then delivers nothing while the screen is still, so the viewer would keep
+/// that coarse picture until the next change. Instead, once the screen has been still for
+/// `delay`, the stream re-encodes the last frame `frames` times, `interval` apart: the encoder
+/// spends the bits a still screen saves on refining the picture it already shows, and then the
+/// stream goes quiet again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StillRefinement {
+    /// How long the screen must have been still before refinement starts, so a dropped or late
+    /// frame of a moving screen does not start one.
+    pub delay: Duration,
+    /// Time between refinement frames.
+    pub interval: Duration,
+    /// How many times the last frame is re-encoded after each change.
+    pub frames: u32,
+}
+
+impl Default for StillRefinement {
+    fn default() -> Self {
+        Self {
+            delay: Duration::from_millis(100),
+            interval: Duration::from_millis(33),
+            frames: 12,
+        }
+    }
+}
+
+impl StillRefinement {
+    /// When the refinement frame after `sent` of them is due, counted from the moment the screen
+    /// went still; `None` once all of them have been sent.
+    pub fn due_after(self, sent: u32) -> Option<Duration> {
+        (sent < self.frames).then(|| self.delay + self.interval * sent)
     }
 }
 
@@ -77,6 +116,8 @@ pub struct StreamStats {
     pub frames_encoded: AtomicU64,
     /// Frames dropped before encoding because the consumer had not taken the previous one yet.
     pub frames_skipped: AtomicU64,
+    /// Frames re-encoded to refine a still screen ([`StillRefinement`]).
+    pub still_refinements: AtomicU64,
     /// Time from capturing each encoded frame to its delivery (scaling and encoding latency),
     /// in microseconds. Frames overlap in a hardware encoder, so this is not the time the
     /// thread was busy.
@@ -204,12 +245,13 @@ where
     })?;
 
     let interval = Duration::from_secs(1) / settings.max_fps.max(1);
+    let refinement = settings.still_refinement;
     let mut next_frame = Instant::now();
     let mut failing_since: Option<Instant> = None;
     let mut hidden_reported = false;
     // A self-paced source sends nothing while the screen is still, so its last frame is kept
-    // to answer a keyframe request.
-    let mut last_frame: Option<CapturedFrame> = None;
+    // to refine the picture and to answer a keyframe request.
+    let mut still: Option<StillScreen> = None;
     while !control.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
         if !paced_by_source {
@@ -226,24 +268,31 @@ where
             }
         }
 
-        let captured = match capturer.capture(SOURCE_WAIT) {
+        // Wake for a refinement frame when it is due, unless it would only be skipped anyway.
+        let wait = match &still {
+            Some(screen) if !consumer_is_behind(sink, control) => screen.wait(refinement, now),
+            _ => SOURCE_WAIT,
+        };
+        let (captured, resend) = match capturer.capture(wait) {
             Ok(Some(frame)) => {
                 failing_since = None;
                 hidden_reported = false;
                 if paced_by_source {
-                    last_frame = Some(frame.clone());
+                    still = Some(StillScreen::new(frame.clone()));
                 }
-                frame
+                (frame, None)
             }
-            Ok(None) => match &last_frame {
-                Some(frame)
-                    if control.keyframe_requested.load(Ordering::Relaxed)
-                        || encoder.has_lost_frames() =>
+            Ok(None) => {
+                let keyframe_wanted =
+                    control.keyframe_requested.load(Ordering::Relaxed) || encoder.has_lost_frames();
+                match still
+                    .as_ref()
+                    .and_then(|screen| screen.resend(refinement, keyframe_wanted))
                 {
-                    frame.clone()
+                    Some((frame, resend)) => (frame, Some(resend)),
+                    None => continue,
                 }
-                _ => continue,
-            },
+            }
             Err(CaptureError::SecureDesktop) => {
                 if !hidden_reported {
                     hidden_reported = true;
@@ -269,71 +318,143 @@ where
             }
         };
 
-        match encode(
-            captured,
-            &mut scaler,
-            &mut encoder,
-            &settings,
-            sink,
-            control,
-        ) {
-            Ok(Sink::Open) => {}
-            Ok(Sink::Closed) => return Ok(()),
-            Err(error) => {
-                warn!(%error, "capture stream stopped");
-                deliver_error(sink, control, error.into());
+        let permit = match reserve_room(sink, control) {
+            Room::Reserved(permit) => permit,
+            Room::Full => {
+                control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            Room::Closed => {
+                debug!("capture sink closed");
                 return Ok(());
             }
+        };
+        let deliver = delivery(permit, control.clone());
+        let frame = fit(captured, &mut scaler, settings.max_long_edge);
+        if control.keyframe_requested.swap(false, Ordering::Relaxed) {
+            encoder.request_keyframe();
+        }
+        let submitted = encoder.submit(&frame, deliver);
+        control
+            .stats
+            .hardware_encoding
+            .store(encoder.is_hardware(), Ordering::Relaxed);
+        if let Err(error) = submitted {
+            warn!(%error, "capture stream stopped");
+            deliver_error(sink, control, error.into());
+            return Ok(());
+        }
+        if let Some((screen, resend)) = still.as_mut().zip(resend) {
+            screen.sent(resend, &control.stats);
         }
     }
     Ok(())
 }
 
-enum Sink {
-    Open,
+/// Why a self-paced source's last frame is encoded again.
+#[derive(Debug, Clone, Copy)]
+enum Resend {
+    /// The viewer asked for a keyframe, or the hardware encoder lost the frame.
+    Keyframe,
+    /// A refinement frame ([`StillRefinement`]).
+    Refinement,
+}
+
+/// A self-paced source's last frame and how far it has been refined since it arrived.
+struct StillScreen {
+    frame: CapturedFrame,
+    /// When the picture was last encoded under a moving screen's budget.
+    since: Instant,
+    /// Refinement frames sent since then.
+    refined: u32,
+}
+
+impl StillScreen {
+    fn new(frame: CapturedFrame) -> Self {
+        Self {
+            frame,
+            since: Instant::now(),
+            refined: 0,
+        }
+    }
+
+    /// When the next refinement frame is due; `None` once the screen has been refined.
+    fn refinement_due(&self, refinement: StillRefinement) -> Option<Instant> {
+        refinement
+            .due_after(self.refined)
+            .map(|offset| self.since + offset)
+    }
+
+    /// How long the source may wait for a new frame before the next refinement frame is due.
+    fn wait(&self, refinement: StillRefinement, now: Instant) -> Duration {
+        self.refinement_due(refinement).map_or(SOURCE_WAIT, |due| {
+            due.saturating_duration_since(now).min(SOURCE_WAIT)
+        })
+    }
+
+    /// The frame to encode again while the screen is still, if any.
+    fn resend(
+        &self,
+        refinement: StillRefinement,
+        keyframe_wanted: bool,
+    ) -> Option<(CapturedFrame, Resend)> {
+        let resend = if keyframe_wanted {
+            Resend::Keyframe
+        } else if self
+            .refinement_due(refinement)
+            .is_some_and(|due| due <= Instant::now())
+        {
+            Resend::Refinement
+        } else {
+            return None;
+        };
+        Some((self.frame.clone(), resend))
+    }
+
+    fn sent(&mut self, resend: Resend, stats: &StreamStats) {
+        match resend {
+            Resend::Refinement => {
+                self.refined += 1;
+                stats.still_refinements.fetch_add(1, Ordering::Relaxed);
+            }
+            // A keyframe is as coarse as the frame that ended a change, so it is refined too.
+            Resend::Keyframe => {
+                self.since = Instant::now();
+                self.refined = 0;
+            }
+        }
+    }
+}
+
+/// Room in the sink for one more encoded frame.
+enum Room {
+    Reserved(mpsc::OwnedPermit<Result<EncodedFrame, StreamError>>),
+    /// A frame is waiting for the consumer or the encoder is full; the new frame is skipped.
+    Full,
     Closed,
 }
 
-fn encode(
-    captured: CapturedFrame,
-    scaler: &mut FrameScaler,
-    encoder: &mut VideoEncoder,
-    settings: &StreamSettings,
+fn reserve_room(
     sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
-    control: &Arc<StreamControl>,
-) -> Result<Sink, CodecError> {
+    control: &StreamControl,
+) -> Room {
     if consumer_is_behind(sink, control) {
-        control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-        return Ok(Sink::Open);
+        return Room::Full;
     }
-    let permit = match sink.clone().try_reserve_owned() {
-        Ok(permit) => permit,
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-            return Ok(Sink::Open);
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            debug!("capture sink closed");
-            return Ok(Sink::Closed);
-        }
-    };
-    let deliver = delivery(permit, control.clone());
-    let frame = match captured {
-        CapturedFrame::Rgba(frame) => {
-            CapturedFrame::Rgba(scaler.fit(frame, settings.max_long_edge))
-        }
+    match sink.clone().try_reserve_owned() {
+        Ok(permit) => Room::Reserved(permit),
+        Err(mpsc::error::TrySendError::Full(_)) => Room::Full,
+        Err(mpsc::error::TrySendError::Closed(_)) => Room::Closed,
+    }
+}
+
+/// Scales a frame that arrived in memory to the stream's size; native frames are already scaled.
+fn fit(captured: CapturedFrame, scaler: &mut FrameScaler, max_long_edge: u32) -> CapturedFrame {
+    match captured {
+        CapturedFrame::Rgba(frame) => CapturedFrame::Rgba(scaler.fit(frame, max_long_edge)),
         #[cfg(any(target_os = "macos", windows))]
         native @ CapturedFrame::Native(_) => native,
-    };
-    if control.keyframe_requested.swap(false, Ordering::Relaxed) {
-        encoder.request_keyframe();
     }
-    let submitted = encoder.submit(&frame, deliver);
-    control
-        .stats
-        .hardware_encoding
-        .store(encoder.is_hardware(), Ordering::Relaxed);
-    submitted.map(|()| Sink::Open)
 }
 
 /// Sends one encoded frame into the room reserved for it, and counts it.
@@ -416,6 +537,7 @@ mod tests {
             max_fps: 200,
             bitrate_bps: 1_000_000,
             hardware_encoder: false,
+            ..StreamSettings::default()
         }
     }
 
@@ -625,12 +747,12 @@ mod tests {
     }
 
     /// A source on its own clock that shows one frame and then a still screen.
-    struct StillScreen {
+    struct StillSource {
         inner: SyntheticCapturer,
         shown: bool,
     }
 
-    impl ScreenCapturer for StillScreen {
+    impl ScreenCapturer for StillSource {
         fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
             if std::mem::replace(&mut self.shown, true) {
                 std::thread::sleep(timeout);
@@ -644,32 +766,83 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_still_screen_sends_nothing_until_a_keyframe_is_requested() {
-        let (sender, mut receiver) = mpsc::channel(1);
-        let stream = spawn_capture_stream(
-            || {
-                Ok(StillScreen {
-                    inner: SyntheticCapturer::new(64, 64),
-                    shown: false,
-                })
-            },
-            settings(),
-            sender,
-        )
-        .unwrap();
-        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(
-            receiver.try_recv().is_err(),
-            "a still screen is not re-sent"
-        );
-        assert_eq!(stream.stats().frames_encoded.load(Ordering::Relaxed), 1);
+    fn still_screen() -> StillSource {
+        StillSource {
+            inner: SyntheticCapturer::new(64, 64),
+            shown: false,
+        }
+    }
 
-        // A viewer that lost its decoder state still gets a picture.
+    /// Quick enough for a test, with gaps wide enough to tell its phases apart.
+    const REFINEMENT: StillRefinement = StillRefinement {
+        delay: Duration::from_millis(150),
+        interval: Duration::from_millis(20),
+        frames: 3,
+    };
+
+    /// Everything delivered until nothing has arrived for `quiet`.
+    async fn drain(
+        receiver: &mut mpsc::Receiver<Result<EncodedFrame, StreamError>>,
+        quiet: Duration,
+    ) -> Vec<EncodedFrame> {
+        let mut frames = Vec::new();
+        while let Ok(Some(frame)) = tokio::time::timeout(quiet, receiver.recv()).await {
+            frames.push(frame.unwrap());
+        }
+        frames
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_still_screen_is_refined_a_bounded_number_of_times_and_then_sends_nothing() {
+        let (sender, mut receiver) = mpsc::channel(FRAMES_IN_FLIGHT);
+        let settings = StreamSettings {
+            still_refinement: REFINEMENT,
+            ..settings()
+        };
+        let stream = spawn_capture_stream(|| Ok(still_screen()), settings, sender).unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        let stats = stream.stats();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            stats.still_refinements.load(Ordering::Relaxed),
+            0,
+            "refinement starts only once the screen has been still for the delay"
+        );
+        let refinements = drain(&mut receiver, Duration::from_millis(400)).await;
+        assert!(
+            refinements.iter().all(|frame| !frame.keyframe),
+            "refinement frames predict from the picture the viewer has"
+        );
+        assert_eq!(stats.still_refinements.load(Ordering::Relaxed), 3);
+        assert!(refinements.len() <= 3, "{} frames", refinements.len());
+        assert!(
+            drain(&mut receiver, Duration::from_millis(300))
+                .await
+                .is_empty(),
+            "a refined still screen sends nothing more"
+        );
+        assert_eq!(stats.still_refinements.load(Ordering::Relaxed), 3);
+        stream.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_keyframe_request_on_a_still_screen_is_answered_and_refined_again() {
+        let (sender, mut receiver) = mpsc::channel(FRAMES_IN_FLIGHT);
+        let settings = StreamSettings {
+            still_refinement: REFINEMENT,
+            ..settings()
+        };
+        let stream = spawn_capture_stream(|| Ok(still_screen()), settings, sender).unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        drain(&mut receiver, Duration::from_millis(400)).await;
+        assert_eq!(stream.stats().still_refinements.load(Ordering::Relaxed), 3);
+
+        // A viewer that lost its decoder state still gets a picture, and it is sharpened too.
         stream.request_keyframe();
         let resent = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
         assert!(resent.unwrap().unwrap().unwrap().keyframe);
+        drain(&mut receiver, Duration::from_millis(400)).await;
+        assert_eq!(stream.stats().still_refinements.load(Ordering::Relaxed), 6);
         stream.stop();
     }
 
@@ -729,6 +902,7 @@ mod tests {
                 max_fps: FPS,
                 bitrate_bps: 4_000_000,
                 hardware_encoder: true,
+                ..StreamSettings::default()
             },
             sender,
         )

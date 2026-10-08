@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dari_input::{InjectError, InputBackend, RecordedAction};
 use dari_media::{
@@ -281,7 +281,7 @@ async fn start_host_with(
                 max_long_edge: 1920,
                 max_fps: 30,
                 bitrate_bps: 1_000_000,
-                hardware_encoder: true,
+                ..StreamSettings::default()
             },
             policy: HostPolicy {
                 require_approval,
@@ -432,12 +432,18 @@ async fn a_still_screen_is_sent_again_when_the_viewer_asks_for_a_keyframe() {
         .unwrap();
     frames.borrow_and_update();
 
-    // Nothing changes on the host, so nothing new arrives...
-    assert!(
-        tokio::time::timeout(Duration::from_millis(500), frames.changed())
-            .await
-            .is_err()
-    );
+    // Nothing changes on the host, so after the frames that refine the still picture nothing
+    // new arrives...
+    let quiet = Instant::now();
+    while tokio::time::timeout(Duration::from_millis(500), frames.changed())
+        .await
+        .is_ok()
+    {
+        assert!(
+            quiet.elapsed() < Duration::from_secs(5),
+            "a still screen keeps sending frames"
+        );
+    }
     // ...until the viewer asks.
     viewer.request_keyframe();
     tokio::time::timeout(Duration::from_secs(10), frames.changed())

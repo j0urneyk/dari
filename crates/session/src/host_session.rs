@@ -104,6 +104,7 @@ fn stream_settings(
         max_fps,
         bitrate_bps,
         hardware_encoder: base.hardware_encoder,
+        still_refinement: base.still_refinement,
     }
 }
 
@@ -1025,6 +1026,7 @@ mod tests {
             max_fps: 50,
             bitrate_bps: 3_000_000,
             hardware_encoder: false,
+            ..StreamSettings::default()
         };
         assert_eq!(stream_settings(ViewerRequest::default(), 120, base), base);
         // A faster request scales the host's bitrate from the host's own frame rate.
