@@ -1,7 +1,7 @@
 # Answering the Windows secure desktop from a viewer
 
-Status: option B and a per-machine-only installer are approved. The default for secure-screen control is still
-open. Nothing here is built yet.
+Status: approved. Option B, a per-machine-only installer, and secure-screen control on by default. Nothing here is
+built yet.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
@@ -345,7 +345,7 @@ the same token, and then talk to the service and the helper as if it were the ap
 other programs, not code running inside Dari. So once Dari is installed per machine, malware running as an
 administrator in UAC's default consent mode can click **Yes** on its own consent prompts.
 
-This is the main cost of the feature, and the approver should weigh it. Three facts bound it:
+This is the main cost of the feature, and it was accepted with the default below. Three facts bound it:
 
 - Microsoft doesn't treat UAC consent as a security boundary, and the default consent mode already has documented
   auto-elevation bypasses. Dari adds one more, not the first.
@@ -438,7 +438,7 @@ helper. Phase 2 is useful alone too: seeing the prompt tells the user what to as
 
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
-| Same-user malware uses the helper to approve its own consent prompts | A local elevation for malware already running as an administrator | The `SecureDesktopControl` policy and checkbox, event log entries, and a plain statement in security.md. The approver decides whether the default is on |
+| Same-user malware uses the helper to approve its own consent prompts | A local elevation for malware already running as an administrator | The `SecureDesktopControl` policy and checkbox, event log entries, and a plain statement in security.md. The default is on, as decided below |
 | A bug in the helper or service code | A local process gets SYSTEM | No network code, a fixed message set behind `Validate`, the restricted token, the helper alive only during sessions, and the Win32 `unsafe` kept in one module that review can read whole |
 | DXGI Desktop Duplication fails on some adapters (hybrid laptop GPUs, some VMs, remote display drivers) | The viewer sees PR 36's notice instead of the prompt | The helper reports the screen unavailable, and the app falls back to PR 36's behavior. Phase 0 tests the VM's adapter |
 | The restricted token can't do the job | The helper keeps more SYSTEM privileges than planned | Phase 0 measures which privileges are needed, and this document records the result before Phase 2 |
@@ -453,11 +453,13 @@ helper. Phase 2 is useful alone too: seeing the prompt tells the user what to as
   desktop.
 - The installer is per-machine only. A user without administrator rights can't install Dari, and no per-user
   layout needs testing.
+- Secure-screen control is on by default (option 1 below). The installer's checkbox is checked, and its page shows
+  the explanation. A silent install sets `SecureDesktopControl` to 1.
 
-## Open question: the default for secure-screen control
+## Why secure-screen control is on by default
 
 The `SecureDesktopControl` policy decides whether a viewer can answer the secure desktop. Seeing it is always on.
-The question is its value after an install that nobody customized, including a silent install.
+The choice was its value after an install that nobody customized, including a silent install.
 
 | Option | Default | Who gets what | Cost |
 | --- | --- | --- | --- |
@@ -465,8 +467,7 @@ The question is its value after an install that nobody customized, including a s
 | 2. Off | The checkbox is unchecked | Safe by default. A user turns it on in the installer or in settings, with a UAC prompt | A user who skipped the checkbox finds out while away from the host, the one moment they can't turn it on. They see the prompt but can't answer it |
 | 3. Off for UAC consent prompts only | Lock screen, credential prompts, and Ctrl+Alt+Del on. Consent prompts need opt-in | Closes the risky case by default, because only a consent prompt can be answered without a password | The reported case is a consent prompt, so it fails by default. The helper must tell `consent.exe` apart from `LogonUI.exe` on `Winlogon`, which is fragile |
 
-The recommendation is option 1, with the checkbox's explanation shown on its installer page. Three reasons support
-it:
+Option 1 was chosen, with the checkbox's explanation shown on its installer page. Three reasons support it:
 
 - Dari is for one person reaching their own PC, and the person who installs it is the person who will connect.
   Option 2 fails that person at the worst moment. Option 3 fails the exact case this design exists for.
@@ -475,5 +476,5 @@ it:
 - Every way to change the value needs an administrator. An organization can set it to 0 with Group Policy, and a
   user can turn it off in settings.
 
-Option 2 is the better choice if Dari is ever pitched to organizations or shared PCs, where the person who installs
-it is not the person who connects.
+Revisit this choice if Dari is ever offered to organizations or shared PCs. There, the person who installs it is
+not the person who connects, and option 2 fits better.
