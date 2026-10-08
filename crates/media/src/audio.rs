@@ -614,7 +614,8 @@ impl PlaybackBuffer {
         }
         let mut written = 0;
         if state.playing {
-            for (slot, sample) in output.iter_mut().zip(state.samples.drain(..)) {
+            let take = output.len().min(state.samples.len());
+            for (slot, sample) in output.iter_mut().zip(state.samples.drain(..take)) {
                 *slot = sample;
                 written += 1;
             }
