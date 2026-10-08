@@ -32,19 +32,13 @@ jobs:
         run: cargo install --locked cargo-packager --version "$CARGO_PACKAGER_VERSION"
       - name: Package app
         working-directory: crates/app
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Signing and notarization are optional: without the secrets the app is unsigned.
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name}" ]; then unset "$name"; fi
-          done
           cargo packager --release --formats app
+          # The linker signs only the binary, which leaves the bundle unsealed. Gatekeeper calls an unsealed
+          # download "damaged" and offers no way to open it; a sealed ad-hoc bundle can be allowed in
+          # Privacy & Security.
+          codesign --force --sign - ../../target/release/Dari.app
+          codesign --verify --strict --verbose=2 ../../target/release/Dari.app
       - name: Build dmg
         working-directory: target/release
         run: |

@@ -45,9 +45,9 @@ Download a build from [Releases](https://github.com/j0urneyk/dari/releases):
 | Windows 11 (x64) | `dari_<version>_x64-setup.exe` |
 | Relay server (Linux x64) | `dari-relay_<version>_linux_x86_64.tar.gz` |
 
-Release builds aren't code-signed unless signing secrets are configured. The first time you run the app on
-macOS, right-click it in Finder and choose **Open**. On Windows, choose **More info → Run anyway** when
-SmartScreen warns you.
+Release builds aren't signed with a developer certificate. The first time you open the app on macOS, it says Apple
+could not verify it; choose **Done**, then open System Settings → Privacy & Security and choose **Open Anyway**
+next to the message about Dari. On Windows, choose **More info → Run anyway** when SmartScreen warns you.
 
 ### macOS permissions
 
