@@ -28,6 +28,8 @@ use image::{Frame, RgbaImage};
 use tokio::sync::mpsc;
 
 use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
+#[cfg(target_os = "macos")]
+use crate::input_source::{InputSourceTracker, selected_input_source};
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
 use crate::style;
@@ -135,6 +137,8 @@ pub struct ViewerView {
     transfers: TransferList,
     focus: FocusHandle,
     modifiers: Modifiers,
+    #[cfg(target_os = "macos")]
+    input_source: InputSourceTracker,
     held_keys: Vec<KeyCode>,
     held_buttons: Vec<RemoteButton>,
     scroll: ScrollAccumulator,
@@ -207,7 +211,25 @@ impl ViewerView {
             if !window.is_window_active() {
                 this.release_all();
             }
+            #[cfg(target_os = "macos")]
+            this.input_source_selected(
+                selected_input_source().as_deref(),
+                window.is_window_active(),
+            );
         });
+        #[cfg(target_os = "macos")]
+        let input_source = {
+            let this = cx.weak_entity();
+            let handle = window.window_handle();
+            cx.on_keyboard_layout_change(move |cx| {
+                let _updated = handle.update(cx, |_, window, cx| {
+                    let active = window.is_window_active();
+                    this.update(cx, |this, _| {
+                        this.input_source_selected(selected_input_source().as_deref(), active);
+                    })
+                });
+            })
+        };
 
         Self {
             peer_name: session.peer().name.clone().into(),
@@ -228,13 +250,20 @@ impl ViewerView {
             transfers: TransferList::default(),
             focus,
             modifiers: Modifiers::default(),
+            #[cfg(target_os = "macos")]
+            input_source: InputSourceTracker::default(),
             held_keys: Vec::new(),
             held_buttons: Vec::new(),
             scroll: ScrollAccumulator::default(),
             fps: 0.,
             rtt: Duration::ZERO,
             _tasks: vec![frame_task, event_task, stats_task],
-            _subscriptions: vec![activation, style::follow_appearance(window, cx)],
+            _subscriptions: vec![
+                activation,
+                #[cfg(target_os = "macos")]
+                input_source,
+                style::follow_appearance(window, cx),
+            ],
         }
     }
 
@@ -468,6 +497,25 @@ impl ViewerView {
             self.send(event);
         }
         self.modifiers = modifiers;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn input_source_selected(&mut self, source: Option<&str>, active: bool) {
+        if !active {
+            self.input_source.deactivate();
+            return;
+        }
+        let Some(source) = source else { return };
+        let control = self.session.is_some()
+            && self
+                .status
+                .is_some_and(|status| status.input == Availability::Available);
+        if let Some(tap) = self.input_source.select(source, control) {
+            for event in tap {
+                self.send(event);
+            }
+        }
     }
 
     fn on_key(&mut self, keystroke: &Keystroke, pressed: bool) {

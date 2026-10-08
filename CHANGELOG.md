@@ -9,6 +9,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - The remote computer's sound plays smoothly instead of in short fragments with ticks between them.
+- From a Mac, switching your input source (Caps Lock, Ctrl+Space, or the Globe key) while the viewer window is active
+  now switches a Windows host between Korean and English.
 
 ## [0.0.3] - 2026-10-08
 

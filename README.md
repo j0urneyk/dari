@@ -20,7 +20,8 @@ What you can do with it:
 - Send files and folders both ways: drop them on the remote screen or pick them with **Send file…**. Files from the host are
   saved only after you accept them.
 - Shortcuts that use ⌘ or Ctrl are translated between macOS and Windows, so ⌘C on a Mac copies on the Windows
-  host. Between two Macs or two Windows PCs they arrive unchanged.
+  host. Between two Macs or two Windows PCs they arrive unchanged. Switching the input source on a Mac (Caps Lock,
+  Ctrl+Space, the Globe key) presses the Hangul/English key on a Windows host.
 
 The UI is in Korean or English: it follows the system language unless you pick one in the settings.
 

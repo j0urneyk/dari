@@ -375,6 +375,31 @@ mod macos {
         });
         save(&mut cx, window, "viewer");
 
+        cx.update(|cx| {
+            view.update(cx, |view, _| {
+                view.input_source_selected(Some("com.apple.keylayout.ABC"), true);
+                view.input_source_selected(Some("com.apple.inputmethod.Korean.2SetKorean"), true);
+            });
+        });
+        let hangul_tap = [
+            RecordedAction::Key(KeyCode::Named(NamedKey::HangulMode), true),
+            RecordedAction::Key(KeyCode::Named(NamedKey::HangulMode), false),
+        ];
+        pump(&mut cx, Duration::from_secs(5), |_| {
+            let recorded = actions.lock().unwrap();
+            recorded.windows(2).any(|pair| pair == hangul_tap)
+        });
+        assert_eq!(
+            actions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|action| hangul_tap.contains(action))
+                .count(),
+            2,
+            "one switch is one press and one release"
+        );
+
         // Every frame becomes a new GPU texture (~1.4 MB here). If replaced frames were not
         // released, a few seconds of streaming would grow memory by hundreds of megabytes.
         let frames_before = view_frames(&mut cx, &view);

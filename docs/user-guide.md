@@ -63,7 +63,9 @@ shortcuts arrive as you press them.
 The remote screen is drawn to fit the window while keeping its aspect ratio, with letterboxing for the rest. Mouse
 movement, clicks, the wheel, and key presses over the screen go to the remote device. Tab, Shift-Tab, and
 ⌘C/Ctrl+C go to the remote device too. Korean text is composed by the remote device's input method, so turn on the
-Korean input method on the remote side (the Hangul/English key works only on Windows hosts).
+Korean input method on the remote side (the Hangul/English key works only on Windows hosts). From a Mac, switch
+your own input source the way you always do (Caps Lock, Ctrl+Space, or the Globe key) while the viewer window is
+active: each switch presses the Hangul/English key on a Windows host, so the host follows you between 한 and 영.
 
 The toolbar, which is also the window's title bar, shows frames per second and round-trip latency (`60 fps · 12 ms`),
 and offers **Display** (choose among monitors), quality (**Speed / Balanced / Quality**), the frame rate, and
