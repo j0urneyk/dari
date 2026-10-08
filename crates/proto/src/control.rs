@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::InputEvent;
 use crate::transfer::{FileOffer, TransferEnd, TransferId, validate_offer};
 use crate::validate::{MAX_DEVICE_NAME_CHARS, Validate, ValidationError, validate_display_text};
+use crate::version::ProtocolVersion;
 
 /// Largest clipboard text either side sends, in bytes.
 pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -22,6 +23,30 @@ pub enum Availability {
     Unavailable,
     /// The host user allowed this session to view only.
     NotAllowed,
+    /// The host's OS switched to a desktop this app cannot capture or control: Windows' secure
+    /// desktop, shown for a User Account Control prompt, the lock screen, or Ctrl+Alt+Del.
+    /// Clears on its own once the host user dismisses it. Since protocol 2.1.
+    SecureDesktop,
+}
+
+/// The first protocol version that defines [`Availability::SecureDesktop`].
+const SECURE_DESKTOP_SINCE: ProtocolVersion = ProtocolVersion { major: 2, minor: 1 };
+
+impl Availability {
+    /// The nearest state a peer speaking `version` can decode.
+    fn for_version(self, version: ProtocolVersion) -> Self {
+        match self {
+            Availability::SecureDesktop if !version.supports(SECURE_DESKTOP_SINCE) => {
+                Availability::Unavailable
+            }
+            Availability::Available
+            | Availability::PermissionDenied
+            | Availability::AwaitingPermission
+            | Availability::Unavailable
+            | Availability::NotAllowed
+            | Availability::SecureDesktop => self,
+        }
+    }
 }
 
 /// The host's report of what the viewer can expect from this session.
@@ -33,6 +58,20 @@ pub struct HostStatus {
     pub files: Availability,
     /// Whether the host can share its system audio.
     pub audio: Availability,
+}
+
+impl HostStatus {
+    /// This status as a peer speaking `version` can decode it: states it does not define are
+    /// replaced by the nearest one it does.
+    #[must_use]
+    pub fn for_version(self, version: ProtocolVersion) -> Self {
+        Self {
+            screen: self.screen.for_version(version),
+            input: self.input.for_version(version),
+            files: self.files.for_version(version),
+            audio: self.audio.for_version(version),
+        }
+    }
 }
 
 /// One of the host's displays, as offered to the viewer.
@@ -160,6 +199,27 @@ impl Validate for ControlMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_peers_see_a_secure_desktop_as_unavailable() {
+        let status = HostStatus {
+            screen: Availability::SecureDesktop,
+            input: Availability::Available,
+            files: Availability::NotAllowed,
+            audio: Availability::AwaitingPermission,
+        };
+        let v2_0 = ProtocolVersion { major: 2, minor: 0 };
+        assert_eq!(
+            status.for_version(v2_0),
+            HostStatus {
+                screen: Availability::Unavailable,
+                ..status
+            }
+        );
+        assert_eq!(status.for_version(SECURE_DESKTOP_SINCE), status);
+        let v2_7 = ProtocolVersion { major: 2, minor: 7 };
+        assert_eq!(status.for_version(v2_7), status);
+    }
 
     fn display(id: u32, name: &str) -> DisplayDescription {
         DisplayDescription {

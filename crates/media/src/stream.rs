@@ -535,6 +535,60 @@ mod tests {
         assert!(receiver.recv().await.is_none());
     }
 
+    /// A source on its own clock whose screen goes behind a secure desktop for `hidden` calls
+    /// after the first frame, like Windows during a UAC prompt.
+    struct HiddenScreen {
+        inner: SyntheticCapturer,
+        shown: bool,
+        hidden: u32,
+    }
+
+    impl ScreenCapturer for HiddenScreen {
+        fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            if std::mem::replace(&mut self.shown, true) && self.hidden > 0 {
+                self.hidden -= 1;
+                std::thread::sleep(timeout);
+                return Err(CaptureError::SecureDesktop);
+            }
+            self.inner.capture(timeout)
+        }
+
+        fn paces_itself(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_secure_desktop_is_reported_once_and_the_stream_goes_on() {
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            || {
+                Ok(HiddenScreen {
+                    inner: SyntheticCapturer::new(64, 64),
+                    shown: false,
+                    hidden: 8,
+                })
+            },
+            settings(),
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        let mut notices = 0;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("frames must resume after the secure desktop")
+            {
+                Some(Err(StreamError::Capture(CaptureError::SecureDesktop))) => notices += 1,
+                Some(Ok(_)) => break,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(notices, 1, "eight hidden captures make one notice");
+        stream.stop();
+    }
+
     /// A source on its own clock that shows one frame and then a still screen.
     struct StillScreen {
         inner: SyntheticCapturer,

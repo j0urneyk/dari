@@ -2,7 +2,7 @@
 
 Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
 `dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
-**2.0** (`PROTOCOL_VERSION`).
+**2.1** (`PROTOCOL_VERSION`).
 
 ## Version compatibility
 
@@ -12,7 +12,8 @@ advertise support for it. The host refuses a different `major` with `Rejected(In
 
 The ALPN stays `dari/1` across majors on purpose. The hello layout hasn't changed since 1.0, so a peer on another
 major still completes TLS, decodes the hello, and gets that readable rejection instead of a TLS failure. Version 2.0
-added the stream kind tag described below; 0.0.1 apps speak 1.0 and can't connect to newer ones.
+added the stream kind tag described below; 0.0.1 apps speak 1.0 and can't connect to newer ones. Version 2.1 added
+`Availability::SecureDesktop`; a host sends a 2.0 viewer `Unavailable` in its place.
 
 ## Framing
 
@@ -113,7 +114,10 @@ that hasn't been sent yet.
 | `FrameRate(fps)` | Host → viewer | The frame rate the host now streams at (the request capped by its display's refresh rate), 1..=240. Sent once streaming starts and whenever it changes |
 
 `HostStatus` reports `screen`, `input`, `files`, and `audio`. `Availability` is one of `Available`, `PermissionDenied`
-(macOS permission missing), `Unavailable`, or `NotAllowed` (input and files in a view-only session).
+(macOS permission missing), `AwaitingPermission` (a macOS privacy prompt is open on the host), `Unavailable`,
+`NotAllowed` (input and files in a view-only session), or `SecureDesktop` (since 2.1: the Windows host is showing a
+UAC prompt, the lock screen, or Ctrl+Alt+Del, which it can neither capture nor control; `Available` follows with the
+next frame).
 
 ## File transfer
 

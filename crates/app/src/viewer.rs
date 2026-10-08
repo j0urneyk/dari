@@ -310,6 +310,11 @@ impl ViewerView {
     }
 
     #[doc(hidden)]
+    pub fn host_status(&self) -> Option<HostStatus> {
+        self.status
+    }
+
+    #[doc(hidden)]
     pub fn can_send_files(&self) -> bool {
         self.files_available()
     }
@@ -907,6 +912,9 @@ impl ViewerView {
             Availability::PermissionDenied => {
                 return Some(Notice::Info(text().remote_screen_permission));
             }
+            Availability::SecureDesktop => {
+                return Some(Notice::Info(text().remote_secure_desktop));
+            }
             Availability::Unavailable
             | Availability::NotAllowed
             | Availability::AwaitingPermission => {
@@ -919,9 +927,8 @@ impl ViewerView {
             Availability::NotAllowed => Some(Notice::Info(text().view_only_session)),
             Availability::PermissionDenied
             | Availability::Unavailable
-            | Availability::AwaitingPermission => {
-                Some(Notice::Info(text().remote_input_unavailable))
-            }
+            | Availability::AwaitingPermission
+            | Availability::SecureDesktop => Some(Notice::Info(text().remote_input_unavailable)),
         }
     }
 }

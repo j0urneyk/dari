@@ -28,6 +28,7 @@ mod macos {
 
     use std::net::{Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -36,7 +37,9 @@ mod macos {
         CaptureError, DisplayInfo, ScreenCapturer, StreamSettings, SyntheticCapturer,
     };
     use dari_net::{AccessPassword, DeviceIdentity};
-    use dari_proto::{KeyCode, MAX_FUNCTION_KEY, MouseButton as RemoteButton, NamedKey};
+    use dari_proto::{
+        Availability, KeyCode, MAX_FUNCTION_KEY, MouseButton as RemoteButton, NamedKey,
+    };
     use dari_session::{
         HostConfig, HostEvent, HostPlatform, HostPolicy, TransferDirection, TransferState,
         ViewerConfig, ViewerTarget, connect_viewer, start_host,
@@ -63,6 +66,27 @@ mod macos {
 
     struct SyntheticPlatform {
         actions: Arc<Mutex<Vec<RecordedAction>>>,
+        /// While set, the screen is behind Windows' secure desktop and cannot be captured.
+        secure_desktop: Arc<AtomicBool>,
+    }
+
+    /// A synthetic screen that Windows' secure desktop hides while `hidden` is set.
+    struct HideableCapturer {
+        screen: SyntheticCapturer,
+        hidden: Arc<AtomicBool>,
+    }
+
+    impl ScreenCapturer for HideableCapturer {
+        fn capture(
+            &mut self,
+            timeout: Duration,
+        ) -> Result<Option<dari_media::CapturedFrame>, CaptureError> {
+            if self.hidden.load(Ordering::SeqCst) {
+                std::thread::sleep(timeout);
+                return Err(CaptureError::SecureDesktop);
+            }
+            self.screen.capture(timeout)
+        }
     }
 
     struct Recorder(Arc<Mutex<Vec<RecordedAction>>>);
@@ -104,7 +128,10 @@ mod macos {
             _display: u32,
             _settings: StreamSettings,
         ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
-            Ok(Box::new(SyntheticCapturer::new(800, 450)))
+            Ok(Box::new(HideableCapturer {
+                screen: SyntheticCapturer::new(800, 450),
+                hidden: self.secure_desktop.clone(),
+            }))
         }
         fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
             Ok(Box::new(Recorder(self.actions.clone())))
@@ -222,8 +249,10 @@ mod macos {
 
         // A host with a synthetic screen and recorded input, served on the shared runtime.
         let actions = Arc::new(Mutex::new(Vec::new()));
+        let secure_desktop = Arc::new(AtomicBool::new(false));
         let platform = Arc::new(SyntheticPlatform {
             actions: actions.clone(),
+            secure_desktop: secure_desktop.clone(),
         });
         let identity = DeviceIdentity::generate().unwrap();
         let config = HostConfig {
@@ -498,6 +527,21 @@ mod macos {
             "replaced frames must be released; memory grew {growth:.1} MB over {shown} frames"
         );
 
+        // A UAC prompt on a Windows host hides its screen; the viewer says who has to act, and
+        // the notice goes away with the next frame.
+        let screen = |cx: &mut HeadlessAppContext| {
+            cx.update(|cx| view.read(cx).host_status().map(|status| status.screen))
+        };
+        secure_desktop.store(true, Ordering::SeqCst);
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            screen(cx) == Some(Availability::SecureDesktop)
+        });
+        save(&mut cx, window, "viewer-secure-desktop");
+        secure_desktop.store(false, Ordering::SeqCst);
+        pump(&mut cx, Duration::from_secs(10), |cx| {
+            screen(cx) == Some(Availability::Available)
+        });
+
         // Ending the session on the host side tells the viewer why and offers to close.
         host.end_session();
         pump(&mut cx, Duration::from_secs(10), |cx| {
@@ -748,6 +792,7 @@ mod macos {
 
         let platform = Arc::new(SyntheticPlatform {
             actions: Arc::new(Mutex::new(Vec::new())),
+            secure_desktop: Arc::new(AtomicBool::new(false)),
         });
         let config = HostConfig {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

@@ -18,7 +18,7 @@ use dari_net::{
 };
 use dari_proto::{
     AudioPacket, Availability, ControlMessage, DisplayDescription, HostStatus, InputEvent,
-    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, QualityPreset, TransferId, VideoPacket,
+    MAX_DEVICE_NAME_CHARS, MAX_DISPLAYS, ProtocolVersion, QualityPreset, TransferId, VideoPacket,
     sanitize_display_text,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -145,6 +145,7 @@ pub(crate) async fn serve_viewer(
             files: Availability::Unavailable,
             audio: Availability::Unavailable,
         },
+        peer_version: peer.version,
         displays: Vec::new(),
         active_display: None,
         request: ViewerRequest::default(),
@@ -189,6 +190,8 @@ struct HostSession {
     options: SessionOptions,
     events: mpsc::UnboundedSender<HostEvent>,
     status: HostStatus,
+    /// What the viewer can decode; newer states are downgraded for it.
+    peer_version: ProtocolVersion,
     displays: Vec<DisplayInfo>,
     active_display: Option<u32>,
     request: ViewerRequest,
@@ -538,7 +541,10 @@ impl HostSession {
 
     async fn publish_status(&mut self) -> Result<(), SessionEndReason> {
         let _sent = self.events.send(HostEvent::SessionStatus(self.status));
-        self.send(&ControlMessage::HostStatus(self.status)).await
+        self.send(&ControlMessage::HostStatus(
+            self.status.for_version(self.peer_version),
+        ))
+        .await
     }
 
     /// Tells the viewer the frame rate the stream now runs at.
@@ -864,7 +870,11 @@ fn geometry(display: &DisplayInfo) -> DisplayGeometry {
 fn availability_of_capture(error: &StreamError) -> Availability {
     match error {
         StreamError::Capture(CaptureError::PermissionDenied) => Availability::PermissionDenied,
-        StreamError::Capture(_) | StreamError::Codec(_) => Availability::Unavailable,
+        StreamError::Capture(CaptureError::SecureDesktop) => Availability::SecureDesktop,
+        StreamError::Capture(
+            CaptureError::DisplayNotFound(_) | CaptureError::NoDisplay | CaptureError::Backend(_),
+        )
+        | StreamError::Codec(_) => Availability::Unavailable,
     }
 }
 
