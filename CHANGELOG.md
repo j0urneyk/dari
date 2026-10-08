@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The remote computer's sound plays smoothly instead of in short fragments with ticks between them.
+
 ## [0.0.3] - 2026-10-08
 
 ### Fixed

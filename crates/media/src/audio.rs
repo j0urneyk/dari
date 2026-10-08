@@ -614,7 +614,8 @@ impl PlaybackBuffer {
         }
         let mut written = 0;
         if state.playing {
-            for (slot, sample) in output.iter_mut().zip(state.samples.drain(..)) {
+            let take = output.len().min(state.samples.len());
+            for (slot, sample) in output.iter_mut().zip(state.samples.drain(..take)) {
                 *slot = sample;
                 written += 1;
             }
@@ -937,6 +938,11 @@ mod tests {
         buffer.push(&[0.5; 40]);
         buffer.fill(&mut output);
         assert_eq!(output, [0.5; 10]);
+        assert_eq!(
+            buffer.buffered(),
+            60,
+            "what the device did not take stays buffered"
+        );
         buffer.push(&[0.5; 500]);
         assert_eq!(buffer.buffered(), 200, "never more than 200 ms behind");
         let mut drain = [0.; 300];

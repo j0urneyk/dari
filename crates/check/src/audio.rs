@@ -36,6 +36,9 @@ const TONE_AMPLITUDE: f32 = 0.2;
 const MIN_LEVEL: f64 = 0.01;
 /// ...and this many times stronger at its frequency than at nearby ones.
 const MIN_TONE_RATIO: f64 = 20.;
+const MAX_DROPOUT_SHARE: f64 = 0.02;
+/// Samples in 10 ms of recording.
+const STRETCH: usize = RECORD_RATE as usize / 100;
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct AudioHostArgs {
@@ -303,34 +306,59 @@ pub(crate) async fn view(args: AudioViewArgs) -> anyhow::Result<ExitCode> {
     );
     if audio == Some(Availability::Available) {
         let recorded = std::mem::take(&mut *samples.lock().unwrap_or_else(PoisonError::into_inner));
-        // The last half: the jitter buffer has settled and the codec has started.
-        let tail = &recorded[recorded.len() / 2..];
-        let level = rms(tail);
-        let ratio = tone_ratio(tail, args.tone);
-        println!(
-            "received {:.1} s of audio; rms {level:.4}, tone ratio {ratio:.1}",
-            seconds(recorded.len())
-        );
-        verdict.check(
-            level >= MIN_LEVEL,
-            format!("the host's sound arrives (rms {level:.4})"),
-        );
-        verdict.check(
-            ratio >= MIN_TONE_RATIO,
-            format!(
-                "it is the host's {} Hz tone (×{ratio:.1} over nearby frequencies)",
-                args.tone
-            ),
-        );
+        check_recording(&mut verdict, &recorded, args.tone);
     }
     viewer.disconnect();
     tokio::time::sleep(Duration::from_secs(1)).await;
     Ok(verdict.finish())
 }
 
+fn check_recording(verdict: &mut Verdict, recorded: &[f32], tone: f32) {
+    // The last half: the jitter buffer has settled and the codec has started.
+    let tail = &recorded[recorded.len() / 2..];
+    let level = rms(tail);
+    let ratio = tone_ratio(tail, tone);
+    let dropouts = dropout_share(tail);
+    println!(
+        "received {:.1} s of audio; rms {level:.4}, tone ratio {ratio:.1}, dropouts {:.1}%",
+        seconds(recorded.len()),
+        dropouts * 100.
+    );
+    verdict.check(
+        level >= MIN_LEVEL,
+        format!("the host's sound arrives (rms {level:.4})"),
+    );
+    verdict.check(
+        ratio >= MIN_TONE_RATIO,
+        format!("it is the host's {tone} Hz tone (×{ratio:.1} over nearby frequencies)"),
+    );
+    verdict.check(
+        dropouts <= MAX_DROPOUT_SHARE,
+        format!(
+            "it plays without gaps ({:.1}% of 10 ms stretches silent)",
+            dropouts * 100.
+        ),
+    );
+}
+
 #[expect(clippy::cast_precision_loss, reason = "sample counts")]
 fn seconds(samples: usize) -> f64 {
     samples as f64 / f64::from(RECORD_RATE)
+}
+
+fn dropout_share(samples: &[f32]) -> f64 {
+    let (stretches, _) = samples.as_chunks::<STRETCH>();
+    let total = stretches.len().max(1);
+    let silent = stretches
+        .iter()
+        .filter(|stretch| rms(stretch.as_slice()) < MIN_LEVEL)
+        .count();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts of a few seconds of audio"
+    )]
+    let share = silent as f64 / total as f64;
+    share
 }
 
 fn rms(samples: &[f32]) -> f64 {
@@ -391,5 +419,18 @@ mod tests {
         // Another tone, or silence, is not it.
         assert!(tone_ratio(&sine(440., 0.2), 997.) < 1.);
         assert!(rms(&vec![0.; 4800]) < MIN_LEVEL);
+    }
+
+    #[test]
+    fn gaps_in_the_tone_are_counted() {
+        let mut tone = sine(997., 0.2);
+        assert!(dropout_share(&tone) < f64::EPSILON);
+        let played_every = 7;
+        for (index, stretch) in tone.chunks_mut(STRETCH).enumerate() {
+            if index % played_every != 0 {
+                stretch.fill(0.);
+            }
+        }
+        assert!(dropout_share(&tone) > MAX_DROPOUT_SHARE);
     }
 }
