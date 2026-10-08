@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows
 - The remote computer's sound plays smoothly instead of in short fragments with ticks between them.
 - From a Mac, switching your input source (Caps Lock, Ctrl+Space, or the Globe key) while the viewer window is active
   now switches a Windows host between Korean and English.
+- Switching the Mac's input source with Ctrl+Space no longer opens the Start menu on a Windows host.
 
 ## [0.0.3] - 2026-10-08
 
