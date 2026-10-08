@@ -92,9 +92,10 @@ real path end to end, QUIC and H.264 included.
 
 A capture failure (missing permission, a display mode change, and so on) doesn't end the session. Transient failures
 are retried for up to 30 seconds, after which `HostStatus` reports `PermissionDenied` or `Unavailable`. Windows'
-secure desktop (a UAC prompt, the lock screen, Ctrl+Alt+Del) is not a failure: Windows.Graphics.Capture just stops
-delivering frames, so the Windows capturer checks the input desktop once frames have been missing for 300 ms and
-reports `SecureDesktop` until the next frame arrives.
+secure desktop (a UAC prompt, the lock screen, Ctrl+Alt+Del) is not a failure either. Windows.Graphics.Capture can't
+see it: behind the lock screen it delivers nothing, and behind a UAC prompt it keeps delivering the dimmed desktop. The
+Windows capturer checks the input desktop every 300 ms, drops frames and reports `SecureDesktop` while the input
+desktop is not the user's, and reports `Available` again with the first frame after it.
 
 ### Capture and backpressure
 

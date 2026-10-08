@@ -5,9 +5,10 @@
 //! times a second, and shaders scale it to the stream size and convert it to NV12 on the GPU
 //! (see `convert`), ready for the hardware encoder.
 //!
-//! While Windows shows its secure desktop (a UAC prompt, the lock screen, Ctrl+Alt+Del) the
-//! session simply delivers nothing, so a screen that has been still for a while is checked
-//! against the input desktop to tell the two apart.
+//! Windows.Graphics.Capture cannot see the secure desktop (a UAC prompt, the lock screen,
+//! Ctrl+Alt+Del). Behind the lock screen it delivers nothing, and behind a UAC prompt it keeps
+//! delivering the dimmed desktop, so the capturer checks the input desktop every 300 ms and
+//! drops frames while it is not the user's.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -62,6 +63,7 @@ pub(crate) struct GraphicsCaptureCapturer {
     /// minimum update interval, so the frame rate limit is also kept here.
     last_delivered: Option<Instant>,
     next_probe: Instant,
+    on_secure_desktop: bool,
 }
 
 impl std::fmt::Debug for GraphicsCaptureCapturer {
@@ -99,7 +101,8 @@ impl GraphicsCaptureCapturer {
             running: Some(running),
             converter: None,
             last_delivered: None,
-            next_probe: Instant::now() + SECURE_DESKTOP_PROBE_INTERVAL,
+            next_probe: Instant::now(),
+            on_secure_desktop: false,
         })
     }
 
@@ -184,26 +187,27 @@ impl ScreenCapturer for GraphicsCaptureCapturer {
                 &self.shared,
             )?);
         }
-        let frame = match self.next_frame(timeout) {
-            Ok(Some(frame)) => frame,
-            Ok(None) => {
-                let now = Instant::now();
-                if now >= self.next_probe {
-                    self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
-                    if input_desktop_is_secure() {
-                        return Err(CaptureError::SecureDesktop);
-                    }
-                }
-                return Ok(None);
+        let next = self.next_frame(timeout);
+        let now = Instant::now();
+        if now >= self.next_probe {
+            self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
+            self.on_secure_desktop = input_desktop_is_secure();
+        }
+        let frame = match next {
+            Ok(Some(frame)) if self.on_secure_desktop => {
+                // Windows keeps composing the dimmed desktop behind a UAC prompt.
+                let _closed = frame.Close();
+                return Err(CaptureError::SecureDesktop);
             }
+            Ok(Some(frame)) => frame,
+            Ok(None) if self.on_secure_desktop => return Err(CaptureError::SecureDesktop),
+            Ok(None) => return Ok(None),
             Err(error) => {
                 self.stop();
                 return Err(error);
             }
         };
-        let now = Instant::now();
         self.last_delivered = Some(now);
-        self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
         let converted = self.convert(&frame);
         // Hands the buffer back to the pool now rather than whenever the last reference goes.
         let _closed = frame.Close();
