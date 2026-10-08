@@ -11,6 +11,7 @@ in the repository [README](../README.md); this directory goes deeper.
 | [Wire protocol](protocol.md) | Framing; handshake, control, video, input, and relay messages; constants |
 | [Security model](security.md) | Threat model, authentication and encryption, abuse limits, known limitations |
 | [Development](development.md) | Toolchain, quality gates, test suites, CI, release process |
+| [Design: the Windows secure desktop](design/secure-desktop.md) | Approved, not built yet: answering UAC prompts, the lock screen, and Ctrl+Alt+Del from a viewer |
 
 ## Goals and scope
 
