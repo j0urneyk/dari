@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
     AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame,
-    FRAMES_IN_FLIGHT, PermissionState, StreamError, StreamSettings, spawn_audio_stream,
-    spawn_capture_stream,
+    FRAMES_IN_FLIGHT, MAX_ENCODED_LONG_EDGE, PermissionState, StreamError, StreamSettings,
+    spawn_audio_stream, spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
@@ -87,7 +87,8 @@ fn stream_settings(
         None => (base.max_long_edge, base.bitrate_bps, base.max_fps),
         Some(QualityPreset::Speed) => (1280, 1_500_000, PRESET_FRAME_RATE),
         Some(QualityPreset::Balanced) => (1920, 4_000_000, PRESET_FRAME_RATE),
-        Some(QualityPreset::Quality) => (2560, 10_000_000, PRESET_FRAME_RATE),
+        // Native up to the encoder's limit: downscaling a Retina screen blurs 1-px text strokes.
+        Some(QualityPreset::Quality) => (MAX_ENCODED_LONG_EDGE, 10_000_000, PRESET_FRAME_RATE),
     };
     let requested = request.frame_rate.map_or(base.max_fps, u32::from);
     let max_fps = match display_refresh {
@@ -1017,6 +1018,11 @@ mod tests {
         assert!(speed.max_long_edge < quality.max_long_edge);
         assert!(speed.bitrate_bps < quality.bitrate_bps);
         assert_eq!(speed.max_fps, base.max_fps);
+        assert_eq!(
+            quality.max_long_edge, MAX_ENCODED_LONG_EDGE,
+            "Quality streams at native resolution up to the encoder's limit"
+        );
+        assert_eq!(quality.bitrate_bps, 10_000_000);
     }
 
     #[test]

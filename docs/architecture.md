@@ -217,7 +217,12 @@ the only places in the library that need `unsafe`.
 | --- | --- | --- |
 | Speed | 1280px | 1.5 Mbps |
 | Balanced (default) | 1920px | 4 Mbps |
-| Quality | 2560px | 10 Mbps |
+| Quality | 3840px (native, up to the encoder's 3840×2160) | 10 Mbps |
+
+Quality sends the screen at its own resolution, within the 3840×2160 the encoder and decoder allow. It used to cap
+the long edge at 2560px, but on a Retina screen that scaling blurs text before the codec runs: with the
+`quality_probe` example, a 3840px screen scaled to 2560px and back, with no codec at all, came back at only 14.9 dB
+PSNR-Y for 1-px text strokes and 32.2 dB for a real Retina screenshot.
 
 The frame rate is a separate choice. The viewer asks for one with `SetFrameRate` (its "Auto" is the fastest refresh
 rate among its own displays, up to 144), and the host streams at that rate, capped by the refresh rate of the
@@ -259,7 +264,11 @@ same build before and after) and the ignored `decoding_keeps_up_with_144_fps` te
 | 2560×1662, synthetic (test) | 9.0 ms per frame | 2.2 ms per frame |
 
 The Quality preset used to cap the viewer at about 105–115 fps whatever the host sent; it now decodes 144 fps with
-time to spare. The two conversions differ by at most one level in 98% of channels and are equally close to the exact
+time to spare. The same test also decodes a synthetic 3840×2160 stream, the largest the Quality preset sends, in
+5.0 ms per frame (about 200 fps; 4.9–5.1 ms over three runs, against 2.4–2.6 ms for 2560×1662 in the same runs).
+That was measured on the same M5 while a virtual machine kept four of its ten cores busy, and 2560×1662 came out
+about 0.3 ms slower than in the table. The cost grows with the pixel count and stays under a 144 fps frame interval
+(6.9 ms). The two conversions differ by at most one level in 98% of channels and are equally close to the exact
 BT.601 math (about 0.5 levels on average). They part only below black (Y under 16), which `yuv` clamps to black.
 
 ### Input coordinates and DPI

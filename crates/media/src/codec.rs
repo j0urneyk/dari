@@ -632,18 +632,15 @@ mod tests {
         }
     }
 
-    /// Measures decoding the Quality preset's size to BGRA, the viewer's per-frame cost:
-    /// `cargo test --release -p dari-media -- --ignored --nocapture decoding_keeps_up`.
-    #[test]
-    #[ignore = "a release-mode throughput measurement"]
-    fn decoding_keeps_up_with_144_fps() {
+    /// The viewer's per-frame cost of decoding a synthetic `width`×`height` stream to BGRA.
+    fn decode_time(width: u32, height: u32) -> std::time::Duration {
         let mut encoder = VideoEncoder::new(EncoderSettings {
             max_fps: 144.0,
             hardware: false,
             ..EncoderSettings::default()
         })
         .unwrap();
-        let mut capturer = SyntheticCapturer::new(2560, 1662);
+        let mut capturer = SyntheticCapturer::new(width, height);
         let packets: Vec<_> = (0..32)
             .filter_map(|_| encoder.encode(&frame(&mut capturer)).unwrap())
             .collect();
@@ -653,10 +650,29 @@ mod tests {
             decoder.decode(&packet.data).unwrap().unwrap();
         }
         let per_frame = started.elapsed() / u32::try_from(packets.len()).unwrap();
-        println!("2560x1662 decoded to BGRA in {per_frame:?} per frame");
+        println!(
+            "{width}x{height} decoded to BGRA in {per_frame:?} per frame ({} frames)",
+            packets.len()
+        );
+        per_frame
+    }
+
+    /// Measures the viewer's per-frame cost of decoding a Quality stream to BGRA, from a
+    /// 2560-px Retina screen and from a 4K one:
+    /// `cargo test --release -p dari-media -- --ignored --nocapture decoding_keeps_up`.
+    #[test]
+    #[ignore = "a release-mode throughput measurement"]
+    fn decoding_keeps_up_with_144_fps() {
+        let at_144_fps = std::time::Duration::from_secs(1) / 144;
+        let retina = decode_time(2560, 1662);
         assert!(
-            per_frame < std::time::Duration::from_secs(1) / 144,
-            "{per_frame:?} per frame is too slow for 144 fps"
+            retina < at_144_fps,
+            "{retina:?} per frame is too slow for 144 fps at 2560x1662"
+        );
+        let largest = decode_time(3840, 2160);
+        assert!(
+            largest < at_144_fps,
+            "{largest:?} per frame is too slow for 144 fps at 3840x2160"
         );
     }
 
@@ -775,21 +791,25 @@ mod tests {
 
     #[test]
     fn a_large_fast_stream_stays_decodable() {
-        // 2560×1662 at 144 fps is past level 5.2's macroblock rate, the highest OpenH264 knows.
-        for mut encoder in encoders_with(EncoderSettings {
-            max_fps: 144.0,
-            ..EncoderSettings::default()
-        }) {
-            let hardware = encoder.is_hardware();
-            let mut capturer = SyntheticCapturer::new(2560, 1662);
-            let mut decoder = VideoDecoder::new().unwrap();
-            for _ in 0..2 {
-                let encoded = encoder.encode(&frame(&mut capturer)).unwrap().unwrap();
-                let decoded = decoder.decode(&encoded.data);
-                assert!(
-                    matches!(decoded, Ok(Some(_))),
-                    "{decoded:?} (hardware: {hardware})"
-                );
+        // At 144 fps both sizes are past level 5.2's macroblock rate, the highest OpenH264 knows.
+        // 3840×2160 is what the Quality preset sends from a 4K screen.
+        for (width, height) in [(2560, 1662), (3840, 2160)] {
+            for mut encoder in encoders_with(EncoderSettings {
+                max_fps: 144.0,
+                ..EncoderSettings::default()
+            }) {
+                let hardware = encoder.is_hardware();
+                let mut capturer = SyntheticCapturer::new(width, height);
+                let mut decoder = VideoDecoder::new().unwrap();
+                for _ in 0..2 {
+                    let encoded = encoder.encode(&frame(&mut capturer)).unwrap().unwrap();
+                    assert_eq!(encoder.is_hardware(), hardware, "no fallback to software");
+                    let decoded = decoder.decode(&encoded.data);
+                    assert!(
+                        matches!(&decoded, Ok(Some(picture)) if (picture.width, picture.height) == (width, height)),
+                        "{width}x{height}: {decoded:?} (hardware: {hardware})"
+                    );
+                }
             }
         }
     }
