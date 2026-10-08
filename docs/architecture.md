@@ -321,8 +321,9 @@ loses focus, every held key, button, and modifier is released so nothing stays p
 macOS consumes the keys that switch its input source (Caps Lock, Ctrl+Space, the Globe key), so no Hangul/English
 key ever reaches the viewer. Instead, the viewer subscribes to GPUI's `on_keyboard_layout_change`, which the macOS
 platform fires on `NSTextInputContextKeyboardSelectionDidChangeNotification`, and reads the selected source from
-`NSTextInputContext`. While the viewer window is active and control is allowed, a source id that differs from the
-one recorded when the window became active sends one `HangulMode` press and release. The notification also fires
+`NSTextInputContext`. While the viewer window is active, a source id that differs from the last one seen since the
+window became active sends one `HangulMode` press and release if the host allows control. The window activates
+before the host's status arrives, so the source is followed even before control is known. The notification also fires
 when the window activates (macOS restores the window's own source) and twice per Ctrl+Space, with the same id both
 times; comparing ids ignores both.
 
