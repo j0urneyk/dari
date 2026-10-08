@@ -293,8 +293,7 @@ where
                 }
             }
             Err(CaptureError::SecureDesktop) => {
-                if !hidden_reported {
-                    hidden_reported = true;
+                if !std::mem::replace(&mut hidden_reported, true) {
                     deliver_error(sink, control, CaptureError::SecureDesktop.into());
                 }
                 continue;
@@ -317,37 +316,67 @@ where
             }
         };
 
-        let permit = match reserve_room(sink, control) {
-            Room::Reserved(permit) => permit,
-            Room::Full => {
-                control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-                continue;
+        match encode(
+            captured,
+            &mut scaler,
+            &mut encoder,
+            settings.max_long_edge,
+            sink,
+            control,
+        ) {
+            Ok(Encoded::Sent) => {
+                if let Some((screen, resend)) = still.as_mut().zip(resend) {
+                    screen.sent(resend, &control.stats);
+                }
             }
-            Room::Closed => {
-                debug!("capture sink closed");
+            Ok(Encoded::Skipped) => {}
+            Ok(Encoded::SinkClosed) => return Ok(()),
+            Err(error) => {
+                warn!(%error, "capture stream stopped");
+                deliver_error(sink, control, error.into());
                 return Ok(());
             }
-        };
-        let deliver = delivery(permit, control.clone());
-        let frame = fit(captured, &mut scaler, settings.max_long_edge);
-        if control.keyframe_requested.swap(false, Ordering::Relaxed) {
-            encoder.request_keyframe();
-        }
-        let submitted = encoder.submit(&frame, deliver);
-        control
-            .stats
-            .hardware_encoding
-            .store(encoder.is_hardware(), Ordering::Relaxed);
-        if let Err(error) = submitted {
-            warn!(%error, "capture stream stopped");
-            deliver_error(sink, control, error.into());
-            return Ok(());
-        }
-        if let Some((screen, resend)) = still.as_mut().zip(resend) {
-            screen.sent(resend, &control.stats);
         }
     }
     Ok(())
+}
+
+enum Encoded {
+    Sent,
+    Skipped,
+    SinkClosed,
+}
+
+fn encode(
+    captured: CapturedFrame,
+    scaler: &mut FrameScaler,
+    encoder: &mut VideoEncoder,
+    max_long_edge: u32,
+    sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
+    control: &Arc<StreamControl>,
+) -> Result<Encoded, CodecError> {
+    let permit = match reserve_room(sink, control) {
+        Room::Reserved(permit) => permit,
+        Room::Full => {
+            control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
+            return Ok(Encoded::Skipped);
+        }
+        Room::Closed => {
+            debug!("capture sink closed");
+            return Ok(Encoded::SinkClosed);
+        }
+    };
+    let deliver = delivery(permit, control.clone());
+    let frame = fit(captured, scaler, max_long_edge);
+    if control.keyframe_requested.swap(false, Ordering::Relaxed) {
+        encoder.request_keyframe();
+    }
+    let submitted = encoder.submit(&frame, deliver);
+    control
+        .stats
+        .hardware_encoding
+        .store(encoder.is_hardware(), Ordering::Relaxed);
+    submitted.map(|()| Encoded::Sent)
 }
 
 #[derive(Debug, Clone, Copy)]
