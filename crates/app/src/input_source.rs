@@ -19,9 +19,9 @@ pub(crate) fn selected_input_source() -> Option<String> {
     Some(context.selectedKeyboardInputSource()?.to_string())
 }
 
-/// The input source the user had while the viewer window has been active and controlling the
-/// host. Switches are measured against it, so the source macOS restores on its own when the
-/// window becomes active again never counts as one.
+/// The input source the user had while the viewer window has been active. Switches are
+/// measured against it, so the source macOS restores on its own when the window becomes active
+/// again never counts as one.
 #[derive(Debug, Default)]
 pub(crate) struct InputSourceTracker {
     recorded: Option<String>,
@@ -37,7 +37,7 @@ impl InputSourceTracker {
         active: bool,
         control: bool,
     ) -> Option<[InputEvent; 2]> {
-        if !(active && control) {
+        if !active {
             self.recorded = None;
             return None;
         }
@@ -47,7 +47,7 @@ impl InputSourceTracker {
             .as_deref()
             .is_some_and(|recorded| recorded != source);
         self.recorded = Some(source.to_owned());
-        switched.then_some(HANGUL_TAP)
+        (switched && control).then_some(HANGUL_TAP)
     }
 }
 
