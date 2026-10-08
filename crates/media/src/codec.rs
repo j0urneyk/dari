@@ -661,6 +661,25 @@ mod tests {
     }
 
     #[test]
+    fn keyframes_come_only_at_the_start() {
+        // VideoToolbox's default interval put a keyframe every 30 frames: each cost as much as
+        // the first and dropped the picture's quality for a second.
+        for mut encoder in encoders() {
+            let hardware = encoder.is_hardware();
+            let mut capturer = SyntheticCapturer::new(320, 240);
+            let keyframes: Vec<usize> = (0..70)
+                .filter(|_| {
+                    encoder
+                        .encode(&frame(&mut capturer))
+                        .unwrap()
+                        .is_some_and(|encoded| encoded.keyframe)
+                })
+                .collect();
+            assert_eq!(keyframes, [0], "keyframes (hardware: {hardware})");
+        }
+    }
+
+    #[test]
     fn keyframes_can_be_requested() {
         for mut encoder in encoders() {
             let mut capturer = SyntheticCapturer::new(64, 64);
