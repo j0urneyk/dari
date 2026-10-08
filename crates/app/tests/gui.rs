@@ -375,9 +375,6 @@ mod macos {
         });
         save(&mut cx, window, "viewer");
 
-        // Switching the Mac's input source while the window is active presses the host's
-        // Hangul/English key once. The source seen when the window becomes active is only
-        // the baseline.
         cx.update(|cx| {
             view.update(cx, |view, _| {
                 view.input_source_selected(Some("com.apple.keylayout.ABC"), true);

@@ -499,16 +499,19 @@ impl ViewerView {
         self.modifiers = modifiers;
     }
 
-    /// The Mac's selected keyboard input source is `source`, with this window `active` or
-    /// not. A switch the user makes while controlling the host taps its Hangul/English key.
     #[cfg(target_os = "macos")]
     #[doc(hidden)]
     pub fn input_source_selected(&mut self, source: Option<&str>, active: bool) {
+        if !active {
+            self.input_source.deactivate();
+            return;
+        }
+        let Some(source) = source else { return };
         let control = self.session.is_some()
             && self
                 .status
                 .is_some_and(|status| status.input == Availability::Available);
-        if let Some(tap) = self.input_source.observe(source, active, control) {
+        if let Some(tap) = self.input_source.select(source, control) {
             for event in tap {
                 self.send(event);
             }
