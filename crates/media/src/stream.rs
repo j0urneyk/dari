@@ -707,25 +707,58 @@ mod tests {
         assert!(receiver.recv().await.is_none());
     }
 
-    struct HiddenScreen {
+    #[derive(Clone, Copy)]
+    enum Shows {
+        SecureDesktop,
+        StillScreen,
+    }
+
+    /// A source on its own clock that shows one frame, then each scripted stretch in turn, then
+    /// a moving screen.
+    struct ScriptedScreen {
         inner: SyntheticCapturer,
-        hidden_since: Option<Instant>,
-        hidden_for: Duration,
+        script: Vec<(Shows, Duration)>,
+        started: Option<Instant>,
         hidden_captures: Arc<AtomicU64>,
     }
 
-    impl ScreenCapturer for HiddenScreen {
+    impl ScriptedScreen {
+        fn new(script: Vec<(Shows, Duration)>, hidden_captures: Arc<AtomicU64>) -> Self {
+            Self {
+                inner: SyntheticCapturer::new(64, 64),
+                script,
+                started: None,
+                hidden_captures,
+            }
+        }
+    }
+
+    impl ScreenCapturer for ScriptedScreen {
         fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
-            let Some(since) = self.hidden_since else {
-                self.hidden_since = Some(Instant::now());
+            let Some(started) = self.started else {
+                self.started = Some(Instant::now());
                 return self.inner.capture(timeout);
             };
-            if since.elapsed() < self.hidden_for {
-                self.hidden_captures.fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(timeout);
-                return Err(CaptureError::SecureDesktop);
+            let mut elapsed = started.elapsed();
+            let shows = self.script.iter().find_map(|&(shows, lasts)| {
+                if elapsed < lasts {
+                    return Some(shows);
+                }
+                elapsed -= lasts;
+                None
+            });
+            match shows {
+                Some(Shows::SecureDesktop) => {
+                    self.hidden_captures.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(timeout);
+                    Err(CaptureError::SecureDesktop)
+                }
+                Some(Shows::StillScreen) => {
+                    std::thread::sleep(timeout);
+                    Ok(None)
+                }
+                None => self.inner.capture(timeout),
             }
-            self.inner.capture(timeout)
         }
 
         fn paces_itself(&self) -> bool {
@@ -741,12 +774,10 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel(4);
         let stream = spawn_capture_stream(
             move || {
-                Ok(HiddenScreen {
-                    inner: SyntheticCapturer::new(64, 64),
-                    hidden_since: None,
-                    hidden_for,
-                    hidden_captures: counted,
-                })
+                Ok(ScriptedScreen::new(
+                    vec![(Shows::SecureDesktop, hidden_for)],
+                    counted,
+                ))
             },
             settings(),
             sender,
@@ -771,6 +802,41 @@ mod tests {
         let at_source_wait =
             u64::try_from(hidden_for.as_millis() / SOURCE_WAIT.as_millis()).unwrap();
         assert!(polls <= 2 * at_source_wait, "{polls} captures while hidden");
+        stream.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_secure_desktop_after_a_still_screen_is_reported_again() {
+        let hidden_for = Duration::from_millis(300);
+        let script = vec![
+            (Shows::SecureDesktop, hidden_for),
+            (Shows::StillScreen, Duration::from_millis(400)),
+            (Shows::SecureDesktop, hidden_for),
+        ];
+        let script_ends = Instant::now()
+            + Duration::from_secs(1)
+            + script.iter().map(|&(_, lasts)| lasts).sum::<Duration>();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            move || Ok(ScriptedScreen::new(script, Arc::default())),
+            settings(),
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        let mut notices = 0;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("frames must resume after the second secure desktop")
+            {
+                Some(Err(StreamError::Capture(CaptureError::SecureDesktop))) => notices += 1,
+                Some(Ok(_)) if notices == 2 || Instant::now() >= script_ends => break,
+                Some(Ok(_)) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(notices, 2, "one notice for each hidden stretch");
         stream.stop();
     }
 
