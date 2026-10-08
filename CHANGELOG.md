@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows
 - From a Mac, switching your input source (Caps Lock, Ctrl+Space, or the Globe key) while the viewer window is active
   now switches a Windows host between Korean and English.
 - Switching the Mac's input source with Ctrl+Space no longer opens the Start menu on a Windows host.
+- When the Windows host shows a User Account Control prompt, the lock screen, or Ctrl+Alt+Del, the viewer says so
+  instead of showing a frozen picture.
 
 ## [0.0.3] - 2026-10-08
 
