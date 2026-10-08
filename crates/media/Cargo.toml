@@ -57,6 +57,7 @@ windows = { workspace = true, features = [
 windows-core.workspace = true
 
 [dev-dependencies]
+image = { workspace = true, features = ["png"] }
 tracing-subscriber.workspace = true
 
 [lints]

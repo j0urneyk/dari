@@ -32,9 +32,10 @@ use objc2_core_video::kCVImageBufferYCbCrMatrix_ITU_R_601_4;
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
-    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_ProfileLevel,
-    kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_YCbCrMatrix,
-    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel,
+    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
+    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
+    kVTCompressionPropertyKey_YCbCrMatrix, kVTEncodeFrameOptionKey_ForceKeyFrame,
+    kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel,
 };
 
 use super::NativeFrame;
@@ -194,8 +195,9 @@ impl Session {
         )]
         let frame_rate = CFNumber::new_i32(settings.max_fps.round().max(1.0) as i32);
         let bitrate = CFNumber::new_i32(i32::try_from(settings.bitrate_bps).unwrap_or(i32::MAX));
+        let keyframe_interval = CFNumber::new_i32(i32::MAX);
         // SAFETY: Reading immutable static VideoToolbox and CoreVideo constants.
-        let properties: [(&CFString, &CFType); 6] = unsafe {
+        let properties: [(&CFString, &CFType); 7] = unsafe {
             [
                 // Real-time mode lowers the encoder's clock after a few seconds to just keep up with
                 // the expected frame rate, so each frame took 8–11 ms instead of 4.5 ms. That saves
@@ -211,6 +213,10 @@ impl Session {
                 ),
                 (kVTCompressionPropertyKey_AverageBitRate, &**bitrate),
                 (kVTCompressionPropertyKey_ExpectedFrameRate, &**frame_rate),
+                (
+                    kVTCompressionPropertyKey_MaxKeyFrameInterval,
+                    &**keyframe_interval,
+                ),
                 (
                     kVTCompressionPropertyKey_YCbCrMatrix,
                     &**kCVImageBufferYCbCrMatrix_ITU_R_601_4,

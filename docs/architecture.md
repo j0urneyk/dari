@@ -112,8 +112,24 @@ trait, which comes in two kinds:
   itself while the consumer is behind. The test `SyntheticCapturer` is polled.
 - **Self-paced** sources deliver frames on their own clock (`paces_itself`). The thread waits for the newest frame
   (up to 50 ms, so a stop request is noticed) and drops it if the consumer is behind. A still screen sends no frames,
-  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one. ScreenCaptureKit and
-  Windows.Graphics.Capture are self-paced.
+  so the thread keeps the last one to re-encode as a keyframe when the viewer asks for one, and to refine the
+  picture (below). ScreenCaptureKit and Windows.Graphics.Capture are self-paced.
+
+The frame that ends a change (the last scroll step, the keyframe of a page that just opened) is encoded under the
+bitrate budget of a moving screen, and nothing follows it while the screen is still, so the viewer would keep that
+coarse picture until the next change. Once a self-paced source has delivered nothing for 100 ms, the thread
+re-encodes its last frame 12 times, 33 ms apart, and then goes quiet again (`StillRefinement`, explicit state in
+the capture loop; a keyframe sent on request is refined the same way). The encoder spends the bits a still screen
+saves on the picture it already shows. Measured with the `quality_probe` example (a synthetic 2560×1440 page of
+1 px text, 10 Mbps, 30 fps, PSNR-Y of the decoded picture against the source): VideoToolbox lifts a still page from
+35.1 dB to 40.5 dB with 12 refinement frames (0.71 MB, 0.4 s); more frames or wider spacing add nothing, and the
+same 12 frames reach 40.6 dB at 60 fps and 42.8 dB at 144 fps, where the bitrate is higher. OpenH264 skips most of
+the refinement frames to pay off the keyframe and only reaches 35.1 dB (35.8 dB with 20 frames), and sends nothing
+at all when they are 100 ms or more apart. Media Foundation's software encoder (the ignored
+`still_screen_refinement_through_media_foundation` test, on a Windows 11 VM without a hardware encoder) spends
+42 KB on the first refinement frame, from 36.5 dB to 39.1 dB, and 64 bytes on each of the rest; the hardware
+encoders of real Windows machines are not measured. The 100 ms delay is three frame intervals at 30 fps, so a dropped frame
+does not start a refinement, whose first frame costs about 110 KB; a slow scroll with longer pauses does.
 
 | | macOS | Windows |
 | --- | --- | --- |
@@ -130,7 +146,10 @@ this mode, frame skipping must be on for the encoder to hold its target bitrate;
 output, so the reference chain is unaffected. Adaptive quantization and background detection, which screen content
 doesn't support, are turned off.
 
-VideoToolbox runs without frame reordering and with its real-time mode **off**. In real-time mode the encoder lowers
+VideoToolbox's key frame interval is set to its maximum: left at the default, it put a keyframe every 30 frames,
+each as large as the stream's first and encoded under a moving screen's budget, so once a second the picture fell
+back to 29.8 dB from the 42 dB the P-frames had reached (`quality_probe`, scrolling at 10 Mbps). VideoToolbox runs
+without frame reordering and with its real-time mode **off**. In real-time mode the encoder lowers
 its clock after about three seconds to just keep up with `ExpectedFrameRate`, assuming frames overlap: a frame that
 took 4.5 ms at first took 8–11 ms once it settled when frames were encoded one at a time, and 16 ms with three in
 flight. Without it, a 1920×1246 frame stays at about 4.5 ms. Frames are submitted without waiting
@@ -198,7 +217,12 @@ the only places in the library that need `unsafe`.
 | --- | --- | --- |
 | Speed | 1280px | 1.5 Mbps |
 | Balanced (default) | 1920px | 4 Mbps |
-| Quality | 2560px | 10 Mbps |
+| Quality | 3840px (native, up to the encoder's 3840×2160) | 10 Mbps |
+
+Quality sends the screen at its own resolution, within the 3840×2160 the encoder and decoder allow. It used to cap
+the long edge at 2560px, but on a Retina screen that scaling blurs text before the codec runs: with the
+`quality_probe` example, a 3840px screen scaled to 2560px and back, with no codec at all, came back at only 14.9 dB
+PSNR-Y for 1-px text strokes and 32.2 dB for a real Retina screenshot.
 
 The frame rate is a separate choice. The viewer asks for one with `SetFrameRate` (its "Auto" is the fastest refresh
 rate among its own displays, up to 144), and the host streams at that rate, capped by the refresh rate of the
@@ -240,7 +264,11 @@ same build before and after) and the ignored `decoding_keeps_up_with_144_fps` te
 | 2560×1662, synthetic (test) | 9.0 ms per frame | 2.2 ms per frame |
 
 The Quality preset used to cap the viewer at about 105–115 fps whatever the host sent; it now decodes 144 fps with
-time to spare. The two conversions differ by at most one level in 98% of channels and are equally close to the exact
+time to spare. The same test also decodes a synthetic 3840×2160 stream, the largest the Quality preset sends, in
+5.0 ms per frame (about 200 fps; 4.9–5.1 ms over three runs, against 2.4–2.6 ms for 2560×1662 in the same runs).
+That was measured on the same M5 while a virtual machine kept four of its ten cores busy, and 2560×1662 came out
+about 0.3 ms slower than in the table. The cost grows with the pixel count and stays under a 144 fps frame interval
+(6.9 ms). The two conversions differ by at most one level in 98% of channels and are equally close to the exact
 BT.601 math (about 0.5 levels on average). They part only below black (Y under 16), which `yuv` clamps to black.
 
 ### Input coordinates and DPI
