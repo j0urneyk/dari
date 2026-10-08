@@ -434,6 +434,10 @@ Each phase ends in something a reviewer can run. Estimates assume one engineer w
 Phases 1 to 4 each ship as their own PR. Phase 1 can ship alone, since a per-machine install is harmless without the
 helper. Phase 2 is useful alone too: seeing the prompt tells the user what to ask the person at the host.
 
+Issue #41 tracks the work as seven slices. Phase 2 is split in two: #45 starts the helper and its pipes, and #46
+shows the secure desktop. The VM setup from "End to end in the local Windows 11 VM" comes first as #42. Phase 5 has
+no slice of its own, because each slice updates the documents it affects, as `docs/development.md` requires.
+
 ## Risks
 
 | Risk | Effect | Mitigation |
