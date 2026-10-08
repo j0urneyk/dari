@@ -31,7 +31,7 @@ use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
 #[cfg(target_os = "macos")]
 use crate::input_source::{InputSourceTracker, selected_input_source};
 #[cfg(target_os = "macos")]
-use crate::keymap::since_last_key_down;
+use crate::keymap::{CHORD_MASK, Chord, since_last_key_down};
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
 use crate::style;
@@ -139,6 +139,8 @@ pub struct ViewerView {
     transfers: TransferList,
     focus: FocusHandle,
     modifiers: Modifiers,
+    #[cfg(target_os = "macos")]
+    chord: Option<Chord>,
     #[cfg(target_os = "macos")]
     input_source: InputSourceTracker,
     held_keys: Vec<KeyCode>,
@@ -252,6 +254,8 @@ impl ViewerView {
             transfers: TransferList::default(),
             focus,
             modifiers: Modifiers::default(),
+            #[cfg(target_os = "macos")]
+            chord: None,
             #[cfg(target_os = "macos")]
             input_source: InputSourceTracker::default(),
             held_keys: Vec::new(),
@@ -444,9 +448,7 @@ impl ViewerView {
                 pressed: false,
             });
         }
-        for event in modifier_changes(std::mem::take(&mut self.modifiers), Modifiers::default()) {
-            self.send(event);
-        }
+        self.on_modifiers(Modifiers::default());
         for button in std::mem::take(&mut self.held_buttons) {
             self.send(InputEvent::PointerButton {
                 button,
@@ -506,9 +508,18 @@ impl ViewerView {
 
     #[cfg(target_os = "macos")]
     #[doc(hidden)]
-    pub fn modifiers_changed(&mut self, modifiers: Modifiers, last_key_down: Duration) {
-        let _ = last_key_down;
+    pub fn modifiers_changed(&mut self, modifiers: Modifiers, since_last_key_down: Duration) {
+        let mut chord = self.chord.take().unwrap_or_else(Chord::new);
+        if chord.consumed(since_last_key_down) {
+            chord.key_sent();
+            for event in CHORD_MASK {
+                self.send(event);
+            }
+        }
         self.send_modifiers(modifiers);
+        // Fn never reaches the host, so it holds nothing there to mask.
+        let held = modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform;
+        self.chord = held.then_some(chord);
     }
 
     fn send_modifiers(&mut self, modifiers: Modifiers) {
@@ -538,9 +549,18 @@ impl ViewerView {
     }
 
     fn on_key(&mut self, keystroke: &Keystroke, pressed: bool) {
+        let key = key_code(keystroke);
+        // Before the modifier sync below: this key is the newest key down, and it reaches the host.
+        #[cfg(target_os = "macos")]
+        if pressed
+            && key.is_some()
+            && let Some(chord) = &mut self.chord
+        {
+            chord.key_sent();
+        }
         // Keep the modifier state exact even if a modifier event was missed.
         self.on_modifiers(keystroke.modifiers);
-        let Some(key) = key_code(keystroke) else {
+        let Some(key) = key else {
             return;
         };
         if pressed {

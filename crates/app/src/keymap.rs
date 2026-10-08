@@ -1,7 +1,7 @@
 //! Translates GPUI keyboard events into protocol key events.
 
 #[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dari_proto::{InputEvent, KeyCode, MAX_FUNCTION_KEY, NamedKey};
 use gpui_kit::{Keystroke, Modifiers};
@@ -75,7 +75,34 @@ pub(crate) fn modifier_changes(previous: Modifiers, current: Modifiers) -> Vec<I
         .collect()
 }
 
-/// How long ago a key went down on this Mac, counting the ones macOS kept for itself.
+/// macOS keeps some chords for itself (Ctrl+Space, ⌘Space), so the window sees only their
+/// modifiers go down and up. Forwarded alone, that is a lone modifier tap, and Windows opens Start
+/// on a lone Win tap, which is what the Mac's Control becomes once shortcuts are translated.
+#[cfg(target_os = "macos")]
+pub(crate) struct Chord {
+    since: Instant,
+    key_sent: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl Chord {
+    pub(crate) fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            key_sent: false,
+        }
+    }
+
+    pub(crate) fn key_sent(&mut self) {
+        self.key_sent = true;
+    }
+
+    pub(crate) fn consumed(&self, since_last_key_down: Duration) -> bool {
+        !self.key_sent && since_last_key_down < self.since.elapsed()
+    }
+}
+
+/// Reads the HID system state, which counts key downs macOS consumed before they reached the window.
 #[cfg(target_os = "macos")]
 pub(crate) fn since_last_key_down() -> Duration {
     use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
@@ -86,6 +113,19 @@ pub(crate) fn since_last_key_down() -> Duration {
     );
     Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
 }
+
+/// F20, which no shortcut binds on the host, so tapping it only turns a modifier tap into a chord.
+#[cfg(target_os = "macos")]
+pub(crate) const CHORD_MASK: [InputEvent; 2] = [
+    InputEvent::Key {
+        key: KeyCode::Named(NamedKey::Function(MAX_FUNCTION_KEY)),
+        pressed: true,
+    },
+    InputEvent::Key {
+        key: KeyCode::Named(NamedKey::Function(MAX_FUNCTION_KEY)),
+        pressed: false,
+    },
+];
 
 #[cfg(test)]
 mod tests {
