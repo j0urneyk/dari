@@ -29,11 +29,9 @@ pub enum Availability {
     SecureDesktop,
 }
 
-/// The first protocol version that defines [`Availability::SecureDesktop`].
 const SECURE_DESKTOP_SINCE: ProtocolVersion = ProtocolVersion { major: 2, minor: 1 };
 
 impl Availability {
-    /// The nearest state a peer speaking `version` can decode.
     fn for_version(self, version: ProtocolVersion) -> Self {
         match self {
             Availability::SecureDesktop if !version.supports(SECURE_DESKTOP_SINCE) => {

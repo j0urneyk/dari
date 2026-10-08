@@ -66,11 +66,9 @@ mod macos {
 
     struct SyntheticPlatform {
         actions: Arc<Mutex<Vec<RecordedAction>>>,
-        /// While set, the screen is behind Windows' secure desktop and cannot be captured.
         secure_desktop: Arc<AtomicBool>,
     }
 
-    /// A synthetic screen that Windows' secure desktop hides while `hidden` is set.
     struct HideableCapturer {
         screen: SyntheticCapturer,
         hidden: Arc<AtomicBool>,
@@ -527,8 +525,6 @@ mod macos {
             "replaced frames must be released; memory grew {growth:.1} MB over {shown} frames"
         );
 
-        // A UAC prompt on a Windows host hides its screen; the viewer says who has to act, and
-        // the notice goes away with the next frame.
         let screen = |cx: &mut HeadlessAppContext| {
             cx.update(|cx| view.read(cx).host_status().map(|status| status.screen))
         };

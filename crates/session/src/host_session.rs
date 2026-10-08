@@ -190,7 +190,6 @@ struct HostSession {
     options: SessionOptions,
     events: mpsc::UnboundedSender<HostEvent>,
     status: HostStatus,
-    /// What the viewer can decode; newer states are downgraded for it.
     peer_version: ProtocolVersion,
     displays: Vec<DisplayInfo>,
     active_display: Option<u32>,
@@ -880,9 +879,6 @@ fn availability_of_capture(error: &StreamError) -> Availability {
     }
 }
 
-/// Forwards encoded frames to the viewer for the whole session, across capture restarts. A
-/// capture failure is reported as a status change, and a frame after one reports the screen
-/// available again; a transport failure ends the session.
 async fn pump_video(
     mut frames: mpsc::Receiver<Result<EncodedFrame, StreamError>>,
     mut video: MessageSender<VideoPacket>,

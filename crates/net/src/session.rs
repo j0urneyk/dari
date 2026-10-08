@@ -26,7 +26,6 @@ pub type MessageReceiver<T> = FramedRead<quinn::RecvStream, MessageCodec<T>>;
 pub struct PeerInfo {
     pub name: String,
     pub os: Os,
-    /// The protocol version the peer advertised; messages it does not define are never sent.
     pub version: ProtocolVersion,
     pub address: SocketAddr,
     /// The host's certificate fingerprint. Only known on the viewer side.

@@ -65,11 +65,9 @@ struct TestPlatform {
     /// Capture like Windows.Graphics.Capture and ScreenCaptureKit: one frame, then nothing
     /// until the screen changes, which it never does.
     still_screen: bool,
-    /// While set, the screen is behind Windows' secure desktop and cannot be captured.
     secure_desktop: Arc<AtomicBool>,
 }
 
-/// A synthetic screen that Windows' secure desktop hides while `hidden` is set.
 struct HideableCapturer {
     screen: SyntheticCapturer,
     hidden: Arc<AtomicBool>,
@@ -1211,7 +1209,6 @@ async fn a_refused_sound_permission_reaches_the_viewer() {
     .await;
 }
 
-/// The viewer's view of one host capability, following its status reports.
 struct StatusChanges {
     field: fn(dari_proto::HostStatus) -> Availability,
     last: Option<Availability>,

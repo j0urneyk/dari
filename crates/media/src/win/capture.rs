@@ -47,7 +47,6 @@ use crate::stream::ScreenCapturer;
 /// one the capture thread is converting.
 const POOL_BUFFERS: i32 = 3;
 const CAPTURE_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
-/// How long the screen stays still before the input desktop is checked, and how often after.
 const SECURE_DESKTOP_PROBE_INTERVAL: Duration = Duration::from_millis(300);
 
 /// Captures one display with Windows.Graphics.Capture.
@@ -62,7 +61,6 @@ pub(crate) struct GraphicsCaptureCapturer {
     /// When the last frame was handed out. Windows versions before 11 24H2 ignore the session's
     /// minimum update interval, so the frame rate limit is also kept here.
     last_delivered: Option<Instant>,
-    /// When a still screen is next checked for the secure desktop.
     next_probe: Instant,
 }
 
@@ -387,9 +385,8 @@ impl Drop for RunningCapture {
     }
 }
 
-/// Whether the desktop receiving input is one a user process cannot capture: Winlogon's secure
-/// desktop, which shows UAC prompts, the lock screen, and Ctrl+Alt+Del. Winlogon's desktop
-/// refuses to be opened by a user process; any other desktop is recognized by its name.
+/// Winlogon's desktop refuses to be opened by a user process; any other desktop is recognized
+/// by its name.
 fn input_desktop_is_secure() -> bool {
     // SAFETY: Win32 calls with valid arguments. The desktop handle is closed before returning,
     // and `name` outlives the call that writes at most its size into it.

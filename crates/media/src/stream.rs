@@ -277,8 +277,8 @@ where
             sink,
             control,
         ) {
-            Ok(true) => {}
-            Ok(false) => return Ok(()),
+            Ok(Sink::Open) => {}
+            Ok(Sink::Closed) => return Ok(()),
             Err(error) => {
                 warn!(%error, "capture stream stopped");
                 deliver_error(sink, control, error.into());
@@ -289,8 +289,11 @@ where
     Ok(())
 }
 
-/// Scales and encodes `captured` into the room `sink` has for it, or drops it while the
-/// consumer is behind. `Ok(false)` once the sink is closed.
+enum Sink {
+    Open,
+    Closed,
+}
+
 fn encode(
     captured: CapturedFrame,
     scaler: &mut FrameScaler,
@@ -298,20 +301,20 @@ fn encode(
     settings: &StreamSettings,
     sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
     control: &Arc<StreamControl>,
-) -> Result<bool, CodecError> {
+) -> Result<Sink, CodecError> {
     if consumer_is_behind(sink, control) {
         control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-        return Ok(true);
+        return Ok(Sink::Open);
     }
     let permit = match sink.clone().try_reserve_owned() {
         Ok(permit) => permit,
         Err(mpsc::error::TrySendError::Full(_)) => {
             control.stats.frames_skipped.fetch_add(1, Ordering::Relaxed);
-            return Ok(true);
+            return Ok(Sink::Open);
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             debug!("capture sink closed");
-            return Ok(false);
+            return Ok(Sink::Closed);
         }
     };
     let deliver = delivery(permit, control.clone());
@@ -330,7 +333,7 @@ fn encode(
         .stats
         .hardware_encoding
         .store(encoder.is_hardware(), Ordering::Relaxed);
-    submitted.map(|()| true)
+    submitted.map(|()| Sink::Open)
 }
 
 /// Sends one encoded frame into the room reserved for it, and counts it.
@@ -382,8 +385,6 @@ impl Drop for InFlight {
     }
 }
 
-/// Delivers an error without blocking on a consumer that may itself be waiting for this thread
-/// to stop.
 fn deliver_error(
     sink: &mpsc::Sender<Result<EncodedFrame, StreamError>>,
     control: &StreamControl,
@@ -569,18 +570,18 @@ mod tests {
         assert!(receiver.recv().await.is_none());
     }
 
-    /// A source on its own clock whose screen goes behind a secure desktop for `hidden` calls
-    /// after the first frame, like Windows during a UAC prompt.
     struct HiddenScreen {
         inner: SyntheticCapturer,
-        shown: bool,
-        hidden: u32,
+        showed_first_frame: bool,
+        hidden_captures_left: u32,
     }
 
     impl ScreenCapturer for HiddenScreen {
         fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
-            if std::mem::replace(&mut self.shown, true) && self.hidden > 0 {
-                self.hidden -= 1;
+            if std::mem::replace(&mut self.showed_first_frame, true)
+                && self.hidden_captures_left > 0
+            {
+                self.hidden_captures_left -= 1;
                 std::thread::sleep(timeout);
                 return Err(CaptureError::SecureDesktop);
             }
@@ -599,8 +600,8 @@ mod tests {
             || {
                 Ok(HiddenScreen {
                     inner: SyntheticCapturer::new(64, 64),
-                    shown: false,
-                    hidden: 8,
+                    showed_first_frame: false,
+                    hidden_captures_left: 8,
                 })
             },
             settings(),
