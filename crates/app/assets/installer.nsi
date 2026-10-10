@@ -550,6 +550,15 @@ Section Install
 
   ; Auto close this page for passive mode
   ${IfThen} $PassiveMode == 1 ${|} SetAutoClose true ${|}
+
+  ; Dari: register and start DariService. The command converges, so a repair or an upgrade runs it too.
+  ClearErrors
+  ExecWait '"$INSTDIR\dari-service.exe" install' $0
+  ${If} ${Errors}
+    Abort "Dari could not run dari-service.exe to set up its Windows service."
+  ${ElseIf} $0 <> 0
+    Abort "Dari could not set up its Windows service: dari-service.exe install exited with code $0."
+  ${EndIf}
 SectionEnd
 
 Function .onInstSuccess
@@ -576,6 +585,19 @@ Function un.onInit
 FunctionEnd
 
 Section Uninstall
+  ; Dari: remove DariService before its executable is deleted. DariWaitForServiceExit comes from
+  ; preinstall-section in crates/app/Cargo.toml.
+  ${If} ${FileExists} "$INSTDIR\dari-service.exe"
+    ClearErrors
+    ExecWait '"$INSTDIR\dari-service.exe" uninstall' $0
+    ${If} ${Errors}
+      Abort "Dari could not run dari-service.exe to remove its Windows service."
+    ${ElseIf} $0 <> 0
+      Abort "Dari could not remove its Windows service: dari-service.exe uninstall exited with code $0."
+    ${EndIf}
+    !insertmacro DariWaitForServiceExit
+  ${EndIf}
+
   !insertmacro CheckIfAppIsRunning
 
   ; Delete the app directory and its content from disk
