@@ -1,7 +1,12 @@
-//! The host session's link to the SYSTEM helper that sees the Windows secure desktop.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win;
 
 use dari_proto::InputDesktop;
 use tokio::sync::mpsc;
+
+#[cfg(windows)]
+pub(crate) use win::open;
 
 /// What the helper reports to the session.
 #[derive(Debug, Clone, PartialEq, Eq)]

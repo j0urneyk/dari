@@ -75,4 +75,9 @@ impl HostPlatform for SystemPlatform {
     fn audio_access(&self) -> PermissionState {
         system_audio_access()
     }
+
+    #[cfg(windows)]
+    fn open_secure_desktop(&self, input: bool) -> Option<SecureDesktopLink> {
+        Some(crate::secure_desktop::open(input))
+    }
 }
