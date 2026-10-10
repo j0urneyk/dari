@@ -199,14 +199,14 @@ fn install() -> Result<(), Failure> {
         .update_failure_actions(restart_on_failure())
         .map_err(while_doing("set DariService's failure actions"))?;
     converge(&service, "DariService to run", |state| match state {
-        ServiceState::Running => Ok(true),
+        ServiceState::Running => Ok(Progress::Reached),
         ServiceState::Stopped => unless_already(
             service.start::<&OsStr>(&[]),
             &[ERROR_SERVICE_ALREADY_RUNNING],
             "start DariService",
         )
-        .map(|()| false),
-        _ => Ok(false),
+        .map(|()| Progress::Pending),
+        _ => Ok(Progress::Pending),
     })
 }
 
@@ -269,14 +269,14 @@ fn uninstall() -> Result<(), Failure> {
         }
     };
     converge(&service, "DariService to stop", |state| match state {
-        ServiceState::Stopped => Ok(true),
+        ServiceState::Stopped => Ok(Progress::Reached),
         ServiceState::Running | ServiceState::Paused => unless_already(
             service.stop().map(drop),
             &[ERROR_SERVICE_NOT_ACTIVE, ERROR_SERVICE_CANNOT_ACCEPT_CTRL],
             "stop DariService",
         )
-        .map(|()| false),
-        _ => Ok(false),
+        .map(|()| Progress::Pending),
+        _ => Ok(Progress::Pending),
     })?;
     unless_already(
         service.delete(),
@@ -285,10 +285,16 @@ fn uninstall() -> Result<(), Failure> {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Progress {
+    Reached,
+    Pending,
+}
+
 fn converge(
     service: &Service,
     goal: &'static str,
-    mut step: impl FnMut(ServiceState) -> Result<bool, Failure>,
+    mut step: impl FnMut(ServiceState) -> Result<Progress, Failure>,
 ) -> Result<(), Failure> {
     let deadline = Instant::now() + WAIT_LIMIT;
     loop {
@@ -296,7 +302,7 @@ fn converge(
             .query_status()
             .map_err(while_doing("query DariService's status"))?
             .current_state;
-        if step(state)? {
+        if step(state)? == Progress::Reached {
             return Ok(());
         }
         if Instant::now() >= deadline {

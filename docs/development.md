@@ -484,7 +484,7 @@ two places:
     `RequestExecutionLevel highest` shows no UAC prompt to a standard user, so the installer would otherwise run
     unelevated and fail partway.
   - `StopDariService` stops `DariService`, so an upgrade or a repair can replace `dari-service.exe`.
-  - `RemovePerUserInstall` finds a per-user install from 0.0.3 or earlier by its uninstall key under `HKCU`. It
+  - `RemovePerUserInstallAtFixedPaths` finds a per-user install from 0.0.3 or earlier by its uninstall key under `HKCU`. It
     closes a running per-user `dari.exe` and deletes what 0.0.3 created at 0.0.3's fixed locations: `dari.exe` and
     `uninstall.exe` in `%LOCALAPPDATA%\Dari`, the user's Start menu and desktop shortcuts, the `HKCU` uninstall key,
     and `HKCU\Software\dari\Dari`. It doesn't run the old uninstaller or read a path from the registry, because any

@@ -109,7 +109,7 @@ Section StopDariService
   !insertmacro DariWaitForServiceExit
 SectionEnd
 
-Section RemovePerUserInstall
+Section RemovePerUserInstallAtFixedPaths
   ClearErrors
   EnumRegValue $0 HKCU "${UNINSTKEY}" 0
   ${IfNot} ${Errors}
