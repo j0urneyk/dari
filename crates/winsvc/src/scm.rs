@@ -1,8 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{self, Write};
-use std::process::ExitCode;
-use std::sync::mpsc;
+use std::io;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,6 +13,11 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
+
+use dari_proto::SERVICE_PIPE;
+
+use crate::service::Server;
+use crate::win32::{Event, EventLog};
 
 const SERVICE_NAME: &str = "DariService";
 const DISPLAY_NAME: &str = "Dari Service";
@@ -28,27 +32,10 @@ const ERROR_SERVICE_CANNOT_ACCEPT_CTRL: i32 = 1061;
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
 const ERROR_SERVICE_MARKED_FOR_DELETE: i32 = 1072;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Command {
-    Service,
-    Install,
-    Uninstall,
-}
-
-impl Command {
-    fn parse(arguments: &[OsString]) -> Option<Self> {
-        let [command] = arguments else { return None };
-        match command.to_str()? {
-            "service" => Some(Self::Service),
-            "install" => Some(Self::Install),
-            "uninstall" => Some(Self::Uninstall),
-            _ => None,
-        }
-    }
-}
+const EXIT_CANNOT_SERVE: u32 = 2;
 
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Call {
         doing: &'static str,
         error: windows_service::Error,
@@ -102,40 +89,23 @@ fn unless_already(
     }
 }
 
-pub(crate) fn main() -> ExitCode {
-    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let Some(command) = Command::parse(&arguments) else {
-        return fail("usage: dari-service <install|uninstall|service>");
-    };
-    let result = match command {
-        Command::Service => run_service(),
-        Command::Install => install(),
-        Command::Uninstall => uninstall(),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => fail(&failure.to_string()),
-    }
-}
-
-fn fail(message: &str) -> ExitCode {
-    let _ = writeln!(io::stderr(), "dari-service: {message}");
-    ExitCode::FAILURE
-}
-
 define_windows_service!(ffi_service_main, service_main);
 
-fn run_service() -> Result<(), Failure> {
+pub(crate) fn run_service() -> Result<(), Failure> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main).map_err(while_doing(
         "run as DariService (only the service control manager starts this command)",
     ))
 }
 
 fn service_main(_arguments: Vec<OsString>) {
-    let (stop_sender, stop_receiver) = mpsc::channel();
+    let log = EventLog::open();
+    let Ok(stop) = Event::new().map(Arc::new) else {
+        return;
+    };
+    let stopping = stop.clone();
     let handler = move |control| match control {
         ServiceControl::Stop | ServiceControl::Shutdown => {
-            let _ = stop_sender.send(());
+            stopping.set();
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -144,12 +114,29 @@ fn service_main(_arguments: Vec<OsString>) {
     let Ok(status) = service_control_handler::register(SERVICE_NAME, handler) else {
         return;
     };
-    let exit_code = match status.set_service_status(service_status(ServiceState::Running)) {
-        Ok(()) => {
-            let _ = stop_receiver.recv();
-            ServiceExitCode::NO_ERROR
+    let exit_code = match Server::start(SERVICE_PIPE) {
+        Err(failure) => {
+            if let Some(log) = &log {
+                log.error(&format!(
+                    "DariService stopped: cannot {}: {}",
+                    failure.doing, failure.error
+                ));
+            }
+            ServiceExitCode::ServiceSpecific(EXIT_CANNOT_SERVE)
         }
-        Err(_) => ServiceExitCode::ServiceSpecific(1),
+        Ok(server) => match status.set_service_status(service_status(ServiceState::Running)) {
+            Ok(()) => {
+                if let Some(log) = &log {
+                    log.info("DariService started");
+                }
+                server.run(&stop);
+                if let Some(log) = &log {
+                    log.info("DariService stopping; its helpers end with it");
+                }
+                ServiceExitCode::NO_ERROR
+            }
+            Err(_) => ServiceExitCode::ServiceSpecific(1),
+        },
     };
     let _ = status.set_service_status(ServiceStatus {
         exit_code,
@@ -173,7 +160,7 @@ fn service_status(state: ServiceState) -> ServiceStatus {
     }
 }
 
-fn install() -> Result<(), Failure> {
+pub(crate) fn install() -> Result<(), Failure> {
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -254,7 +241,7 @@ fn restart_on_failure() -> ServiceFailureActions {
     }
 }
 
-fn uninstall() -> Result<(), Failure> {
+pub(crate) fn uninstall() -> Result<(), Failure> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(while_doing("connect to the service control manager"))?;
     let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
@@ -309,25 +296,5 @@ fn converge(
             return Err(Failure::Timeout { waiting_for: goal });
         }
         thread::sleep(POLL_INTERVAL);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(arguments: &[&str]) -> Option<Command> {
-        let arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
-        Command::parse(&arguments)
-    }
-
-    #[test]
-    fn parses_exactly_one_known_command() {
-        assert_eq!(parse(&["service"]), Some(Command::Service));
-        assert_eq!(parse(&["install"]), Some(Command::Install));
-        assert_eq!(parse(&["uninstall"]), Some(Command::Uninstall));
-        assert_eq!(parse(&[]), None);
-        assert_eq!(parse(&["Install"]), None);
-        assert_eq!(parse(&["install", "service"]), None);
     }
 }

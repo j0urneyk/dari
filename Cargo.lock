@@ -1876,6 +1876,11 @@ dependencies = [
 name = "dari-winsvc"
 version = "0.0.3"
 dependencies = [
+ "bytes",
+ "dari-proto",
+ "serde",
+ "tokio-util",
+ "windows 0.62.2",
  "windows-service",
 ]
 
