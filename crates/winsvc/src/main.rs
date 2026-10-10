@@ -4,21 +4,17 @@
 
 use std::process::ExitCode;
 
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod channel;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod command;
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod dxgi_result;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod limiter;
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod pointer;
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod screen;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod slot;

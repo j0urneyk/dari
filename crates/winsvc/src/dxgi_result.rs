@@ -7,11 +7,14 @@ use std::fmt;
 pub(crate) struct Hresult(pub(crate) i32);
 
 impl Hresult {
+    #[cfg(test)]
     pub(crate) const E_ACCESSDENIED: Self = Self(0x8007_0005_u32.cast_signed());
     pub(crate) const INVALID_CALL: Self = Self(0x887A_0001_u32.cast_signed());
     pub(crate) const UNSUPPORTED: Self = Self(0x887A_0004_u32.cast_signed());
     pub(crate) const DEVICE_REMOVED: Self = Self(0x887A_0005_u32.cast_signed());
+    #[cfg(test)]
     pub(crate) const DEVICE_RESET: Self = Self(0x887A_0007_u32.cast_signed());
+    #[cfg(test)]
     pub(crate) const NOT_CURRENTLY_AVAILABLE: Self = Self(0x887A_0022_u32.cast_signed());
     pub(crate) const ACCESS_LOST: Self = Self(0x887A_0026_u32.cast_signed());
     pub(crate) const WAIT_TIMEOUT: Self = Self(0x887A_0027_u32.cast_signed());

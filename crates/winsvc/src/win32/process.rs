@@ -128,6 +128,10 @@ impl InheritedProcess {
     }
 }
 
+// SAFETY: a process handle may be used from any thread, and nothing closes this one while the
+// helper runs.
+unsafe impl Sync for InheritedProcess {}
+
 impl AsRawHandle for InheritedProcess {
     fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
         self.0.0

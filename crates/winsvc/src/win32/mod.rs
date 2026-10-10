@@ -1,13 +1,9 @@
 mod desktop;
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code, unused_imports)]
 mod dxgi;
 mod eventlog;
 mod io;
 mod pipe;
 mod process;
-// Wired into the helper once its screen thread lands.
-#[allow(dead_code, unused_imports)]
 mod section;
 mod token;
 
@@ -16,8 +12,6 @@ use std::path::Path;
 
 use windows::Win32::Foundation::HANDLE;
 
-pub(crate) use desktop::InputDesktopSource;
-#[allow(unused_imports)]
 pub(crate) use dxgi::DxgiWorld;
 pub(crate) use eventlog::EventLog;
 pub(crate) use io::Event;
@@ -26,7 +20,6 @@ pub(crate) use process::{
     InheritedProcess, Job, end_process, has_exited, image_path, launch_helper, open_client_process,
     process_id, restrict_dll_search, session_is_active,
 };
-#[allow(unused_imports)]
 pub(crate) use section::AppSections;
 pub(crate) use token::{own_identity, own_user};
 
