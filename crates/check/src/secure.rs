@@ -416,6 +416,21 @@ async fn view_screen(
         ),
     );
     if back.is_none() {
+        let last = feed.frames.borrow().clone();
+        if let Some(frame) = last {
+            let picture = Thumbnail::of(frame.width, frame.height, &frame.bgra);
+            let difference = home.picture.difference(&picture);
+            let path = save(
+                args,
+                &Shot { frame, picture },
+                &format!("secure-{label}-last"),
+            );
+            println!(
+                "{label}: the last frame differs {:.0}% from the baseline, saved to {}",
+                difference * 100.0,
+                path.display()
+            );
+        }
         return false;
     }
     (feed.say)(&format!("BACK {label}"));
