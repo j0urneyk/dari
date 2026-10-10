@@ -13,7 +13,6 @@ use dari_proto::{
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, PipeMode, ServerOptions};
-use tokio::sync::mpsc;
 use tokio_util::codec::{Encoder, FramedRead};
 use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, HANDLE, HLOCAL, LocalFree,
@@ -32,7 +31,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{PCWSTR, PWSTR};
 
-use super::{SecureDesktopEvent, SecureDesktopLink};
+use super::{LinkCommand, LinkDriver, SecureDesktopLink};
 
 const LOCAL_SYSTEM: &str = "S-1-5-18";
 const SERVICE_TIME: Duration = Duration::from_secs(5);
@@ -61,50 +60,56 @@ pub(crate) enum LinkError {
 /// Starts the link in the background and returns it at once. Called from the session's
 /// runtime.
 pub(crate) fn open(input: bool) -> SecureDesktopLink {
-    let (events, receiver) = mpsc::unbounded_channel();
+    let (link, mut driver) = SecureDesktopLink::pair();
     tokio::spawn(async move {
-        let ended = tokio::select! {
-            ended = run(input, &events) => ended,
-            () = events.closed() => return,
-        };
-        let _sent = events.send(SecureDesktopEvent::Ended(ended.to_string()));
+        if let Err(error) = run(input, &mut driver).await {
+            driver.end(error.to_string());
+        }
     });
-    SecureDesktopLink::new(receiver)
+    link
 }
 
-async fn run(input: bool, events: &mpsc::UnboundedSender<SecureDesktopEvent>) -> LinkError {
-    let pipe = match random_pipe_name() {
-        Ok(pipe) => pipe,
-        Err(error) => return error.into(),
+/// Runs the link until it fails, or until the session drops it (`Ok`).
+async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
+    let (mut messages, first) = tokio::select! {
+        connected = connect(input) => connected?,
+        () = session_gone(driver) => return Ok(()),
     };
-    let server = match create_helper_pipe(&pipe) {
-        Ok(server) => server,
-        Err(error) => return error.into(),
-    };
-    match ask_service(&ServiceRequest::StartHelper { pipe, input }).await {
-        Ok(ServiceReply::HelperStarted) => {}
-        Ok(ServiceReply::Refused(refusal)) => return LinkError::Refused(refusal),
-        Err(error) => return error,
-    }
-    let (mut messages, first) = match accept_helper(server).await {
-        Ok(accepted) => accepted,
-        Err(error) => return error,
-    };
-    let _sent = events.send(SecureDesktopEvent::DesktopChanged(first));
+    driver.desktop_changed(first);
     loop {
-        match messages.next().await {
-            Some(Ok(HelperToApp::DesktopChanged(desktop))) => {
-                let _sent = events.send(SecureDesktopEvent::DesktopChanged(desktop));
-            }
-            Some(Ok(
-                HelperToApp::FrameSection { .. }
-                | HelperToApp::Frame { .. }
-                | HelperToApp::ScreenUnavailable { .. },
-            )) => {}
-            Some(Err(error)) => return error.into(),
-            None => return LinkError::HelperClosed,
+        tokio::select! {
+            command = driver.command() => match command {
+                Some(LinkCommand::SelectDisplay(_)) => {}
+                None => return Ok(()),
+            },
+            message = messages.next() => match message {
+                Some(Ok(HelperToApp::DesktopChanged(desktop))) => driver.desktop_changed(desktop),
+                Some(Ok(
+                    HelperToApp::FrameSection { .. }
+                    | HelperToApp::Frame { .. }
+                    | HelperToApp::ScreenUnavailable { .. },
+                )) => {}
+                Some(Err(error)) => return Err(error.into()),
+                None => return Err(LinkError::HelperClosed),
+            },
         }
     }
+}
+
+/// Has the service start the helper, and waits for it to connect and name its desktop.
+async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkError> {
+    let pipe = random_pipe_name()?;
+    let server = create_helper_pipe(&pipe)?;
+    match ask_service(&ServiceRequest::StartHelper { pipe, input }).await? {
+        ServiceReply::HelperStarted => accept_helper(server).await,
+        ServiceReply::Refused(refusal) => Err(LinkError::Refused(refusal)),
+    }
+}
+
+/// Returns once the session dropped the link. Commands that arrive meanwhile are already in the
+/// link's state, which the link reads once the helper connects.
+async fn session_gone(driver: &mut LinkDriver) {
+    while driver.command().await.is_some() {}
 }
 
 fn random_pipe_name() -> io::Result<HelperPipeName> {
@@ -352,6 +357,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::secure_desktop::SecureDesktopEvent;
 
     fn client_of(pipe: &HelperPipeName) -> std::fs::File {
         OpenOptions::new()

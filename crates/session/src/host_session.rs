@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use dari_input::{DisplayGeometry, InjectError, InputSession};
 use dari_media::{
     AudioError, AudioStream, CaptureError, CaptureStream, DisplayInfo, EncodedFrame,
-    FRAMES_IN_FLIGHT, MAX_ENCODED_LONG_EDGE, PermissionState, StreamError, StreamSettings,
-    spawn_audio_stream, spawn_capture_stream,
+    FRAMES_IN_FLIGHT, MAX_ENCODED_LONG_EDGE, PermissionState, ScreenCapturer, StreamError,
+    StreamSettings, spawn_audio_stream, spawn_capture_stream,
 };
 use dari_net::{
     AuthenticatedConnection, FileReceiver, IncomingStream, MessageReceiver, MessageSender,
@@ -30,7 +30,9 @@ use crate::SessionEndReason;
 use crate::clipboard::ClipboardSync;
 use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent, HostPolicy};
 use crate::platform::HostPlatform;
-use crate::secure_desktop::{SecureDesktopEvent, SecureDesktopLink};
+use crate::secure_desktop::{
+    SecureDesktopEvent, SecureDesktopLink, SecureDesktopView, TwoSourceCapturer,
+};
 use crate::transfer::{
     PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
 };
@@ -486,6 +488,9 @@ impl HostSession {
             }
         };
         self.active_display = self.displays.first().map(|display| display.id);
+        if let (Some(link), Some(display)) = (&self.secure_desktop, self.active_display) {
+            link.select_display(display);
+        }
 
         if let Some(display) = self.displays.first() {
             let geometry = geometry(display);
@@ -628,8 +633,9 @@ impl HostSession {
         };
         let platform = self.platform.clone();
         let settings = self.stream;
+        let secure = self.secure_desktop.as_ref().map(SecureDesktopLink::view);
         match spawn_capture_stream(
-            move || platform.open_capturer(display, settings),
+            move || open_capturer(platform, display, settings, secure),
             settings,
             frames,
         ) {
@@ -671,6 +677,9 @@ impl HostSession {
                 };
                 if self.active_display != Some(id) {
                     self.active_display = Some(id);
+                    if let Some(link) = &self.secure_desktop {
+                        link.select_display(id);
+                    }
                     if let Some(input) = &self.input {
                         input.push(InputCommand::SetGeometry(geometry(&display)));
                     }
@@ -853,6 +862,24 @@ impl HostSession {
             let _closed = tokio::time::timeout(DISCONNECT_GRACE, self.link.closed()).await;
         }
         self.link.close();
+    }
+}
+
+/// Opens the stream's capturer on the capture thread: the platform's, or, while the session
+/// holds a helper link, one that switches to the helper's frames on the secure desktop.
+fn open_capturer(
+    platform: Arc<dyn HostPlatform>,
+    display: u32,
+    settings: StreamSettings,
+    secure: Option<SecureDesktopView>,
+) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+    match secure {
+        None => platform.open_capturer(display, settings),
+        Some(view) => Ok(Box::new(TwoSourceCapturer::new(
+            move || platform.open_capturer(display, settings),
+            view,
+            settings.max_fps,
+        ))),
     }
 }
 
