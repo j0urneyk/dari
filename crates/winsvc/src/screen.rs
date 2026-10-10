@@ -12,13 +12,15 @@ use crate::dxgi_result::{
 };
 use crate::pointer::{Pointer, PointerPosition, PointerShape, RawPointerShape};
 use crate::tracker::{DesktopSource, DesktopTracker, Observation};
-pub(crate) use note::{Ended, Note, Stats, Unavailable};
+pub(crate) use note::{Ended, Failure, Lost, Note, Stats, Unavailable};
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Longest single wait in `AcquireNextFrame`, so commands from the app (a returned credit, a new
 /// display) are picked up within one slice even on a still screen.
 pub(crate) const ACQUIRE_SLICE: Duration = Duration::from_millis(33);
-pub(crate) const DENIED_LIMIT: Duration = Duration::from_secs(5);
+/// A display that shows no image this long is reported unavailable, counted from the last desktop
+/// or display change or the end of the last duplication with an image. Retries go on.
+pub(crate) const GIVE_UP_LIMIT: Duration = Duration::from_secs(5);
 /// A duplication that shows no image this long is replaced: a still screen whose first frame was
 /// pointer-only would otherwise stay blank.
 pub(crate) const NO_IMAGE_LIMIT: Duration = Duration::from_secs(1);
@@ -99,8 +101,26 @@ enum Capture<D> {
 #[derive(Debug, Clone, Copy)]
 struct Starting {
     retry_at: Instant,
+    streak: Streak,
+}
+
+impl Starting {
+    fn new(now: Instant) -> Self {
+        Self {
+            retry_at: now,
+            streak: Streak::new(now),
+        }
+    }
+}
+
+/// The attempts since the last desktop or display change, or since the last duplication with an
+/// image ended, none of which has shown an image. The log shows the first attempt and one summary.
+#[derive(Debug, Clone, Copy)]
+struct Streak {
+    began: Instant,
     give_up: GiveUp,
-    last_failure: Option<Hresult>,
+    /// How many attempts failed, and how the last one did.
+    failed: Option<(u32, Failure)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,12 +129,58 @@ enum GiveUp {
     Reported,
 }
 
-impl Starting {
+impl Streak {
     fn new(now: Instant) -> Self {
         Self {
-            retry_at: now,
-            give_up: GiveUp::At(now + DENIED_LIMIT),
-            last_failure: None,
+            began: now,
+            give_up: GiveUp::At(now + GIVE_UP_LIMIT),
+            failed: None,
+        }
+    }
+
+    /// No attempt has failed yet, so the one under way is the first, which the log shows.
+    fn first(&self) -> bool {
+        self.failed.is_none()
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        matches!(self.give_up, GiveUp::At(deadline) if now >= deadline)
+    }
+
+    /// Sums up the failures the log left out, unless the report already did.
+    fn summary(&self, now: Instant) -> Option<ScreenEvent> {
+        match (self.give_up, self.failed) {
+            (GiveUp::At(_), Some((failures, last))) if failures > 1 => {
+                Some(ScreenEvent::Note(Note::Retried {
+                    failures,
+                    over: now.duration_since(self.began),
+                    last,
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    /// Counts a failed attempt and reports the display unavailable once the streak has lasted
+    /// `GIVE_UP_LIMIT`.
+    fn fail(
+        mut self,
+        failure: Failure,
+        display: u32,
+        retry_at: Instant,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Starting {
+        let failures = self.failed.map_or(0, |(failures, _)| failures);
+        self.failed = Some((failures + 1, failure));
+        if self.due(now) {
+            events.extend(self.summary(now));
+            self.give_up = GiveUp::Reported;
+            report(display, Unavailable::StillFailing(failure), events);
+        }
+        Starting {
+            retry_at,
+            streak: self,
         }
     }
 }
@@ -122,18 +188,26 @@ impl Starting {
 #[derive(Debug)]
 struct Running<D> {
     duplication: D,
+    display: u32,
+    desktop: InputDesktop,
     layout: FrameLayout,
     started: Instant,
-    /// `None` until this duplication's first frame with an image, and dropped with it, so nothing
-    /// shows a previous desktop's or display's pixels (issue #46, first comment).
-    image: Option<Vec<u8>>,
+    shown: Shown,
     dirty: bool,
     stats: Stats,
 }
 
+/// What a duplication has shown. Its image goes with it, so nothing shows a previous desktop's
+/// or display's pixels (issue #46, first comment).
+#[derive(Debug)]
+enum Shown {
+    Nothing(Streak),
+    Image(Vec<u8>),
+}
+
 enum Attempt {
     Moved,
-    Retry(Option<Hresult>),
+    Retry(Failure),
     Unavailable(Unavailable),
 }
 
@@ -204,16 +278,16 @@ impl<W: DesktopWorld> ScreenMachine<W> {
     }
 
     pub(crate) fn dirty_frame(&self) -> Option<Composed<'_>> {
-        let (Capture::Running(running), Some(display)) = (&self.capture, self.display) else {
+        let Capture::Running(running) = &self.capture else {
             return None;
         };
-        if !running.dirty {
+        let Shown::Image(image) = &running.shown else {
             return None;
-        }
-        Some(Composed {
-            display,
+        };
+        running.dirty.then_some(Composed {
+            display: running.display,
             layout: running.layout,
-            image: running.image.as_deref()?,
+            image,
             pointer: &self.pointer,
         })
     }
@@ -240,23 +314,27 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         } else {
             Capture::Idle
         };
-        if let Capture::Running(running) = std::mem::replace(&mut self.capture, next) {
-            ended(&running, why, now, events);
-        }
+        let streak = match std::mem::replace(&mut self.capture, next) {
+            Capture::Running(running) => ended(&running, why, now, events),
+            Capture::Starting(starting) => Some(starting.streak),
+            Capture::Idle | Capture::Unavailable => None,
+        };
+        events.extend(streak.and_then(|streak| streak.summary(now)));
     }
 
     fn start(
         &mut self,
-        mut starting: Starting,
+        starting: Starting,
         now: Instant,
         events: &mut Vec<ScreenEvent>,
     ) -> Capture<W::Duplication> {
         let (Some(display), Some(desktop)) = (self.display, self.desktop.clone()) else {
             return Capture::Idle;
         };
+        let streak = starting.streak;
         let unavailable = |why, events: &mut Vec<ScreenEvent>| {
-            events.push(ScreenEvent::Note(Note::Unavailable { display, why }));
-            events.push(ScreenEvent::Unavailable { display });
+            events.extend(streak.summary(now));
+            report(display, why, events);
             Capture::Unavailable
         };
         match self.attempt(display) {
@@ -265,40 +343,37 @@ impl<W: DesktopWorld> ScreenMachine<W> {
                 let Ok(layout) = FrameLayout::new(size.width, size.height) else {
                     return unavailable(Unavailable::TooLarge(size), events);
                 };
-                events.push(ScreenEvent::Note(Note::Duplicated {
-                    display,
-                    desktop,
-                    size,
-                }));
+                if streak.first() {
+                    events.push(ScreenEvent::Note(Note::Duplicated {
+                        display,
+                        desktop: desktop.clone(),
+                        size,
+                    }));
+                }
                 Capture::Running(Running {
                     duplication,
+                    display,
+                    desktop,
                     layout,
                     started: now,
-                    image: None,
+                    shown: Shown::Nothing(streak),
                     dirty: false,
                     stats: Stats::default(),
                 })
             }
             Err(Attempt::Moved) => {
                 self.next_poll = now;
-                starting.retry_at = now + POLL_INTERVAL;
-                Capture::Starting(starting)
+                let retry_at = now + POLL_INTERVAL;
+                Capture::Starting(streak.fail(Failure::Unattached, display, retry_at, now, events))
             }
-            Err(Attempt::Retry(code)) => {
-                if code.is_some() && code != starting.last_failure {
-                    starting.last_failure = code;
-                    if let Some(code) = code {
-                        events.push(ScreenEvent::Note(Note::CannotDuplicate { display, code }));
-                    }
-                }
-                starting.retry_at = self.next_poll;
-                if let GiveUp::At(deadline) = starting.give_up
-                    && now >= deadline
+            Err(Attempt::Retry(failure)) => {
+                if streak.first()
+                    && let Failure::CannotDuplicate(code) = failure
                 {
-                    starting.give_up = GiveUp::Reported;
-                    unavailable(Unavailable::StillFailing(starting.last_failure), events);
+                    events.push(ScreenEvent::Note(Note::CannotDuplicate { display, code }));
                 }
-                Capture::Starting(starting)
+                let retry_at = self.next_poll;
+                Capture::Starting(streak.fail(failure, display, retry_at, now, events))
             }
             Err(Attempt::Unavailable(why)) => unavailable(why, events),
         }
@@ -309,15 +384,15 @@ impl<W: DesktopWorld> ScreenMachine<W> {
             Ok(Observation::Named(name))
                 if self.desktop.as_ref() == Some(&InputDesktop::from_name(&name)) => {}
             Ok(Observation::Named(_)) => return Err(Attempt::Moved),
-            Ok(Observation::Unreadable) => return Err(Attempt::Retry(None)),
-            Err(code) => return Err(Attempt::Retry(Some(code))),
+            Ok(Observation::Unreadable) => return Err(Attempt::Retry(Failure::Unattached)),
+            Err(code) => return Err(Attempt::Retry(Failure::CannotDuplicate(code))),
         }
         self.world
             .duplicate(display)
             .map_err(|failure| match failure {
                 Duplicate::NoSuchDisplay => Attempt::Unavailable(Unavailable::NoSuchDisplay),
                 Duplicate::Failed(code) => match duplicate_failure(code) {
-                    DuplicateFailure::Transient => Attempt::Retry(Some(code)),
+                    DuplicateFailure::Transient => Attempt::Retry(Failure::CannotDuplicate(code)),
                     DuplicateFailure::Unsupported => {
                         Attempt::Unavailable(Unavailable::Unsupported(code))
                     }
@@ -339,10 +414,12 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         if let Err(code) = outcome
             && frame_failure(code) == FrameFailure::Switched
         {
-            return self.lose(running, Ended::Failed(code), now, events);
+            return self.lose(running, Lost::Failed(code), now, events);
         }
-        if running.image.is_none() && now.duration_since(running.started) >= NO_IMAGE_LIMIT {
-            return self.lose(running, Ended::NoImage, now, events);
+        if let Shown::Nothing(streak) = &running.shown
+            && (now.duration_since(running.started) >= NO_IMAGE_LIMIT || streak.due(now))
+        {
+            return self.lose(running, Lost::NoImage, now, events);
         }
         Capture::Running(running)
     }
@@ -357,12 +434,16 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         events: &mut Vec<ScreenEvent>,
     ) -> Result<(), Hresult> {
         let has_image = frame.accumulated_frames != 0;
-        let copied = if has_image {
-            let slot_len = running.layout.slot_len();
-            let image = running.image.get_or_insert_with(|| vec![0; slot_len]);
-            running.duplication.copy_image(image)
-        } else {
-            Ok(())
+        let copied = match (has_image, &mut running.shown) {
+            (false, _) => Ok(None),
+            (true, Shown::Image(image)) => running.duplication.copy_image(image).map(|()| None),
+            (true, Shown::Nothing(_)) => {
+                let mut image = vec![0; running.layout.slot_len()];
+                running
+                    .duplication
+                    .copy_image(&mut image)
+                    .map(|()| Some(image))
+            }
         };
         let shape = if frame.shape_changed && copied.is_ok() {
             Some(running.duplication.pointer_shape())
@@ -370,34 +451,50 @@ impl<W: DesktopWorld> ScreenMachine<W> {
             None
         };
         let released = running.duplication.release();
-        copied?;
+        let first_image = copied?;
         let shape = shape.transpose()?;
         released?;
 
         if has_image {
             running.stats.images += 1;
             running.dirty = true;
-            if running.stats.images == 1 {
-                events.push(ScreenEvent::Note(Note::FirstImage {
-                    accumulated_frames: frame.accumulated_frames,
-                    last_present_time: frame.last_present_time,
-                    skipped: running.stats.pointer_only,
-                    after: now.duration_since(running.started),
-                }));
-            }
         } else {
             running.stats.pointer_only += 1;
         }
+        if let Some(image) = first_image {
+            if let Shown::Nothing(streak) =
+                std::mem::replace(&mut running.shown, Shown::Image(image))
+            {
+                events.extend(streak.summary(now));
+                if !streak.first() {
+                    events.push(ScreenEvent::Note(Note::Duplicated {
+                        display: running.display,
+                        desktop: running.desktop.clone(),
+                        size: Size {
+                            width: running.layout.width(),
+                            height: running.layout.height(),
+                        },
+                    }));
+                }
+            }
+            events.push(ScreenEvent::Note(Note::FirstImage {
+                accumulated_frames: frame.accumulated_frames,
+                last_present_time: frame.last_present_time,
+                skipped: running.stats.pointer_only,
+                after: now.duration_since(running.started),
+            }));
+        }
+        let has_shown = matches!(running.shown, Shown::Image(_));
         if let Some(position) = frame.pointer {
             self.pointer.moved(position);
-            running.dirty |= running.image.is_some();
+            running.dirty |= has_shown;
         }
         if let Some(raw) = shape {
             let kind = raw.kind;
             match PointerShape::parse(raw) {
                 Some(shape) => {
                     self.pointer.reshaped(shape);
-                    running.dirty |= running.image.is_some();
+                    running.dirty |= has_shown;
                 }
                 None => events.push(ScreenEvent::Note(Note::BadPointerShape { kind })),
             }
@@ -405,29 +502,59 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         Ok(())
     }
 
+    /// Duplicates again at once after a duplication with an image, otherwise after
+    /// `POLL_INTERVAL`, and checks the desktop first either way.
     fn lose(
         &mut self,
         running: Running<W::Duplication>,
-        why: Ended,
+        lost: Lost,
         now: Instant,
         events: &mut Vec<ScreenEvent>,
     ) -> Capture<W::Duplication> {
-        ended(&running, why, now, events);
-        drop(running);
         self.next_poll = now;
-        Capture::Starting(Starting::new(now))
+        let streak = ended(&running, Ended::Lost(lost), now, events);
+        let display = running.display;
+        drop(running);
+        Capture::Starting(match streak {
+            None => Starting::new(now),
+            Some(streak) => {
+                let retry_at = now + POLL_INTERVAL;
+                streak.fail(Failure::Lost(lost), display, retry_at, now, events)
+            }
+        })
     }
 }
 
-fn ended<D>(running: &Running<D>, why: Ended, now: Instant, events: &mut Vec<ScreenEvent>) {
-    if running.image.is_some() {
-        events.push(ScreenEvent::CaptureEnded);
-    }
-    events.push(ScreenEvent::Note(Note::Ended {
+/// Logs a duplication's end unless its streak hides it, and hands the streak on if it showed no
+/// image.
+fn ended<D>(
+    running: &Running<D>,
+    why: Ended,
+    now: Instant,
+    events: &mut Vec<ScreenEvent>,
+) -> Option<Streak> {
+    let note = ScreenEvent::Note(Note::Ended {
         why,
         stats: running.stats,
         lasted: now.duration_since(running.started),
-    }));
+    });
+    match &running.shown {
+        Shown::Image(_) => {
+            events.extend([ScreenEvent::CaptureEnded, note]);
+            None
+        }
+        Shown::Nothing(streak) => {
+            if streak.first() {
+                events.push(note);
+            }
+            Some(*streak)
+        }
+    }
+}
+
+fn report(display: u32, why: Unavailable, events: &mut Vec<ScreenEvent>) {
+    events.push(ScreenEvent::Note(Note::Unavailable { display, why }));
+    events.push(ScreenEvent::Unavailable { display });
 }
 
 /// Copies rows of BGRA pixels, each starting `pitch` bytes after the previous one in `source`,
@@ -824,7 +951,10 @@ mod tests {
 
         harness.step();
         assert_eq!(harness.offer(), None, "the frame that failed is discarded");
-        assert_eq!(harness.ends(), [Ended::Failed(Hresult::ACCESS_LOST)]);
+        assert_eq!(
+            harness.ends(),
+            [Ended::Lost(Lost::Failed(Hresult::ACCESS_LOST))]
+        );
         let calls = harness.calls();
         assert_eq!(
             calls[calls.len() - 3..],
@@ -865,15 +995,19 @@ mod tests {
             Ok(vec![image(3)]),
         ]);
         let mut harness = Harness::new(world, 1);
-        harness.run(6, Duration::from_millis(1));
+        harness.run(6, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 3);
+        assert_eq!(harness.offer(), Some(solid(3)));
         assert_eq!(
             harness.ends(),
-            [
-                Ended::Failed(Hresult::INVALID_CALL),
-                Ended::Failed(Hresult::ACCESS_LOST)
-            ]
+            [Ended::Lost(Lost::Failed(Hresult::INVALID_CALL))],
+            "only the first attempt's end is logged"
         );
-        assert_eq!(harness.offer(), Some(solid(3)));
+        assert!(harness.notes().contains(&Note::Retried {
+            failures: 2,
+            over: 5 * POLL_INTERVAL,
+            last: Failure::Lost(Lost::Failed(Hresult::ACCESS_LOST)),
+        }));
     }
 
     #[test]
@@ -889,7 +1023,10 @@ mod tests {
         harness.machine.world.switch_to("Default");
 
         harness.step();
-        assert_eq!(harness.ends(), [Ended::Failed(Hresult::INVALID_CALL)]);
+        assert_eq!(
+            harness.ends(),
+            [Ended::Lost(Lost::Failed(Hresult::INVALID_CALL))]
+        );
         harness.step();
         assert_eq!(
             harness.app_events(),
@@ -922,7 +1059,7 @@ mod tests {
         );
         assert!(harness.notes().contains(&Note::Unavailable {
             display: 2,
-            why: Unavailable::StillFailing(Some(Hresult::E_ACCESSDENIED)),
+            why: Unavailable::StillFailing(Failure::CannotDuplicate(Hresult::E_ACCESSDENIED)),
         }));
 
         harness.run(200, Duration::from_millis(10));
@@ -1126,10 +1263,73 @@ mod tests {
         assert_eq!(harness.duplicated(), 1);
         assert_eq!(harness.offer(), None);
         harness.run(2, Duration::from_millis(100));
-        assert_eq!(harness.ends(), [Ended::NoImage]);
+        assert_eq!(harness.ends(), [Ended::Lost(Lost::NoImage)]);
         harness.run(2, Duration::from_millis(1));
         assert_eq!(harness.duplicated(), 2);
         assert_eq!(harness.offer(), Some(with_pointer_at(solid(3), 0, 0)));
+    }
+
+    /// Runs 15 simulated seconds of duplications that `script` makes show no image, then one
+    /// that shows an image.
+    fn a_streak_is_paced_reported_once_and_recovers(script: impl Fn(usize) -> Vec<Acquire>) {
+        let world = World::on("Winlogon").duplicates((0..1000).map(|n| Ok(script(n))).collect());
+        let mut harness = Harness::new(world, 1);
+        let began = harness.now;
+        let mut duplications = [0; 15];
+        let mut reports = Vec::new();
+        for _ in 0..1500 {
+            let at = harness.now - began;
+            let (seen, duplicated) = (harness.events.len(), harness.duplicated());
+            harness.run(1, Duration::from_millis(10));
+            duplications[usize::try_from(at.as_secs()).unwrap()] +=
+                harness.duplicated() - duplicated;
+            if harness.events[seen..].contains(&ScreenEvent::Unavailable { display: 1 }) {
+                reports.push(at);
+            }
+        }
+        assert!(
+            duplications.iter().all(|&count| count <= 11),
+            "duplications per second: {duplications:?}"
+        );
+        assert_eq!(reports.len(), 1, "reported once: {reports:?}");
+        assert!(
+            (GIVE_UP_LIMIT..=GIVE_UP_LIMIT + 2 * POLL_INTERVAL).contains(&reports[0]),
+            "reported at {:?}",
+            reports[0]
+        );
+        let notes = harness.notes();
+        assert!(notes.len() <= 4, "{notes:#?}");
+
+        harness.machine.world.duplicates = [Ok(vec![image(9)])].into();
+        harness.run(150, Duration::from_millis(10));
+        assert_eq!(
+            harness.offer(),
+            Some(solid(9)),
+            "a later duplication recovers"
+        );
+        let notes = harness.notes();
+        assert!(notes.len() <= 6, "{notes:#?}");
+    }
+
+    #[test]
+    fn duplications_that_fail_on_every_acquire_are_paced_and_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|_| vec![Acquire::Fail(Hresult::ACCESS_LOST)]);
+    }
+
+    #[test]
+    fn duplications_that_never_show_an_image_are_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|_| vec![pointer_only(-8, -8)]);
+    }
+
+    #[test]
+    fn duplications_that_fail_or_show_nothing_by_turns_are_paced_and_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|n| {
+            if n % 2 == 0 {
+                vec![Acquire::Fail(Hresult::ACCESS_LOST)]
+            } else {
+                vec![]
+            }
+        });
     }
 
     #[test]
