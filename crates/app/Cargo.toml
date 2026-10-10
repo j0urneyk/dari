@@ -94,6 +94,19 @@ preinstall-section = '''
   ${LoopUntil} $1 >= 40
 !macroend
 
+!macro DariDelete FILE
+  ; Explorer can hold a file it just saw created, such as a new shortcut, for a few seconds.
+  StrCpy $1 0
+  ${Do}
+    Delete "${FILE}"
+    ${IfNot} ${FileExists} "${FILE}"
+      ${ExitDo}
+    ${EndIf}
+    Sleep 250
+    IntOp $1 $1 + 1
+  ${LoopUntil} $1 >= 40
+!macroend
+
 Section RequireAdministrator
   ; RequestExecutionLevel highest runs the installer unelevated for a standard user, without a UAC prompt.
   UserInfo::GetAccountType
@@ -126,14 +139,14 @@ Section RemovePerUserInstallAtFixedPaths
       Pop $0
       Sleep 500
     ${EndIf}
-    Delete "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe"
+    !insertmacro DariDelete "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe"
     ${If} ${FileExists} "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe"
       !insertmacro DariRefuse "Dari could not remove its earlier copy in $LOCALAPPDATA\${PRODUCTNAME}. Close Dari and run the installer again."
     ${EndIf}
-    Delete "$LOCALAPPDATA\${PRODUCTNAME}\uninstall.exe"
-    Delete "$SMPROGRAMS\${PRODUCTNAME}\${PRODUCTNAME}.lnk"
+    !insertmacro DariDelete "$LOCALAPPDATA\${PRODUCTNAME}\uninstall.exe"
+    !insertmacro DariDelete "$SMPROGRAMS\${PRODUCTNAME}\${PRODUCTNAME}.lnk"
     RMDir "$SMPROGRAMS\${PRODUCTNAME}"
-    Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+    !insertmacro DariDelete "$DESKTOP\${PRODUCTNAME}.lnk"
     ; Never recursive: this folder is also %LOCALAPPDATA%\dari, which holds the app's identity and settings.
     RMDir "$LOCALAPPDATA\${PRODUCTNAME}"
     DeleteRegKey HKCU "${MANUPRODUCTKEY}"
