@@ -102,16 +102,16 @@ impl Server {
         })
     }
 
-    pub(crate) fn run(&self, stop: &Event) {
+    pub(crate) fn run(&self, stop: &Event, open_log: fn() -> Option<EventLog>) {
         thread::scope(|scope| {
             for pipe in &self.pipes {
-                scope.spawn(move || self.run_instance(pipe, stop));
+                scope.spawn(move || self.run_instance(pipe, stop, open_log));
             }
         });
     }
 
-    fn run_instance(&self, pipe: &Pipe, stop: &Event) {
-        let log = EventLog::open();
+    fn run_instance(&self, pipe: &Pipe, stop: &Event, open_log: fn() -> Option<EventLog>) {
+        let log = open_log();
         let log = log.as_ref();
         loop {
             match pipe.connect(stop) {
@@ -348,7 +348,7 @@ mod tests {
         let server = Server::start(&path).unwrap();
         let stop = Event::new().unwrap();
         thread::scope(|scope| {
-            scope.spawn(|| server.run(&stop));
+            scope.spawn(|| server.run(&stop, || None));
             let clients = scope.spawn(|| {
                 let mut held = Vec::new();
                 for _ in 0..2 * INSTANCES {

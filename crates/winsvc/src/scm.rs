@@ -129,7 +129,7 @@ fn service_main(_arguments: Vec<OsString>) {
                 if let Some(log) = &log {
                     log.info("DariService started");
                 }
-                server.run(&stop);
+                server.run(&stop, EventLog::open);
                 if let Some(log) = &log {
                     log.info("DariService stopping; its helpers end with it");
                 }
