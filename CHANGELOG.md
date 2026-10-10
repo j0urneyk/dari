@@ -8,8 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- When a Windows host shows a User Account Control prompt, the lock screen, or the Ctrl+Alt+Del screen, the viewer
-  now sees it, on every display, and the session carries on when it closes. Answering it from the viewer comes in a
+- When a Windows host shows a User Account Control prompt or the lock screen, the viewer now sees it, on every
+  display, and the session carries on when it closes. Answering it from the viewer comes in a
   later release; until then someone at the host answers it.
 
 ### Changed
