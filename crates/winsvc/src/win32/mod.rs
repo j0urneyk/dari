@@ -1,4 +1,7 @@
 mod desktop;
+// Wired into the helper once its screen thread lands.
+#[allow(dead_code, unused_imports)]
+mod dxgi;
 mod eventlog;
 mod io;
 mod pipe;
@@ -14,6 +17,8 @@ use std::path::Path;
 use windows::Win32::Foundation::HANDLE;
 
 pub(crate) use desktop::InputDesktopSource;
+#[allow(unused_imports)]
+pub(crate) use dxgi::DxgiWorld;
 pub(crate) use eventlog::EventLog;
 pub(crate) use io::Event;
 pub(crate) use pipe::Pipe;

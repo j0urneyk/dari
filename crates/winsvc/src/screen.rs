@@ -554,6 +554,18 @@ fn ended<D>(running: &Running<D>, why: Ended, now: Instant) -> ScreenEvent {
     })
 }
 
+/// Copies rows of BGRA pixels, each starting `pitch` bytes after the previous one in `source`,
+/// into `into` as tightly packed RGBA rows `width` pixels wide, with opaque alpha.
+pub(crate) fn rgba_from_bgra_rows(source: &[u8], pitch: usize, width: usize, into: &mut [u8]) {
+    for (row, source_row) in into.chunks_exact_mut(width * 4).zip(source.chunks(pitch)) {
+        let (pixels, _) = row.as_chunks_mut::<4>();
+        let (source_pixels, _) = source_row.as_chunks::<4>();
+        for (pixel, [blue, green, red, _]) in pixels.iter_mut().zip(source_pixels) {
+            *pixel = [*red, *green, *blue, 0xFF];
+        }
+    }
+}
+
 /// An image with the pointer, ready to be written into a section slot.
 #[derive(Debug)]
 pub(crate) struct Composed<'a> {
@@ -875,6 +887,21 @@ mod tests {
         let at = y * SIZE.width as usize + x;
         pixels[at] = [POINTER[0], POINTER[1], POINTER[2], pixels[at][3]];
         pixels
+    }
+
+    #[test]
+    fn bgra_rows_with_padding_become_packed_opaque_rgba() {
+        // Two rows of two pixels, each row padded to 12 bytes; the last row isn't padded.
+        let source = [
+            1, 2, 3, 0, 4, 5, 6, 0, 99, 99, 99, 99, //
+            7, 8, 9, 0, 10, 11, 12, 0,
+        ];
+        let mut into = [0; 16];
+        rgba_from_bgra_rows(&source, 12, 2, &mut into);
+        assert_eq!(
+            into,
+            [3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, 12, 11, 10, 255]
+        );
     }
 
     #[test]
