@@ -1745,7 +1745,8 @@ async fn the_secure_desktop_replaces_the_screen_in_one_stream_with_a_keyframe_at
     assert_eq!(keyframes(), 1);
 
     helper.desktop_changed(InputDesktop::Winlogon);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Nothing signals that the capture thread saw the switch; it polls every 50 ms.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     viewer.request_keyframe();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
