@@ -1,8 +1,10 @@
 mod desktop;
+mod dxgi;
 mod eventlog;
 mod io;
 mod pipe;
 mod process;
+mod section;
 mod token;
 
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -10,7 +12,7 @@ use std::path::Path;
 
 use windows::Win32::Foundation::HANDLE;
 
-pub(crate) use desktop::InputDesktopSource;
+pub(crate) use dxgi::DxgiWorld;
 pub(crate) use eventlog::EventLog;
 pub(crate) use io::Event;
 pub(crate) use pipe::Pipe;
@@ -18,6 +20,7 @@ pub(crate) use process::{
     InheritedProcess, Job, end_process, has_exited, image_path, launch_helper, open_client_process,
     process_id, restrict_dll_search, session_is_active,
 };
+pub(crate) use section::AppSections;
 pub(crate) use token::{own_identity, own_user};
 
 fn raw(handle: &impl AsRawHandle) -> HANDLE {

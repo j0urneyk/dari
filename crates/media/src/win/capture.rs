@@ -191,7 +191,17 @@ impl ScreenCapturer for GraphicsCaptureCapturer {
         let now = Instant::now();
         if now >= self.next_probe {
             self.next_probe = now + SECURE_DESKTOP_PROBE_INTERVAL;
-            self.on_secure_desktop = input_desktop_is_secure();
+            let was_secure =
+                std::mem::replace(&mut self.on_secure_desktop, input_desktop_is_secure());
+            if was_secure && !self.on_secure_desktop {
+                // The frames around the switch back were dropped as secure, and a still screen
+                // sends no more; a new session's first frame shows the desktop that is back.
+                if let Ok(Some(frame)) = &next {
+                    let _closed = frame.Close();
+                }
+                self.stop();
+                return next.map(|_| None);
+            }
         }
         let frame = match next {
             Ok(Some(frame)) if self.on_secure_desktop => {

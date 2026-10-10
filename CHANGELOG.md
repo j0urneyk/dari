@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- When a Windows host shows a User Account Control prompt or the lock screen, the viewer now sees it, on every
+  display, and the session carries on when it closes. Answering it from the viewer comes in a
+  later release; until then someone at the host answers it.
+
 ### Changed
 
 - The Windows installer now installs Dari for all users in `C:\Program Files\Dari` and needs administrator rights.

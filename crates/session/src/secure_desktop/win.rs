@@ -3,18 +3,20 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle, RawHandle};
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+use dari_media::RgbaFrame;
 use dari_proto::{
+    AppToHelper, FRAME_SECTION_MAGIC, FRAME_SECTION_VERSION, FrameLayout, FrameSlot,
     HelperPipeName, HelperToApp, InputDesktop, LOCAL_FRAME_LIMIT, MessageCodec, PIPE_CLIENT_RIGHTS,
     PIPE_RANDOM_BYTES, Refusal, SERVICE_PIPE, ServiceReply, ServiceRequest,
 };
-use futures_util::StreamExt;
-use tokio::io::AsyncWriteExt;
+use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, PipeMode, ServerOptions};
-use tokio::sync::mpsc;
-use tokio_util::codec::{Encoder, FramedRead};
+use tokio_util::codec::{Encoder, FramedRead, FramedWrite};
 use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, HANDLE, HLOCAL, LocalFree,
 };
@@ -26,13 +28,17 @@ use windows::Win32::Security::{
     TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER, TokenLogonSid, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, SECURITY_IDENTIFICATION};
+use windows::Win32::System::Memory::{
+    FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, UnmapViewOfFile,
+};
 use windows::Win32::System::Pipes::{ImpersonateNamedPipeClient, WaitNamedPipeW};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
 };
 use windows::core::{PCWSTR, PWSTR};
 
-use super::{SecureDesktopEvent, SecureDesktopLink};
+use super::handover::{Handover, HandoverError, MappedSection, SectionMapper};
+use super::{LinkCommand, LinkDriver, SecureDesktopLink};
 
 const LOCAL_SYSTEM: &str = "S-1-5-18";
 const SERVICE_TIME: Duration = Duration::from_secs(5);
@@ -53,6 +59,8 @@ pub(crate) enum LinkError {
     #[error("the helper closed its pipe")]
     HelperClosed,
     #[error("{0}")]
+    Handover(#[from] HandoverError),
+    #[error("{0}")]
     Codec(#[from] dari_proto::CodecError),
     #[error("{0}")]
     Io(#[from] io::Error),
@@ -61,45 +69,206 @@ pub(crate) enum LinkError {
 /// Starts the link in the background and returns it at once. Called from the session's
 /// runtime.
 pub(crate) fn open(input: bool) -> SecureDesktopLink {
-    let (events, receiver) = mpsc::unbounded_channel();
+    let (link, mut driver) = SecureDesktopLink::pair();
     tokio::spawn(async move {
-        let ended = tokio::select! {
-            ended = run(input, &events) => ended,
-            () = events.closed() => return,
-        };
-        let _sent = events.send(SecureDesktopEvent::Ended(ended.to_string()));
+        if let Err(error) = run(input, &mut driver).await {
+            driver.end(error.to_string());
+        }
     });
-    SecureDesktopLink::new(receiver)
+    link
 }
 
-async fn run(input: bool, events: &mpsc::UnboundedSender<SecureDesktopEvent>) -> LinkError {
-    let pipe = match random_pipe_name() {
-        Ok(pipe) => pipe,
-        Err(error) => return error.into(),
+async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
+    let (messages, first) = tokio::select! {
+        connected = connect(input) => connected?,
+        () = session_gone(driver) => return Ok(()),
     };
-    let server = match create_helper_pipe(&pipe) {
-        Ok(server) => server,
-        Err(error) => return error.into(),
-    };
-    match ask_service(&ServiceRequest::StartHelper { pipe, input }).await {
-        Ok(ServiceReply::HelperStarted) => {}
-        Ok(ServiceReply::Refused(refusal)) => return LinkError::Refused(refusal),
-        Err(error) => return error,
+    driver.desktop_changed(first);
+    let (mut messages, mut replies) = split(messages);
+    if let Some(display) = driver.selected_display() {
+        replies.send(&AppToHelper::SelectDisplay(display)).await?;
     }
-    let (mut messages, first) = match accept_helper(server).await {
-        Ok(accepted) => accepted,
-        Err(error) => return error,
-    };
-    let _sent = events.send(SecureDesktopEvent::DesktopChanged(first));
+    let mut handover = Handover::new(ReadOnlySections);
     loop {
-        match messages.next().await {
-            Some(Ok(HelperToApp::DesktopChanged(desktop))) => {
-                let _sent = events.send(SecureDesktopEvent::DesktopChanged(desktop));
+        tokio::select! {
+            command = driver.command() => match command {
+                Some(LinkCommand::SelectDisplay(display)) => {
+                    replies.send(&AppToHelper::SelectDisplay(display)).await?;
+                }
+                None => return Ok(()),
+            },
+            message = messages.next() => {
+                let message = message.ok_or(LinkError::HelperClosed)??;
+                if let Some(reply) = handover.handle(message, driver).await? {
+                    replies.send(&reply).await?;
+                }
             }
-            Some(Ok(HelperToApp::FrameSection { .. } | HelperToApp::ScreenUnavailable)) => {}
-            Some(Err(error)) => return error.into(),
-            None => return LinkError::HelperClosed,
         }
+    }
+}
+
+type HelperReplies = FramedWrite<WriteHalf<NamedPipeServer>, MessageCodec<AppToHelper>>;
+
+fn split(
+    messages: HelperMessages,
+) -> (
+    FramedRead<ReadHalf<NamedPipeServer>, MessageCodec<HelperToApp>>,
+    HelperReplies,
+) {
+    let parts = messages.into_parts();
+    let (reader, writer) = tokio::io::split(parts.io);
+    let mut messages = FramedRead::new(reader, parts.codec);
+    *messages.read_buffer_mut() = parts.read_buf;
+    let replies = FramedWrite::new(writer, MessageCodec::<AppToHelper>::new(LOCAL_FRAME_LIMIT));
+    (messages, replies)
+}
+
+async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkError> {
+    let pipe = random_pipe_name()?;
+    let server = create_helper_pipe(&pipe)?;
+    match ask_service(&ServiceRequest::StartHelper { pipe, input }).await? {
+        ServiceReply::HelperStarted => accept_helper(server).await,
+        ServiceReply::Refused(refusal) => Err(LinkError::Refused(refusal)),
+    }
+}
+
+/// Returns once the session dropped the link. Commands that arrive meanwhile are already in the
+/// link's state, which the link reads once the helper connects.
+async fn session_gone(driver: &mut LinkDriver) {
+    while driver.command().await.is_some() {}
+}
+
+struct ReadOnlySections;
+
+impl SectionMapper for ReadOnlySections {
+    type Section = ReadOnlySection;
+
+    fn map(&mut self, handle: u64, layout: FrameLayout) -> io::Result<ReadOnlySection> {
+        ReadOnlySection::map(handle, layout)
+    }
+}
+
+struct ReadOnlySection {
+    view: MEMORY_MAPPED_VIEW_ADDRESS,
+    layout: FrameLayout,
+}
+
+// SAFETY: the view is only read, through raw pointers and atomic loads, and stays mapped until
+// the section is dropped.
+unsafe impl Send for ReadOnlySection {}
+// SAFETY: as for `Send`; nothing writes through the view.
+unsafe impl Sync for ReadOnlySection {}
+
+// Rust allows an atomic load of read-only memory only when it is relaxed and no wider than the
+// target's limit, 8 bytes on x86_64 and aarch64. On 32-bit targets the limit is 4 bytes, and a
+// 64-bit atomic load may write.
+const _: () = assert!(
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
+    "the frame section's 64-bit sequence words need 8-byte read-only atomic loads"
+);
+
+impl ReadOnlySection {
+    fn map(handle: u64, layout: FrameLayout) -> io::Result<Self> {
+        let raw =
+            usize::try_from(handle).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        // SAFETY: the helper, which passed the LocalSystem check, duplicated this handle into this
+        // process for the app alone, so nothing else owns it; it is closed when `handle` drops.
+        let handle =
+            unsafe { OwnedHandle::from_raw_handle(std::ptr::with_exposed_provenance_mut(raw)) };
+        // SAFETY: mapping a section read-only creates a new view and touches no memory Rust owns.
+        let view = unsafe {
+            MapViewOfFile(
+                HANDLE(handle.as_raw_handle()),
+                FILE_MAP_READ,
+                0,
+                0,
+                layout.total_len(),
+            )
+        };
+        if view.Value.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        drop(handle);
+        let section = Self { view, layout };
+        let header = [
+            (FrameLayout::MAGIC_OFFSET, FRAME_SECTION_MAGIC),
+            (FrameLayout::VERSION_OFFSET, FRAME_SECTION_VERSION),
+            (FrameLayout::WIDTH_OFFSET, layout.width()),
+            (FrameLayout::HEIGHT_OFFSET, layout.height()),
+        ];
+        for (offset, expected) in header {
+            let found = section.header_word(offset);
+            if found != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("header word at {offset} is {found:#x}, not {expected:#x}"),
+                ));
+            }
+        }
+        Ok(section)
+    }
+
+    fn base(&self) -> *const c_void {
+        self.view.Value.cast_const()
+    }
+
+    fn header_word(&self, offset: usize) -> u32 {
+        // SAFETY: header offsets are 4-byte aligned and inside the header page, and the helper
+        // wrote the header before it sent the handle and never writes it again.
+        u32::from_le(unsafe { self.base().byte_add(offset).cast::<u32>().read_volatile() })
+    }
+
+    fn sequence(&self, slot: FrameSlot) -> &AtomicU64 {
+        // SAFETY: the sequence word is 8-byte aligned inside the header page, which lives as
+        // long as `self`, and the helper writes it only atomically. The view is mapped
+        // read-only, which allows only relaxed loads of at most 8 bytes on the targets asserted
+        // above, so every load of the word is relaxed and the copy is ordered by fences.
+        unsafe {
+            AtomicU64::from_ptr(
+                self.base()
+                    .byte_add(FrameLayout::sequence_offset(slot))
+                    .cast::<u64>()
+                    .cast_mut(),
+            )
+        }
+    }
+}
+
+impl MappedSection for ReadOnlySection {
+    fn copy(&self, slot: FrameSlot, sequence: u64) -> Option<RgbaFrame> {
+        let word = self.sequence(slot);
+        if word.load(Ordering::Relaxed) != sequence {
+            return None;
+        }
+        fence(Ordering::Acquire);
+        let len = self.layout.slot_len();
+        let mut pixels = Vec::<u8>::with_capacity(len);
+        // SAFETY: the slot lies inside the view per `FrameLayout`, `pixels` has room for `len`
+        // bytes, and the two don't overlap. No reference to the shared bytes is made: the
+        // helper doesn't write a slot the app owns, and if it does anyway, the check below
+        // discards the copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.base()
+                    .byte_add(self.layout.slot_offset(slot))
+                    .cast::<u8>(),
+                pixels.as_mut_ptr(),
+                len,
+            );
+            pixels.set_len(len);
+        }
+        fence(Ordering::Acquire);
+        if word.load(Ordering::Relaxed) != sequence {
+            return None;
+        }
+        RgbaFrame::new(self.layout.width(), self.layout.height(), pixels)
+    }
+}
+
+impl Drop for ReadOnlySection {
+    fn drop(&mut self) {
+        // SAFETY: the view came from `MapViewOfFile`, and nothing reads it after this.
+        let _unmapped = unsafe { UnmapViewOfFile(self.view) };
     }
 }
 
@@ -347,7 +516,13 @@ impl Drop for SecurityDescriptor {
 mod tests {
     use std::io::Write;
 
+    use windows::Win32::Foundation::{
+        DUPLICATE_SAME_ACCESS, DuplicateHandle, INVALID_HANDLE_VALUE,
+    };
+    use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, PAGE_READWRITE};
+
     use super::*;
+    use crate::secure_desktop::SecureDesktopEvent;
 
     fn client_of(pipe: &HelperPipeName) -> std::fs::File {
         OpenOptions::new()
@@ -421,6 +596,127 @@ mod tests {
                 LinkError::ServiceMissing.to_string()
             ))
         );
+    }
+
+    struct HelperSection {
+        mapping: OwnedHandle,
+        view: MEMORY_MAPPED_VIEW_ADDRESS,
+    }
+
+    impl HelperSection {
+        fn new(len: usize) -> Self {
+            let len = u64::try_from(len).unwrap();
+            // SAFETY: an unnamed, pagefile-backed section; the handle is wrapped as owned, and
+            // the view is unmapped on drop.
+            unsafe {
+                let mapping = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    u32::try_from(len >> 32).unwrap(),
+                    u32::try_from(len & 0xffff_ffff).unwrap(),
+                    PCWSTR::null(),
+                )
+                .unwrap();
+                let view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, 0);
+                assert!(!view.Value.is_null());
+                Self {
+                    mapping: OwnedHandle::from_raw_handle(mapping.0),
+                    view,
+                }
+            }
+        }
+
+        fn write(&self, offset: usize, bytes: &[u8]) {
+            // SAFETY: every caller writes inside the section, which nothing else maps yet.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    self.view.Value.cast::<u8>().add(offset),
+                    bytes.len(),
+                );
+            }
+        }
+
+        fn header(&self, width: u32, height: u32) {
+            self.write(
+                FrameLayout::MAGIC_OFFSET,
+                &FRAME_SECTION_MAGIC.to_le_bytes(),
+            );
+            self.write(
+                FrameLayout::VERSION_OFFSET,
+                &FRAME_SECTION_VERSION.to_le_bytes(),
+            );
+            self.write(FrameLayout::WIDTH_OFFSET, &width.to_le_bytes());
+            self.write(FrameLayout::HEIGHT_OFFSET, &height.to_le_bytes());
+        }
+
+        fn handle(&self) -> u64 {
+            let mut duplicate = HANDLE::default();
+            // SAFETY: duplicates an open handle within this process; `map` takes ownership.
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    HANDLE(self.mapping.as_raw_handle()),
+                    GetCurrentProcess(),
+                    &raw mut duplicate,
+                    0,
+                    false,
+                    DUPLICATE_SAME_ACCESS,
+                )
+                .unwrap();
+            }
+            u64::try_from(duplicate.0.expose_provenance()).unwrap()
+        }
+    }
+
+    impl Drop for HelperSection {
+        fn drop(&mut self) {
+            // SAFETY: the view came from `MapViewOfFile` and isn't used after this.
+            let _unmapped = unsafe { UnmapViewOfFile(self.view) };
+        }
+    }
+
+    #[test]
+    fn a_mapped_section_copies_a_slot_only_while_its_sequence_matches() {
+        let layout = FrameLayout::new(3, 2).unwrap();
+        let section = HelperSection::new(layout.total_len());
+        section.header(3, 2);
+        let pixels: Vec<u8> = (0..24).collect();
+        section.write(layout.slot_offset(FrameSlot::Second), &pixels);
+        section.write(
+            FrameLayout::sequence_offset(FrameSlot::Second),
+            &9u64.to_le_bytes(),
+        );
+
+        let mapped = ReadOnlySection::map(section.handle(), layout).unwrap();
+        let copied = mapped.copy(FrameSlot::Second, 9).unwrap();
+        assert_eq!((copied.width(), copied.height()), (3, 2));
+        assert_eq!(copied.pixels(), pixels);
+        assert!(mapped.copy(FrameSlot::Second, 8).is_none());
+        assert!(mapped.copy(FrameSlot::First, 9).is_none());
+    }
+
+    #[test]
+    fn a_section_whose_header_disagrees_with_its_message_is_refused() {
+        let layout = FrameLayout::new(3, 2).unwrap();
+        let section = HelperSection::new(layout.total_len());
+        section.header(3, 3);
+        assert!(ReadOnlySection::map(section.handle(), layout).is_err());
+        section.header(3, 2);
+        section.write(FrameLayout::VERSION_OFFSET, &2u32.to_le_bytes());
+        assert!(ReadOnlySection::map(section.handle(), layout).is_err());
+        section.header(3, 2);
+        assert!(ReadOnlySection::map(section.handle(), layout).is_ok());
+    }
+
+    #[test]
+    fn a_section_smaller_than_its_message_says_is_refused() {
+        let small = FrameLayout::new(64, 64).unwrap();
+        let section = HelperSection::new(small.total_len());
+        section.header(1024, 1024);
+        let claimed = FrameLayout::new(1024, 1024).unwrap();
+        assert!(ReadOnlySection::map(section.handle(), claimed).is_err());
     }
 
     fn own_user() -> String {

@@ -33,7 +33,7 @@ const POINTER_PAUSE: Duration = Duration::from_millis(400);
 /// Pause between key events, so the host's input method sees each one.
 const KEY_PAUSE: Duration = Duration::from_millis(60);
 /// How long the viewer waits for a new frame before asking the host for a keyframe.
-const KEYFRAME_AFTER: Duration = Duration::from_secs(1);
+pub(crate) const KEYFRAME_AFTER: Duration = Duration::from_secs(1);
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
@@ -60,17 +60,33 @@ pub(crate) struct ViewArgs {
 }
 
 /// The session as the viewer has seen it so far.
-struct Session {
-    events: mpsc::UnboundedReceiver<ViewerEvent>,
-    status: Option<HostStatus>,
-    displays: Vec<DisplayDescription>,
-    active: Option<u32>,
-    ended: Option<SessionEndReason>,
+pub(crate) struct Session {
+    pub(crate) events: mpsc::UnboundedReceiver<ViewerEvent>,
+    pub(crate) status: Option<HostStatus>,
+    pub(crate) screen_history: Vec<Availability>,
+    pub(crate) displays: Vec<DisplayDescription>,
+    pub(crate) active: Option<u32>,
+    pub(crate) ended: Option<SessionEndReason>,
 }
 
 impl Session {
+    pub(crate) fn new(events: mpsc::UnboundedReceiver<ViewerEvent>) -> Self {
+        Self {
+            events,
+            status: None,
+            screen_history: Vec::new(),
+            displays: Vec::new(),
+            active: None,
+            ended: None,
+        }
+    }
+
     /// Handles events until `done` holds or `timeout` passes; returns whether it held.
-    async fn wait_until(&mut self, timeout: Duration, done: impl Fn(&Self) -> bool) -> bool {
+    pub(crate) async fn wait_until(
+        &mut self,
+        timeout: Duration,
+        done: impl Fn(&Self) -> bool,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         while !done(self) {
             if self.ended.is_some() {
@@ -89,7 +105,7 @@ impl Session {
         true
     }
 
-    fn apply(&mut self, event: ViewerEvent) {
+    pub(crate) fn apply(&mut self, event: ViewerEvent) {
         match event {
             ViewerEvent::AwaitingApproval => println!("waiting for the host to approve"),
             ViewerEvent::HostStatus(status) => {
@@ -97,6 +113,7 @@ impl Session {
                     "host screen: {:?}, host input: {:?}",
                     status.screen, status.input
                 );
+                self.screen_history.push(status.screen);
                 self.status = Some(status);
             }
             ViewerEvent::Displays { displays, active } => {
@@ -148,13 +165,7 @@ pub(crate) async fn run(args: ViewArgs) -> anyhow::Result<ExitCode> {
         viewer.peer().name,
         viewer.peer().os
     );
-    let mut session = Session {
-        events,
-        status: None,
-        displays: Vec::new(),
-        active: None,
-        ended: None,
-    };
+    let mut session = Session::new(events);
     let mut verdict = Verdict::default();
     run_scenario(&args, &viewer, &mut session, &mut verdict).await;
 
@@ -484,7 +495,7 @@ fn luminance(frame: &DecodedFrame) -> (f64, f64) {
     (mean, variance.sqrt())
 }
 
-fn save_png(frame: &DecodedFrame, path: &std::path::Path) -> anyhow::Result<()> {
+pub(crate) fn save_png(frame: &DecodedFrame, path: &std::path::Path) -> anyhow::Result<()> {
     let rgba: Vec<u8> = frame
         .bgra
         .as_chunks::<4>()

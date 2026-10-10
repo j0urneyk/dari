@@ -107,6 +107,7 @@ impl std::fmt::Debug for ViewerConfig {
 pub struct ViewerStats {
     pub frames_decoded: AtomicU64,
     pub bytes_received: AtomicU64,
+    pub keyframes_received: AtomicU64,
 }
 
 enum Outgoing {
@@ -704,6 +705,9 @@ async fn receive_video(
                 stats
                     .bytes_received
                     .fetch_add(packet.data.len() as u64, Ordering::Relaxed);
+                if packet.keyframe {
+                    stats.keyframes_received.fetch_add(1, Ordering::Relaxed);
+                }
                 // Waiting here pushes back through QUIC flow control to the host, which then
                 // skips frames before encoding.
                 if packets.send(packet).await.is_err() {

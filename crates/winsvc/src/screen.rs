@@ -1,0 +1,1385 @@
+//! Follows the input desktop and keeps a duplication of the selected display on any desktop but
+//! `Default`. Every decision is here, in pure code: `win32::DxgiWorld` only makes the calls.
+mod note;
+
+use std::fmt;
+use std::time::{Duration, Instant};
+
+use dari_proto::{FrameLayout, InputDesktop};
+
+use crate::dxgi_result::{
+    DuplicateFailure, FrameFailure, Hresult, duplicate_failure, frame_failure,
+};
+use crate::pointer::{Pointer, PointerPosition, PointerShape, RawPointerShape};
+use crate::tracker::{DesktopSource, DesktopTracker, Observation};
+pub(crate) use note::{Ended, Failure, Lost, Note, Stats, Unavailable};
+
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Longest single wait in `AcquireNextFrame`, so commands from the app (a returned credit, a new
+/// display) are picked up within one slice even on a still screen.
+pub(crate) const ACQUIRE_SLICE: Duration = Duration::from_millis(33);
+/// A display that shows no image this long is reported unavailable, counted from the last desktop
+/// or display change or the end of the last duplication with an image. Retries go on.
+pub(crate) const GIVE_UP_LIMIT: Duration = Duration::from_secs(5);
+/// A duplication that shows no image this long is replaced: a still screen whose first frame was
+/// pointer-only would otherwise stay blank.
+pub(crate) const NO_IMAGE_LIMIT: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Size {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl fmt::Display for Size {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}x{}", self.width, self.height)
+    }
+}
+
+/// The OS as the screen thread sees it. Its methods mirror the Win32 and DXGI calls one to one.
+pub(crate) trait DesktopWorld: DesktopSource {
+    type Duplication: Duplication;
+    /// Attaches this thread to the current input desktop and names the desktop it attached to,
+    /// which may differ from the last poll if a switch happened in between.
+    fn attach(&mut self) -> Result<Observation, Hresult>;
+    /// Finds the output whose `HMONITOR`'s low 32 bits are `display` on any adapter, creates a
+    /// Direct3D 11 device on that adapter, and duplicates the output.
+    fn duplicate(&mut self, display: u32) -> Result<Self::Duplication, Duplicate>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Duplicate {
+    NoSuchDisplay,
+    Failed(Hresult),
+}
+
+/// One `IDXGIOutputDuplication` with its device.
+pub(crate) trait Duplication {
+    fn size(&self) -> Size;
+    fn acquire(&mut self, timeout: Duration) -> Result<AcquiredFrame, Hresult>;
+    /// Copies the acquired image into `into`, tightly packed RGBA of `size()`.
+    fn copy_image(&mut self, into: &mut [u8]) -> Result<(), Hresult>;
+    /// `GetFramePointerShape`, called only when the acquired frame says the shape changed.
+    fn pointer_shape(&mut self) -> Result<RawPointerShape, Hresult>;
+    fn release(&mut self) -> Result<(), Hresult>;
+}
+
+/// The parts of `DXGI_OUTDUPL_FRAME_INFO` the machine uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AcquiredFrame {
+    /// 0 for a pointer-only update, whose image may be black (Phase 0).
+    pub(crate) accumulated_frames: u32,
+    pub(crate) last_present_time: i64,
+    /// `Some` when `LastMouseUpdateTime` isn't 0.
+    pub(crate) pointer: Option<PointerPosition>,
+    /// `PointerShapeBufferSize` isn't 0.
+    pub(crate) shape_changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScreenEvent {
+    DesktopChanged(InputDesktop),
+    Unavailable {
+        display: u32,
+    },
+    /// The duplication that drew every frame offered so far ended, so none of them may be
+    /// published any more.
+    CaptureEnded,
+    /// For the event log only.
+    Note(Note),
+}
+
+#[derive(Debug)]
+enum Capture<D> {
+    Idle,
+    Starting(Starting),
+    Running(Running<D>),
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Starting {
+    retry_at: Instant,
+    streak: Streak,
+}
+
+impl Starting {
+    fn new(now: Instant) -> Self {
+        Self {
+            retry_at: now,
+            streak: Streak::new(now),
+        }
+    }
+}
+
+/// The attempts since the last desktop or display change, or since the last duplication with an
+/// image ended, none of which has shown an image. The log shows the first attempt and one summary.
+#[derive(Debug, Clone, Copy)]
+struct Streak {
+    began: Instant,
+    give_up: GiveUp,
+    /// How many attempts failed, and how the last one did.
+    failed: Option<(u32, Failure)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GiveUp {
+    At(Instant),
+    Reported,
+}
+
+impl Streak {
+    fn new(now: Instant) -> Self {
+        Self {
+            began: now,
+            give_up: GiveUp::At(now + GIVE_UP_LIMIT),
+            failed: None,
+        }
+    }
+
+    /// No attempt has failed yet, so the one under way is the first, which the log shows.
+    fn first(&self) -> bool {
+        self.failed.is_none()
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        matches!(self.give_up, GiveUp::At(deadline) if now >= deadline)
+    }
+
+    /// Sums up the failures the log left out, unless the report already did.
+    fn summary(&self, now: Instant) -> Option<ScreenEvent> {
+        match (self.give_up, self.failed) {
+            (GiveUp::At(_), Some((failures, last))) if failures > 1 => {
+                Some(ScreenEvent::Note(Note::Retried {
+                    failures,
+                    over: now.duration_since(self.began),
+                    last,
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    /// Counts a failed attempt and reports the display unavailable once the streak has lasted
+    /// `GIVE_UP_LIMIT`.
+    fn fail(
+        mut self,
+        failure: Failure,
+        display: u32,
+        retry_at: Instant,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Starting {
+        let failures = self.failed.map_or(0, |(failures, _)| failures);
+        self.failed = Some((failures + 1, failure));
+        if self.due(now) {
+            events.extend(self.summary(now));
+            self.give_up = GiveUp::Reported;
+            report(display, Unavailable::StillFailing(failure), events);
+        }
+        Starting {
+            retry_at,
+            streak: self,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Running<D> {
+    duplication: D,
+    display: u32,
+    desktop: InputDesktop,
+    layout: FrameLayout,
+    started: Instant,
+    shown: Shown,
+    dirty: bool,
+    stats: Stats,
+}
+
+/// What a duplication has shown. Its image goes with it, so nothing shows a previous desktop's
+/// or display's pixels (issue #46, first comment).
+#[derive(Debug)]
+enum Shown {
+    Nothing(Streak),
+    Image(Vec<u8>),
+}
+
+enum Attempt {
+    Moved,
+    Retry(Failure),
+    Unavailable(Unavailable),
+}
+
+#[derive(Debug)]
+pub(crate) struct ScreenMachine<W: DesktopWorld> {
+    world: W,
+    tracker: DesktopTracker,
+    desktop: Option<InputDesktop>,
+    display: Option<u32>,
+    capture: Capture<W::Duplication>,
+    next_poll: Instant,
+    pointer: Pointer,
+}
+
+impl<W: DesktopWorld> ScreenMachine<W> {
+    pub(crate) fn new(world: W, now: Instant) -> Self {
+        Self {
+            world,
+            tracker: DesktopTracker::default(),
+            desktop: None,
+            display: None,
+            capture: Capture::Idle,
+            next_poll: now,
+            pointer: Pointer::default(),
+        }
+    }
+
+    pub(crate) fn select_display(&mut self, display: u32, now: Instant) -> Vec<ScreenEvent> {
+        if self.display == Some(display) {
+            return Vec::new();
+        }
+        self.display = Some(display);
+        let mut events = Vec::new();
+        self.restart(Ended::DisplaySelected, now, &mut events);
+        events
+    }
+
+    /// One bounded step: checks the desktop when due, then advances the capture, blocking at most
+    /// `ACQUIRE_SLICE` in `AcquireNextFrame`.
+    pub(crate) fn step(&mut self, now: Instant) -> Vec<ScreenEvent> {
+        let mut events = Vec::new();
+        if now >= self.next_poll {
+            self.next_poll = now + POLL_INTERVAL;
+            if let Some(desktop) = self.tracker.poll(&mut self.world) {
+                self.desktop = Some(desktop.clone());
+                events.push(ScreenEvent::DesktopChanged(desktop));
+                self.restart(Ended::DesktopChanged, now, &mut events);
+            }
+        }
+        self.capture = match std::mem::replace(&mut self.capture, Capture::Idle) {
+            Capture::Starting(starting) if now >= starting.retry_at => {
+                self.start(starting, now, &mut events)
+            }
+            Capture::Running(running) => self.run(running, now, &mut events),
+            waiting @ (Capture::Idle | Capture::Starting(_) | Capture::Unavailable) => waiting,
+        };
+        events
+    }
+
+    /// Until when the screen thread may wait for commands instead of stepping. `None` while a
+    /// duplication runs: the next step waits in `AcquireNextFrame` instead.
+    pub(crate) fn idle_until(&self) -> Option<Instant> {
+        match &self.capture {
+            Capture::Running(_) => None,
+            Capture::Starting(starting) => Some(self.next_poll.min(starting.retry_at)),
+            Capture::Idle | Capture::Unavailable => Some(self.next_poll),
+        }
+    }
+
+    pub(crate) fn dirty_frame(&self) -> Option<Composed<'_>> {
+        let Capture::Running(running) = &self.capture else {
+            return None;
+        };
+        let Shown::Image(image) = &running.shown else {
+            return None;
+        };
+        running.dirty.then_some(Composed {
+            display: running.display,
+            layout: running.layout,
+            image,
+            pointer: &self.pointer,
+        })
+    }
+
+    pub(crate) fn mark_offered(&mut self) {
+        if let Capture::Running(running) = &mut self.capture {
+            running.dirty = false;
+            running.stats.offered += 1;
+        }
+    }
+
+    fn wants_capture(&self) -> bool {
+        self.display.is_some()
+            && self
+                .desktop
+                .as_ref()
+                .is_some_and(|desktop| *desktop != InputDesktop::Default)
+    }
+
+    fn restart(&mut self, why: Ended, now: Instant, events: &mut Vec<ScreenEvent>) {
+        self.pointer = Pointer::default();
+        let next = if self.wants_capture() {
+            Capture::Starting(Starting::new(now))
+        } else {
+            Capture::Idle
+        };
+        let streak = match std::mem::replace(&mut self.capture, next) {
+            Capture::Running(running) => ended(&running, why, now, events),
+            Capture::Starting(starting) => Some(starting.streak),
+            Capture::Idle | Capture::Unavailable => None,
+        };
+        events.extend(streak.and_then(|streak| streak.summary(now)));
+    }
+
+    fn start(
+        &mut self,
+        starting: Starting,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Capture<W::Duplication> {
+        let (Some(display), Some(desktop)) = (self.display, self.desktop.clone()) else {
+            return Capture::Idle;
+        };
+        let streak = starting.streak;
+        let unavailable = |why, events: &mut Vec<ScreenEvent>| {
+            events.extend(streak.summary(now));
+            report(display, why, events);
+            Capture::Unavailable
+        };
+        match self.attempt(display) {
+            Ok(duplication) => {
+                let size = duplication.size();
+                let Ok(layout) = FrameLayout::new(size.width, size.height) else {
+                    return unavailable(Unavailable::TooLarge(size), events);
+                };
+                if streak.first() {
+                    events.push(ScreenEvent::Note(Note::Duplicated {
+                        display,
+                        desktop: desktop.clone(),
+                        size,
+                    }));
+                }
+                Capture::Running(Running {
+                    duplication,
+                    display,
+                    desktop,
+                    layout,
+                    started: now,
+                    shown: Shown::Nothing(streak),
+                    dirty: false,
+                    stats: Stats::default(),
+                })
+            }
+            Err(Attempt::Moved) => {
+                self.next_poll = now;
+                let retry_at = now + POLL_INTERVAL;
+                Capture::Starting(streak.fail(Failure::Unattached, display, retry_at, now, events))
+            }
+            Err(Attempt::Retry(failure)) => {
+                if streak.first()
+                    && let Failure::CannotDuplicate(code) = failure
+                {
+                    events.push(ScreenEvent::Note(Note::CannotDuplicate { display, code }));
+                }
+                let retry_at = self.next_poll;
+                Capture::Starting(streak.fail(failure, display, retry_at, now, events))
+            }
+            Err(Attempt::Unavailable(why)) => unavailable(why, events),
+        }
+    }
+
+    fn attempt(&mut self, display: u32) -> Result<W::Duplication, Attempt> {
+        match self.world.attach() {
+            Ok(Observation::Named(name))
+                if self.desktop.as_ref() == Some(&InputDesktop::from_name(&name)) => {}
+            Ok(Observation::Named(_)) => return Err(Attempt::Moved),
+            Ok(Observation::Unreadable) => return Err(Attempt::Retry(Failure::Unattached)),
+            Err(code) => return Err(Attempt::Retry(Failure::CannotDuplicate(code))),
+        }
+        self.world
+            .duplicate(display)
+            .map_err(|failure| match failure {
+                Duplicate::NoSuchDisplay => Attempt::Unavailable(Unavailable::NoSuchDisplay),
+                Duplicate::Failed(code) => match duplicate_failure(code) {
+                    DuplicateFailure::Transient => Attempt::Retry(Failure::CannotDuplicate(code)),
+                    DuplicateFailure::Unsupported => {
+                        Attempt::Unavailable(Unavailable::Unsupported(code))
+                    }
+                },
+            })
+    }
+
+    fn run(
+        &mut self,
+        mut running: Running<W::Duplication>,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Capture<W::Duplication> {
+        let timeout = ACQUIRE_SLICE.min(self.next_poll.saturating_duration_since(now));
+        let outcome = match running.duplication.acquire(timeout) {
+            Ok(frame) => self.take(&mut running, frame, now, events),
+            Err(code) => Err(code),
+        };
+        if let Err(code) = outcome
+            && frame_failure(code) == FrameFailure::Switched
+        {
+            return self.lose(running, Lost::Failed(code), now, events);
+        }
+        if let Shown::Nothing(streak) = &running.shown
+            && (now.duration_since(running.started) >= NO_IMAGE_LIMIT || streak.due(now))
+        {
+            return self.lose(running, Lost::NoImage, now, events);
+        }
+        Capture::Running(running)
+    }
+
+    /// Copies what an acquired frame changed and releases it. A frame that fails anywhere
+    /// between acquire and release is discarded whole.
+    fn take(
+        &mut self,
+        running: &mut Running<W::Duplication>,
+        frame: AcquiredFrame,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Result<(), Hresult> {
+        let has_image = frame.accumulated_frames != 0;
+        let copied = match (has_image, &mut running.shown) {
+            (false, _) => Ok(None),
+            (true, Shown::Image(image)) => running.duplication.copy_image(image).map(|()| None),
+            (true, Shown::Nothing(_)) => {
+                let mut image = vec![0; running.layout.slot_len()];
+                running
+                    .duplication
+                    .copy_image(&mut image)
+                    .map(|()| Some(image))
+            }
+        };
+        let shape = if frame.shape_changed && copied.is_ok() {
+            Some(running.duplication.pointer_shape())
+        } else {
+            None
+        };
+        let released = running.duplication.release();
+        let first_image = copied?;
+        let shape = shape.transpose()?;
+        released?;
+
+        if has_image {
+            running.stats.images += 1;
+            running.dirty = true;
+        } else {
+            running.stats.pointer_only += 1;
+        }
+        if let Some(image) = first_image {
+            if let Shown::Nothing(streak) =
+                std::mem::replace(&mut running.shown, Shown::Image(image))
+            {
+                events.extend(streak.summary(now));
+                if !streak.first() {
+                    events.push(ScreenEvent::Note(Note::Duplicated {
+                        display: running.display,
+                        desktop: running.desktop.clone(),
+                        size: Size {
+                            width: running.layout.width(),
+                            height: running.layout.height(),
+                        },
+                    }));
+                }
+            }
+            events.push(ScreenEvent::Note(Note::FirstImage {
+                accumulated_frames: frame.accumulated_frames,
+                last_present_time: frame.last_present_time,
+                skipped: running.stats.pointer_only,
+                after: now.duration_since(running.started),
+            }));
+        }
+        let has_shown = matches!(running.shown, Shown::Image(_));
+        if let Some(position) = frame.pointer {
+            self.pointer.moved(position);
+            running.dirty |= has_shown;
+        }
+        if let Some(raw) = shape {
+            let kind = raw.kind;
+            match PointerShape::parse(raw) {
+                Some(shape) => {
+                    self.pointer.reshaped(shape);
+                    running.dirty |= has_shown;
+                }
+                None => events.push(ScreenEvent::Note(Note::BadPointerShape { kind })),
+            }
+        }
+        Ok(())
+    }
+
+    /// Duplicates again at once after a duplication with an image, otherwise after
+    /// `POLL_INTERVAL`, and checks the desktop first either way.
+    fn lose(
+        &mut self,
+        running: Running<W::Duplication>,
+        lost: Lost,
+        now: Instant,
+        events: &mut Vec<ScreenEvent>,
+    ) -> Capture<W::Duplication> {
+        self.next_poll = now;
+        let streak = ended(&running, Ended::Lost(lost), now, events);
+        let display = running.display;
+        drop(running);
+        Capture::Starting(match streak {
+            None => Starting::new(now),
+            Some(streak) => {
+                let retry_at = now + POLL_INTERVAL;
+                streak.fail(Failure::Lost(lost), display, retry_at, now, events)
+            }
+        })
+    }
+}
+
+/// Logs a duplication's end unless its streak hides it, and hands the streak on if it showed no
+/// image.
+fn ended<D>(
+    running: &Running<D>,
+    why: Ended,
+    now: Instant,
+    events: &mut Vec<ScreenEvent>,
+) -> Option<Streak> {
+    let note = ScreenEvent::Note(Note::Ended {
+        why,
+        stats: running.stats,
+        lasted: now.duration_since(running.started),
+    });
+    match &running.shown {
+        Shown::Image(_) => {
+            events.extend([ScreenEvent::CaptureEnded, note]);
+            None
+        }
+        Shown::Nothing(streak) => {
+            if streak.first() {
+                events.push(note);
+            }
+            Some(*streak)
+        }
+    }
+}
+
+fn report(display: u32, why: Unavailable, events: &mut Vec<ScreenEvent>) {
+    events.push(ScreenEvent::Note(Note::Unavailable { display, why }));
+    events.push(ScreenEvent::Unavailable { display });
+}
+
+/// Copies rows of BGRA pixels, each starting `pitch` bytes after the previous one in `source`,
+/// into `into` as tightly packed RGBA rows `width` pixels wide, with opaque alpha.
+pub(crate) fn rgba_from_bgra_rows(source: &[u8], pitch: usize, width: usize, into: &mut [u8]) {
+    for (row, source_row) in into.chunks_exact_mut(width * 4).zip(source.chunks(pitch)) {
+        let (pixels, _) = row.as_chunks_mut::<4>();
+        let (source_pixels, _) = source_row.as_chunks::<4>();
+        for (pixel, [blue, green, red, _]) in pixels.iter_mut().zip(source_pixels) {
+            *pixel = [*red, *green, *blue, 0xFF];
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Composed<'a> {
+    pub(crate) display: u32,
+    layout: FrameLayout,
+    image: &'a [u8],
+    pointer: &'a Pointer,
+}
+
+impl Composed<'_> {
+    pub(crate) fn layout(&self) -> FrameLayout {
+        self.layout
+    }
+
+    /// Copies the image into `slot`, `layout().slot_len()` bytes, and draws the pointer.
+    pub(crate) fn write_into(&self, slot: &mut [u8]) {
+        slot.copy_from_slice(self.image);
+        self.pointer.draw(slot, self.layout.width());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use super::*;
+
+    const SIZE: Size = Size {
+        width: 4,
+        height: 2,
+    };
+    const POINTER: [u8; 4] = [1, 2, 3, 255];
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Call {
+        Attach,
+        Duplicate(u32),
+        Acquire(usize),
+        Copy(usize),
+        Shape(usize),
+        Release(usize),
+    }
+
+    type Calls = Rc<RefCell<Vec<Call>>>;
+
+    #[derive(Debug, Clone)]
+    enum Acquire {
+        Frame {
+            frame: AcquiredFrame,
+            copy: Result<u8, Hresult>,
+            release: Result<(), Hresult>,
+        },
+        Fail(Hresult),
+    }
+
+    #[derive(Debug, Default)]
+    struct World {
+        current: Option<Observation>,
+        desktops: VecDeque<Observation>,
+        attaches: VecDeque<Result<Observation, Hresult>>,
+        duplicates: VecDeque<Result<Vec<Acquire>, Duplicate>>,
+        calls: Calls,
+        next_id: usize,
+    }
+
+    impl World {
+        fn on(desktop: &str) -> Self {
+            Self {
+                current: Some(named(desktop)),
+                ..Self::default()
+            }
+        }
+
+        fn switch_to(&mut self, desktop: &str) {
+            self.current = Some(named(desktop));
+        }
+
+        fn duplicates(mut self, script: Vec<Result<Vec<Acquire>, Duplicate>>) -> Self {
+            self.duplicates = script.into();
+            self
+        }
+    }
+
+    impl DesktopSource for World {
+        fn poll(&mut self) -> Observation {
+            if let Some(next) = self.desktops.pop_front() {
+                return next;
+            }
+            self.current.clone().unwrap_or(Observation::Unreadable)
+        }
+    }
+
+    impl DesktopWorld for World {
+        type Duplication = Scripted;
+
+        fn attach(&mut self) -> Result<Observation, Hresult> {
+            self.calls.borrow_mut().push(Call::Attach);
+            self.attaches
+                .pop_front()
+                .unwrap_or_else(|| Ok(self.current.clone().unwrap_or(Observation::Unreadable)))
+        }
+
+        fn duplicate(&mut self, display: u32) -> Result<Scripted, Duplicate> {
+            self.calls.borrow_mut().push(Call::Duplicate(display));
+            let script = self
+                .duplicates
+                .pop_front()
+                .unwrap_or(Err(Duplicate::Failed(Hresult::E_ACCESSDENIED)))?;
+            self.next_id += 1;
+            Ok(Scripted {
+                id: self.next_id,
+                script: script.into(),
+                held: None,
+                calls: self.calls.clone(),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct Scripted {
+        id: usize,
+        script: VecDeque<Acquire>,
+        held: Option<(Result<u8, Hresult>, Result<(), Hresult>)>,
+        calls: Calls,
+    }
+
+    impl Duplication for Scripted {
+        fn size(&self) -> Size {
+            SIZE
+        }
+
+        fn acquire(&mut self, _timeout: Duration) -> Result<AcquiredFrame, Hresult> {
+            self.calls.borrow_mut().push(Call::Acquire(self.id));
+            assert!(self.held.is_none(), "AcquireNextFrame before ReleaseFrame");
+            match self
+                .script
+                .pop_front()
+                .unwrap_or(Acquire::Fail(Hresult::WAIT_TIMEOUT))
+            {
+                Acquire::Frame {
+                    frame,
+                    copy,
+                    release,
+                } => {
+                    self.held = Some((copy, release));
+                    Ok(frame)
+                }
+                Acquire::Fail(code) => Err(code),
+            }
+        }
+
+        fn copy_image(&mut self, into: &mut [u8]) -> Result<(), Hresult> {
+            self.calls.borrow_mut().push(Call::Copy(self.id));
+            let (copy, _) = self.held.expect("a copy outside a held frame");
+            assert_eq!(into.len(), (SIZE.width * SIZE.height * 4) as usize);
+            into.fill(copy?);
+            Ok(())
+        }
+
+        fn pointer_shape(&mut self) -> Result<RawPointerShape, Hresult> {
+            self.calls.borrow_mut().push(Call::Shape(self.id));
+            assert!(self.held.is_some(), "a pointer shape outside a held frame");
+            Ok(RawPointerShape {
+                kind: 2,
+                width: 1,
+                height: 1,
+                pitch: 4,
+                buffer: vec![POINTER[2], POINTER[1], POINTER[0], 255],
+            })
+        }
+
+        fn release(&mut self) -> Result<(), Hresult> {
+            self.calls.borrow_mut().push(Call::Release(self.id));
+            let (_, release) = self.held.take().expect("ReleaseFrame without a frame");
+            release
+        }
+    }
+
+    fn named(name: &str) -> Observation {
+        Observation::Named(name.into())
+    }
+
+    fn image(fill: u8) -> Acquire {
+        Acquire::Frame {
+            frame: AcquiredFrame {
+                accumulated_frames: 1,
+                last_present_time: 42,
+                pointer: None,
+                shape_changed: false,
+            },
+            copy: Ok(fill),
+            release: Ok(()),
+        }
+    }
+
+    fn released_with(acquire: Acquire, code: Hresult) -> Acquire {
+        match acquire {
+            Acquire::Frame { frame, copy, .. } => Acquire::Frame {
+                frame,
+                copy,
+                release: Err(code),
+            },
+            Acquire::Fail(_) => acquire,
+        }
+    }
+
+    fn pointer_only(x: i32, y: i32) -> Acquire {
+        Acquire::Frame {
+            frame: AcquiredFrame {
+                accumulated_frames: 0,
+                last_present_time: 0,
+                pointer: Some(PointerPosition {
+                    visible: true,
+                    x,
+                    y,
+                }),
+                shape_changed: true,
+            },
+            copy: Ok(0),
+            release: Ok(()),
+        }
+    }
+
+    struct Harness {
+        machine: ScreenMachine<World>,
+        now: Instant,
+        events: Vec<ScreenEvent>,
+    }
+
+    impl Harness {
+        fn new(world: World, display: u32) -> Self {
+            let now = Instant::now();
+            let mut machine = ScreenMachine::new(world, now);
+            let events = machine.select_display(display, now);
+            Self {
+                machine,
+                now,
+                events,
+            }
+        }
+
+        fn run(&mut self, count: u32, every: Duration) {
+            for _ in 0..count {
+                let events = self.machine.step(self.now);
+                self.events.extend(events);
+                self.now += every;
+            }
+        }
+
+        fn step(&mut self) {
+            self.run(1, Duration::from_millis(1));
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.machine.world.calls.borrow().clone()
+        }
+
+        fn duplicated(&self) -> usize {
+            self.calls()
+                .iter()
+                .filter(|call| matches!(call, Call::Duplicate(_)))
+                .count()
+        }
+
+        fn offer(&mut self) -> Option<Vec<[u8; 4]>> {
+            let frame = self.machine.dirty_frame()?;
+            let mut slot = vec![0; frame.layout().slot_len()];
+            frame.write_into(&mut slot);
+            self.machine.mark_offered();
+            Some(
+                slot.chunks(4)
+                    .map(|pixel| pixel.try_into().unwrap())
+                    .collect(),
+            )
+        }
+
+        fn app_events(&self) -> Vec<ScreenEvent> {
+            self.events
+                .iter()
+                .filter(|event| !matches!(event, ScreenEvent::Note(_)))
+                .cloned()
+                .collect()
+        }
+
+        fn notes(&self) -> Vec<Note> {
+            self.events
+                .iter()
+                .filter_map(|event| match event {
+                    ScreenEvent::Note(note) => Some(note.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn ends(&self) -> Vec<Ended> {
+            self.notes()
+                .into_iter()
+                .filter_map(|note| match note {
+                    Note::Ended { why, .. } => Some(why),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    fn solid(fill: u8) -> Vec<[u8; 4]> {
+        vec![[fill; 4]; (SIZE.width * SIZE.height) as usize]
+    }
+
+    fn with_pointer_at(mut pixels: Vec<[u8; 4]>, x: usize, y: usize) -> Vec<[u8; 4]> {
+        let at = y * SIZE.width as usize + x;
+        pixels[at] = [POINTER[0], POINTER[1], POINTER[2], pixels[at][3]];
+        pixels
+    }
+
+    #[test]
+    fn bgra_rows_with_padding_become_packed_opaque_rgba() {
+        let source = [
+            1, 2, 3, 0, 4, 5, 6, 0, 99, 99, 99, 99, //
+            7, 8, 9, 0, 10, 11, 12, 0,
+        ];
+        let mut into = [0; 16];
+        rgba_from_bgra_rows(&source, 12, 2, &mut into);
+        assert_eq!(
+            into,
+            [3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, 12, 11, 10, 255]
+        );
+    }
+
+    #[test]
+    fn nothing_is_duplicated_on_default() {
+        let mut harness = Harness::new(World::on("Default"), 1);
+        harness.run(50, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 0);
+        assert_eq!(
+            harness.app_events(),
+            [ScreenEvent::DesktopChanged(InputDesktop::Default)]
+        );
+        assert_eq!(
+            harness.machine.idle_until(),
+            Some(harness.machine.next_poll)
+        );
+    }
+
+    #[test]
+    fn nothing_is_duplicated_before_a_display_is_selected() {
+        let now = Instant::now();
+        let mut machine = ScreenMachine::new(World::on("Winlogon"), now);
+        machine.step(now);
+        assert!(machine.world.calls.borrow().is_empty());
+        machine.select_display(3, now);
+        machine.step(now);
+        assert_eq!(
+            *machine.world.calls.borrow(),
+            [Call::Attach, Call::Duplicate(3)]
+        );
+    }
+
+    #[test]
+    fn a_duplication_that_loses_access_mid_frame_recovers() {
+        let lost = Acquire::Frame {
+            frame: AcquiredFrame {
+                accumulated_frames: 1,
+                last_present_time: 43,
+                pointer: None,
+                shape_changed: false,
+            },
+            copy: Err(Hresult::ACCESS_LOST),
+            release: Ok(()),
+        };
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![image(10), lost]),
+            Ok(vec![pointer_only(1, 1), image(20)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.step();
+        harness.step();
+        assert_eq!(harness.offer(), Some(solid(10)));
+
+        harness.step();
+        assert_eq!(harness.offer(), None, "the frame that failed is discarded");
+        assert_eq!(
+            harness.ends(),
+            [Ended::Lost(Lost::Failed(Hresult::ACCESS_LOST))]
+        );
+        let calls = harness.calls();
+        assert_eq!(
+            calls[calls.len() - 3..],
+            [Call::Acquire(1), Call::Copy(1), Call::Release(1)],
+            "the failed frame is still released"
+        );
+
+        harness.step();
+        assert_eq!(harness.duplicated(), 2, "duplicated again at once");
+        harness.step();
+        assert_eq!(
+            harness.offer(),
+            None,
+            "a pointer-only first frame publishes nothing"
+        );
+        harness.step();
+        assert_eq!(harness.offer(), Some(with_pointer_at(solid(20), 1, 1)));
+        assert!(harness.notes().contains(&Note::FirstImage {
+            accumulated_frames: 1,
+            last_present_time: 42,
+            skipped: 1,
+            after: Duration::from_millis(2),
+        }));
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
+            ]
+        );
+    }
+
+    #[test]
+    fn release_frame_failures_are_switches() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![released_with(image(1), Hresult::INVALID_CALL)]),
+            Ok(vec![released_with(image(2), Hresult::ACCESS_LOST)]),
+            Ok(vec![image(3)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(6, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 3);
+        assert_eq!(harness.offer(), Some(solid(3)));
+        assert_eq!(
+            harness.ends(),
+            [Ended::Lost(Lost::Failed(Hresult::INVALID_CALL))],
+            "only the first attempt's end is logged"
+        );
+        assert!(harness.notes().contains(&Note::Retried {
+            failures: 2,
+            over: 5 * POLL_INTERVAL,
+            last: Failure::Lost(Lost::Failed(Hresult::ACCESS_LOST)),
+        }));
+    }
+
+    #[test]
+    fn access_lost_on_the_way_back_to_default_reports_default_and_stops_capturing() {
+        let world = World::on("Winlogon").duplicates(vec![Ok(vec![
+            image(1),
+            Acquire::Fail(Hresult::WAIT_TIMEOUT),
+            Acquire::Fail(Hresult::INVALID_CALL),
+        ])]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(3, Duration::from_millis(1));
+        assert!(harness.offer().is_some());
+        harness.machine.world.switch_to("Default");
+
+        harness.step();
+        assert_eq!(
+            harness.ends(),
+            [Ended::Lost(Lost::Failed(Hresult::INVALID_CALL))]
+        );
+        harness.step();
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
+                ScreenEvent::DesktopChanged(InputDesktop::Default),
+            ]
+        );
+        harness.run(50, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 1);
+        assert_eq!(harness.offer(), None);
+    }
+
+    #[test]
+    fn access_denied_is_retried_after_each_desktop_check_and_reported_after_five_seconds() {
+        let mut harness = Harness::new(World::on("Winlogon"), 2);
+        harness.run(510, Duration::from_millis(10));
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::Unavailable { display: 2 },
+            ]
+        );
+        assert!(
+            (50..=52).contains(&harness.duplicated()),
+            "{}",
+            harness.duplicated()
+        );
+        assert!(harness.notes().contains(&Note::Unavailable {
+            display: 2,
+            why: Unavailable::StillFailing(Failure::CannotDuplicate(Hresult::E_ACCESSDENIED)),
+        }));
+
+        harness.run(200, Duration::from_millis(10));
+        assert!(
+            (70..=72).contains(&harness.duplicated()),
+            "{}",
+            harness.duplicated()
+        );
+        assert_eq!(
+            harness.app_events().len(),
+            2,
+            "reported once, still retrying"
+        );
+        assert_eq!(
+            harness
+                .notes()
+                .iter()
+                .filter(|note| matches!(note, Note::CannotDuplicate { .. }))
+                .count(),
+            1,
+            "the same code is logged once"
+        );
+    }
+
+    #[test]
+    fn the_five_second_limit_counts_from_when_duplicating_began() {
+        let mut harness = Harness::new(World::on("Winlogon"), 2);
+        harness.run(499, Duration::from_millis(10));
+        assert_eq!(harness.app_events().len(), 1, "not yet at 4.99 s");
+        harness.run(2, Duration::from_millis(10));
+        assert_eq!(harness.app_events().len(), 2);
+    }
+
+    #[test]
+    fn unsupported_is_reported_until_the_next_desktop_change() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Err(Duplicate::Failed(Hresult::UNSUPPORTED)),
+            Ok(vec![image(5)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(30, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 1);
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::Unavailable { display: 1 },
+            ]
+        );
+
+        harness.machine.world.switch_to("Screen-saver");
+        harness.run(3, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 2);
+        assert_eq!(harness.offer(), Some(solid(5)));
+    }
+
+    #[test]
+    fn an_unknown_display_is_reported_unavailable() {
+        let world = World::on("Winlogon").duplicates(vec![Err(Duplicate::NoSuchDisplay)]);
+        let mut harness = Harness::new(world, 9);
+        harness.run(30, POLL_INTERVAL);
+        assert_eq!(harness.duplicated(), 1);
+        assert_eq!(
+            harness.app_events()[1..],
+            [ScreenEvent::Unavailable { display: 9 }]
+        );
+        assert!(harness.notes().contains(&Note::Unavailable {
+            display: 9,
+            why: Unavailable::NoSuchDisplay
+        }));
+    }
+
+    #[test]
+    fn a_switch_between_the_check_and_the_attach_rechecks_the_desktop() {
+        let mut world = World::on("Winlogon");
+        world.attaches.push_back(Ok(named("Default")));
+        world.current = Some(named("Default"));
+        world.desktops.push_back(named("Winlogon"));
+        let mut harness = Harness::new(world, 1);
+        harness.step();
+        harness.step();
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::DesktopChanged(InputDesktop::Default),
+            ],
+            "checked again on the next step, not the next interval"
+        );
+        assert_eq!(harness.calls(), [Call::Attach]);
+    }
+
+    #[test]
+    fn selecting_another_display_drops_the_image_and_duplicates_again() {
+        let world = World::on("Winlogon").duplicates(vec![Ok(vec![image(1)]), Ok(vec![])]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(2, Duration::from_millis(1));
+        assert!(harness.machine.dirty_frame().is_some());
+
+        let now = harness.now;
+        assert_eq!(harness.machine.select_display(1, now), []);
+        let events = harness.machine.select_display(2, now);
+        assert!(matches!(
+            events[..],
+            [
+                ScreenEvent::CaptureEnded,
+                ScreenEvent::Note(Note::Ended {
+                    why: Ended::DisplaySelected,
+                    stats: Stats { images: 1, .. },
+                    ..
+                })
+            ]
+        ));
+        assert_eq!(harness.offer(), None);
+        harness.step();
+        assert_eq!(harness.calls().last(), Some(&Call::Duplicate(2)));
+    }
+
+    #[test]
+    fn a_pointer_only_update_redraws_the_pointer_on_the_last_image() {
+        let world = World::on("Winlogon").duplicates(vec![Ok(vec![
+            image(7),
+            pointer_only(3, 0),
+            Acquire::Fail(Hresult::WAIT_TIMEOUT),
+        ])]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(2, Duration::from_millis(1));
+        assert_eq!(harness.offer(), Some(solid(7)));
+        harness.step();
+        assert_eq!(harness.offer(), Some(with_pointer_at(solid(7), 3, 0)));
+        harness.step();
+        assert_eq!(harness.offer(), None, "a still screen offers nothing new");
+    }
+
+    #[test]
+    fn a_duplication_that_ends_after_an_image_ends_the_capture_for_the_channel() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![image(1), Acquire::Fail(Hresult::ACCESS_LOST)]),
+            Ok(vec![image(2)]),
+            Ok(vec![image(3)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(3, Duration::from_millis(1));
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
+            ],
+            "lost on the same desktop"
+        );
+
+        harness.run(2, Duration::from_millis(1));
+        let now = harness.now;
+        assert!(
+            harness
+                .machine
+                .select_display(2, now)
+                .contains(&ScreenEvent::CaptureEnded),
+            "another display selected"
+        );
+
+        harness.run(2, Duration::from_millis(1));
+        harness.machine.world.switch_to("Default");
+        harness.run(2, POLL_INTERVAL);
+        assert_eq!(
+            harness.app_events()[2..],
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Default),
+                ScreenEvent::CaptureEnded,
+            ],
+            "the desktop changed"
+        );
+    }
+
+    #[test]
+    fn a_desktop_change_forgets_the_pointer() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![pointer_only(1, 1), image(5)]),
+            Ok(vec![image(6)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(3, Duration::from_millis(1));
+        assert_eq!(harness.offer(), Some(with_pointer_at(solid(5), 1, 1)));
+
+        harness.machine.world.switch_to("Screen-saver");
+        harness.run(3, POLL_INTERVAL);
+        assert_eq!(
+            harness.offer(),
+            Some(solid(6)),
+            "the last desktop's pointer isn't drawn"
+        );
+    }
+
+    #[test]
+    fn a_duplication_with_no_image_within_a_second_is_replaced() {
+        let world = World::on("Winlogon")
+            .duplicates(vec![Ok(vec![pointer_only(0, 0)]), Ok(vec![image(3)])]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(9, Duration::from_millis(100));
+        assert_eq!(harness.duplicated(), 1);
+        assert_eq!(harness.offer(), None);
+        harness.run(2, Duration::from_millis(100));
+        assert_eq!(harness.ends(), [Ended::Lost(Lost::NoImage)]);
+        harness.run(2, Duration::from_millis(1));
+        assert_eq!(harness.duplicated(), 2);
+        assert_eq!(harness.offer(), Some(with_pointer_at(solid(3), 0, 0)));
+    }
+
+    /// Runs 15 simulated seconds of duplications that `script` makes show no image, then one
+    /// that shows an image.
+    fn a_streak_is_paced_reported_once_and_recovers(script: impl Fn(usize) -> Vec<Acquire>) {
+        let world = World::on("Winlogon").duplicates((0..1000).map(|n| Ok(script(n))).collect());
+        let mut harness = Harness::new(world, 1);
+        let began = harness.now;
+        let mut duplications = [0; 15];
+        let mut reports = Vec::new();
+        for _ in 0..1500 {
+            let at = harness.now - began;
+            let (seen, duplicated) = (harness.events.len(), harness.duplicated());
+            harness.run(1, Duration::from_millis(10));
+            duplications[usize::try_from(at.as_secs()).unwrap()] +=
+                harness.duplicated() - duplicated;
+            if harness.events[seen..].contains(&ScreenEvent::Unavailable { display: 1 }) {
+                reports.push(at);
+            }
+        }
+        assert!(
+            duplications.iter().all(|&count| count <= 11),
+            "duplications per second: {duplications:?}"
+        );
+        assert_eq!(reports.len(), 1, "reported once: {reports:?}");
+        assert!(
+            (GIVE_UP_LIMIT..=GIVE_UP_LIMIT + 2 * POLL_INTERVAL).contains(&reports[0]),
+            "reported at {:?}",
+            reports[0]
+        );
+        let notes = harness.notes();
+        assert!(notes.len() <= 4, "{notes:#?}");
+
+        harness.machine.world.duplicates = [Ok(vec![image(9)])].into();
+        harness.run(150, Duration::from_millis(10));
+        assert_eq!(
+            harness.offer(),
+            Some(solid(9)),
+            "a later duplication recovers"
+        );
+        let notes = harness.notes();
+        assert!(notes.len() <= 6, "{notes:#?}");
+    }
+
+    #[test]
+    fn duplications_that_fail_on_every_acquire_are_paced_and_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|_| vec![Acquire::Fail(Hresult::ACCESS_LOST)]);
+    }
+
+    #[test]
+    fn duplications_that_never_show_an_image_are_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|_| vec![pointer_only(-8, -8)]);
+    }
+
+    #[test]
+    fn duplications_that_fail_or_show_nothing_by_turns_are_paced_and_reported_once() {
+        a_streak_is_paced_reported_once_and_recovers(|n| {
+            if n % 2 == 0 {
+                vec![Acquire::Fail(Hresult::ACCESS_LOST)]
+            } else {
+                vec![]
+            }
+        });
+    }
+
+    #[test]
+    fn a_duplication_too_large_for_a_section_is_unavailable() {
+        struct Huge(World);
+        impl DesktopSource for Huge {
+            fn poll(&mut self) -> Observation {
+                self.0.poll()
+            }
+        }
+        impl DesktopWorld for Huge {
+            type Duplication = HugeDuplication;
+            fn attach(&mut self) -> Result<Observation, Hresult> {
+                self.0.attach()
+            }
+            fn duplicate(&mut self, display: u32) -> Result<HugeDuplication, Duplicate> {
+                self.0.duplicate(display).map(HugeDuplication)
+            }
+        }
+        struct HugeDuplication(Scripted);
+        impl Duplication for HugeDuplication {
+            fn size(&self) -> Size {
+                Size {
+                    width: 10_240,
+                    height: 4_320,
+                }
+            }
+            fn acquire(&mut self, timeout: Duration) -> Result<AcquiredFrame, Hresult> {
+                self.0.acquire(timeout)
+            }
+            fn copy_image(&mut self, into: &mut [u8]) -> Result<(), Hresult> {
+                self.0.copy_image(into)
+            }
+            fn pointer_shape(&mut self) -> Result<RawPointerShape, Hresult> {
+                self.0.pointer_shape()
+            }
+            fn release(&mut self) -> Result<(), Hresult> {
+                self.0.release()
+            }
+        }
+
+        let now = Instant::now();
+        let world = Huge(World::on("Winlogon").duplicates(vec![Ok(vec![image(1)])]));
+        let mut machine = ScreenMachine::new(world, now);
+        machine.select_display(1, now);
+        let events = machine.step(now);
+        assert_eq!(
+            events.last(),
+            Some(&ScreenEvent::Unavailable { display: 1 })
+        );
+        assert_eq!(machine.step(now + POLL_INTERVAL), []);
+    }
+}

@@ -28,6 +28,14 @@ pub trait ScreenCapturer {
     fn paces_itself(&self) -> bool {
         false
     }
+
+    /// Whether the last [`ScreenCapturer::capture`] moved to a different picture source (the
+    /// Windows secure desktop replacing the user's, or back), so the stream must not resend a
+    /// frame from before it and must encode the next frame as a keyframe. The stream asks after
+    /// every capture, whatever it returned, and asking clears the change.
+    fn take_source_change(&mut self) -> bool {
+        false
+    }
 }
 
 impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
@@ -37,6 +45,10 @@ impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
 
     fn paces_itself(&self) -> bool {
         (**self).paces_itself()
+    }
+
+    fn take_source_change(&mut self) -> bool {
+        (**self).take_source_change()
     }
 }
 
@@ -51,6 +63,17 @@ pub struct StreamSettings {
     /// Media Foundation hardware encoder on Windows), falling back to OpenH264.
     pub hardware_encoder: bool,
     pub still_refinement: StillRefinement,
+}
+
+impl StreamSettings {
+    #[expect(clippy::cast_precision_loss, reason = "frame rates are small integers")]
+    fn encoder_settings(self) -> EncoderSettings {
+        EncoderSettings {
+            bitrate_bps: self.bitrate_bps,
+            max_fps: self.max_fps.max(1) as f32,
+            hardware: self.hardware_encoder,
+        }
+    }
 }
 
 impl Default for StreamSettings {
@@ -237,12 +260,7 @@ where
     let mut capturer = open_capturer()?;
     let paced_by_source = capturer.paces_itself();
     let mut scaler = FrameScaler::default();
-    #[expect(clippy::cast_precision_loss, reason = "frame rates are small integers")]
-    let mut encoder = VideoEncoder::new(EncoderSettings {
-        bitrate_bps: settings.bitrate_bps,
-        max_fps: settings.max_fps.max(1) as f32,
-        hardware: settings.hardware_encoder,
-    })?;
+    let mut encoder = VideoEncoder::new(settings.encoder_settings())?;
 
     let interval = Duration::from_secs(1) / settings.max_fps.max(1);
     let refinement = settings.still_refinement;
@@ -267,12 +285,18 @@ where
         }
 
         let wait = match &still {
-            Some(screen) if !hidden_reported && !consumer_is_behind(sink, control) => {
+            Some(screen) if !consumer_is_behind(sink, control) => {
                 screen.capture_timeout(refinement, now)
             }
             _ => SOURCE_WAIT,
         };
-        let (captured, resend) = match capturer.capture(wait).inspect(|_| hidden_reported = false) {
+        let captured = capturer.capture(wait);
+        if capturer.take_source_change() {
+            still = None;
+            // Sticky, so a frame skipped for a full sink passes it on to the next one.
+            control.keyframe_requested.store(true, Ordering::Relaxed);
+        }
+        let (captured, resend) = match captured.inspect(|_| hidden_reported = false) {
             Ok(Some(frame)) => {
                 failing_since = None;
                 if paced_by_source {
@@ -292,6 +316,9 @@ where
                 }
             }
             Err(CaptureError::SecureDesktop) => {
+                // The last frame may show a screen that is gone when the stretch ends (the
+                // helper's secure desktop, after the helper died), so it is never resent.
+                still = None;
                 if !std::mem::replace(&mut hidden_reported, true) {
                     deliver_error(sink, control, CaptureError::SecureDesktop.into());
                 }
@@ -603,6 +630,141 @@ mod tests {
         stream.stop();
     }
 
+    struct SourceSwitcher {
+        inner: SyntheticCapturer,
+        captured: u32,
+        changes_on: u32,
+    }
+
+    impl ScreenCapturer for SourceSwitcher {
+        fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            self.captured += 1;
+            self.inner.capture(timeout)
+        }
+
+        fn take_source_change(&mut self) -> bool {
+            self.captured == self.changes_on
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_change_makes_the_next_frame_a_keyframe() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let stream = spawn_capture_stream(
+            || {
+                Ok(SourceSwitcher {
+                    inner: SyntheticCapturer::new(64, 64),
+                    captured: 0,
+                    changes_on: 5,
+                })
+            },
+            settings(),
+            sender,
+        )
+        .unwrap();
+        let mut decoder = crate::codec::VideoDecoder::new().unwrap();
+        let mut keyframes = Vec::new();
+        for index in 0..10 {
+            let frame = receiver.recv().await.unwrap().unwrap();
+            if frame.keyframe {
+                keyframes.push(index);
+            }
+            assert!(
+                decoder.decode(&frame.data).unwrap().is_some(),
+                "frame {index}"
+            );
+        }
+        stream.stop();
+        assert_eq!(keyframes, [0, 4]);
+    }
+
+    /// A source on its own clock that shows one frame, moves to another source at the next
+    /// capture, which shows nothing until `shows_from`, and then a moving screen.
+    struct SwitchesWithoutAFrame {
+        inner: SyntheticCapturer,
+        captured: u32,
+        shows_from: Instant,
+    }
+
+    impl ScreenCapturer for SwitchesWithoutAFrame {
+        fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            self.captured += 1;
+            if self.captured > 1 && Instant::now() < self.shows_from {
+                std::thread::sleep(timeout);
+                return Ok(None);
+            }
+            self.inner.capture(timeout)
+        }
+
+        fn paces_itself(&self) -> bool {
+            true
+        }
+
+        fn take_source_change(&mut self) -> bool {
+            self.captured == 2
+        }
+    }
+
+    /// Runs [`SwitchesWithoutAFrame`] and returns the first frame after the switch, failing if it
+    /// came before the new source showed anything.
+    async fn first_frame_after_a_frameless_switch(
+        settings: StreamSettings,
+        ask_for_keyframes: bool,
+    ) -> EncodedFrame {
+        let shows_from = Instant::now() + Duration::from_millis(800);
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            move || {
+                Ok(SwitchesWithoutAFrame {
+                    inner: SyntheticCapturer::new(64, 64),
+                    captured: 0,
+                    shows_from,
+                })
+            },
+            settings,
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        let mut asks = tokio::time::interval(Duration::from_millis(50));
+        let next = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    _ = asks.tick(), if ask_for_keyframes => stream.request_keyframe(),
+                    received = receiver.recv() => break received,
+                }
+            }
+        })
+        .await
+        .expect("frames must resume once the new source shows one");
+        let early = shows_from.saturating_duration_since(Instant::now());
+        assert!(
+            early.is_zero(),
+            "a frame was sent {early:?} before the new source showed one"
+        );
+        stream.stop();
+        next.unwrap().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_frame_from_before_a_source_change_is_never_resent() {
+        let next = first_frame_after_a_frameless_switch(settings(), true).await;
+        assert!(next.keyframe);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_change_without_a_frame_makes_the_next_frame_a_keyframe() {
+        let settings = StreamSettings {
+            still_refinement: StillRefinement {
+                frames: 0,
+                ..REFINEMENT
+            },
+            ..settings()
+        };
+        let next = first_frame_after_a_frameless_switch(settings, false).await;
+        assert!(next.keyframe, "the new source's first frame");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn capture_failure_is_reported_and_ends_the_stream() {
         let (sender, mut receiver) = mpsc::channel(1);
@@ -836,6 +998,51 @@ mod tests {
             }
         }
         assert_eq!(notices, 2, "one notice for each hidden stretch");
+        stream.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_frame_from_before_a_secure_desktop_is_not_resent_after_it() {
+        let hidden_for = Duration::from_millis(300);
+        let still_for = Duration::from_millis(1000);
+        let moves_from = Instant::now() + hidden_for + still_for;
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            move || {
+                Ok(ScriptedScreen::new(
+                    vec![
+                        (Shows::SecureDesktop, hidden_for),
+                        (Shows::StillScreen, still_for),
+                    ],
+                    Arc::default(),
+                ))
+            },
+            settings(),
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(Err(StreamError::Capture(CaptureError::SecureDesktop)))
+        ));
+        let mut asks = tokio::time::interval(Duration::from_millis(100));
+        let resumed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    _ = asks.tick() => stream.request_keyframe(),
+                    received = receiver.recv() => break received,
+                }
+            }
+        })
+        .await
+        .expect("frames must resume once the screen moves");
+        assert!(matches!(resumed, Some(Ok(_))), "{resumed:?}");
+        let early = moves_from.saturating_duration_since(Instant::now());
+        assert!(
+            early.is_zero(),
+            "a frame from before the secure desktop was sent {early:?} before the screen moved"
+        );
         stream.stop();
     }
 

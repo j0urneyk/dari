@@ -146,8 +146,8 @@ input, wherever it sits on the network.
 
 ## Known limitations
 
-- Windows' secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) can't be captured or controlled by a
-  regular app. The viewer says so while it is up; someone at the host has to answer it.
+- The viewer sees a Windows host's secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) but can't answer it
+  yet. Someone at the host has to.
 - A Windows PC without a hardware H.264 encoder encodes on the CPU, at a much lower frame rate. There's no
   unattended access, and a Mac shares its sound only on macOS 14.6 or later.
 - Builds exist only for Apple silicon Macs and x64 Windows.

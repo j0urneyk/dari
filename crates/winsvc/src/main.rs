@@ -5,9 +5,17 @@
 use std::process::ExitCode;
 
 #[cfg_attr(not(windows), allow(dead_code))]
+mod channel;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod command;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod dxgi_result;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod limiter;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod pointer;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod screen;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod slot;
 #[cfg_attr(not(windows), allow(dead_code))]

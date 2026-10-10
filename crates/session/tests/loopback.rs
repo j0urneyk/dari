@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use dari_input::{InjectError, InputBackend, RecordedAction};
 use dari_media::{
     AudioCapturer, AudioChunk, AudioError, AudioOutput, AudioOutputFactory, CaptureError,
-    DisplayInfo, PermissionState, PlaybackBuffer, ScreenCapturer, StreamSettings,
-    SyntheticAudioCapturer, SyntheticCapturer,
+    DecodedFrame, DisplayInfo, PermissionState, PlaybackBuffer, RgbaFrame, ScreenCapturer,
+    StreamSettings, SyntheticAudioCapturer, SyntheticCapturer,
 };
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
@@ -25,10 +25,11 @@ use dari_proto::{
 };
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
-    HostPolicy, RelayStatus, SecureDesktopEvent, SecureDesktopLink, SessionEndReason, Transfer,
-    TransferDirection, TransferState, ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer,
-    start_host,
+    HostPolicy, LinkCommand, LinkDriver, RelayStatus, SecureDesktopLink, SessionEndReason,
+    Transfer, TransferDirection, TransferState, ViewerConfig, ViewerEvent, ViewerTarget,
+    connect_viewer, start_host,
 };
+use futures_util::FutureExt;
 use tokio::sync::mpsc;
 
 const DISPLAY: DisplayInfo = DisplayInfo {
@@ -72,7 +73,7 @@ struct TestPlatform {
     secure_links: Option<SecureLinks>,
 }
 
-type SecureLinks = Arc<Mutex<Vec<(bool, mpsc::UnboundedSender<SecureDesktopEvent>)>>>;
+type SecureLinks = Arc<Mutex<Vec<(bool, Option<LinkDriver>)>>>;
 
 struct HideableCapturer {
     screen: SyntheticCapturer,
@@ -230,9 +231,9 @@ impl HostPlatform for TestPlatform {
     }
     fn open_secure_desktop(&self, input: bool) -> Option<SecureDesktopLink> {
         let links = self.secure_links.as_ref()?;
-        let (events, receiver) = mpsc::unbounded_channel();
-        links.lock().unwrap().push((input, events));
-        Some(SecureDesktopLink::new(receiver))
+        let (link, driver) = SecureDesktopLink::pair();
+        links.lock().unwrap().push((input, Some(driver)));
+        Some(link)
     }
     fn audio_access(&self) -> PermissionState {
         if self.audio_unasked {
@@ -1542,11 +1543,30 @@ fn helper_platform() -> (TestPlatform, SecureLinks) {
     (platform, links)
 }
 
-async fn only_link(links: &SecureLinks) -> (bool, mpsc::UnboundedSender<SecureDesktopEvent>) {
+async fn only_link(links: &SecureLinks) -> (bool, LinkDriver) {
     wait_until(|| !links.lock().unwrap().is_empty()).await;
-    let links = links.lock().unwrap();
+    let mut links = links.lock().unwrap();
     assert_eq!(links.len(), 1, "the session opened more than one link");
-    links[0].clone()
+    let (input, driver) = &mut links[0];
+    (*input, driver.take().expect("the link was taken already"))
+}
+
+fn link_held(driver: &mut LinkDriver) -> bool {
+    loop {
+        match driver.command().now_or_never() {
+            Some(Some(_)) => {}
+            Some(None) => return false,
+            None => return true,
+        }
+    }
+}
+
+async fn wait_until_dropped(driver: &mut LinkDriver) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while driver.command().await.is_some() {}
+    })
+    .await
+    .expect("the session kept the helper's link after it ended");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1563,28 +1583,24 @@ async fn the_secure_desktop_helper_starts_after_approval_and_stops_with_the_sess
     assert!(links.lock().unwrap().is_empty(), "started before approval");
 
     approve(&mut host, ApprovalDecision::AllowControl).await;
-    let (input, helper) = only_link(&links).await;
+    let (input, mut helper) = only_link(&links).await;
     assert!(input);
     for desktop in [
         InputDesktop::Default,
         InputDesktop::Winlogon,
         InputDesktop::Default,
     ] {
-        helper
-            .send(SecureDesktopEvent::DesktopChanged(desktop))
-            .unwrap();
+        helper.desktop_changed(desktop);
     }
     let mut frames = viewer.frames();
     tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
         .await
         .unwrap()
         .unwrap();
-    assert!(!helper.is_closed());
+    assert!(link_held(&mut helper));
 
     viewer.disconnect();
-    tokio::time::timeout(Duration::from_secs(10), helper.closed())
-        .await
-        .expect("the session kept the helper's link after it ended");
+    wait_until_dropped(&mut helper).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1626,14 +1642,7 @@ async fn a_secure_desktop_link_that_ends_leaves_the_session_running() {
         .await
         .unwrap();
     let (_input, helper) = only_link(&links).await;
-    helper
-        .send(SecureDesktopEvent::Ended(
-            "the helper closed its pipe".into(),
-        ))
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), helper.closed())
-        .await
-        .expect("the session kept a link that ended");
+    helper.end("the helper closed its pipe".into());
 
     let mut frames = viewer.frames();
     tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
@@ -1656,4 +1665,197 @@ async fn a_secure_desktop_link_that_ends_leaves_the_session_running() {
         .await,
         ViewerEvent::Ended(SessionEndReason::HostEnded)
     );
+}
+
+const STREAM_WIDTH: u32 = 320;
+const STREAM_HEIGHT: u32 = 180;
+
+fn solid(rgb: [u8; 3], square: Option<[u8; 3]>) -> RgbaFrame {
+    let mut pixels = Vec::new();
+    for y in 0..STREAM_HEIGHT {
+        for x in 0..STREAM_WIDTH {
+            let inside = (140..180).contains(&x) && (70..110).contains(&y);
+            let [r, g, b] = match square {
+                Some(color) if inside => color,
+                _ => rgb,
+            };
+            pixels.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    RgbaFrame::new(STREAM_WIDTH, STREAM_HEIGHT, pixels).unwrap()
+}
+
+const BLUE: [u8; 3] = [0, 0, 255];
+const GREEN: [u8; 3] = [0, 255, 0];
+const RED: [u8; 3] = [255, 0, 0];
+
+fn looks(frame: &DecodedFrame, x: u32, y: u32, rgb: [u8; 3]) -> bool {
+    let at = ((y * frame.width + x) * 4) as usize;
+    let bgr = &frame.bgra[at..at + 3];
+    [bgr[2], bgr[1], bgr[0]]
+        .iter()
+        .zip(rgb)
+        .all(|(&got, want)| got.abs_diff(want) < 60)
+}
+
+fn synthetic(frame: &DecodedFrame) -> bool {
+    looks(frame, STREAM_WIDTH - 10, STREAM_HEIGHT - 10, [246, 128, 9])
+}
+
+fn blue(frame: &DecodedFrame) -> bool {
+    looks(frame, 10, 10, BLUE)
+}
+
+async fn wait_for_frame(
+    frames: &mut tokio::sync::watch::Receiver<Option<Arc<DecodedFrame>>>,
+    shows: impl Fn(&DecodedFrame) -> bool,
+) {
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        frames.wait_for(|frame| frame.as_deref().is_some_and(&shows)),
+    )
+    .await
+    .expect("the viewer never showed the expected frame")
+    .unwrap();
+}
+
+async fn next_command(driver: &mut LinkDriver) -> Option<LinkCommand> {
+    tokio::time::timeout(Duration::from_secs(10), driver.command())
+        .await
+        .expect("the session sent the link no command")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_secure_desktop_replaces_the_screen_in_one_stream_with_a_keyframe_at_each_switch() {
+    let (platform, links) = helper_platform();
+    let captured = platform.captured.clone();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, mut helper) = only_link(&links).await;
+    assert_eq!(
+        next_command(&mut helper).await,
+        Some(LinkCommand::SelectDisplay(DISPLAY.id))
+    );
+    helper.desktop_changed(InputDesktop::Default);
+    let mut frames = viewer.frames();
+    wait_for_frame(&mut frames, synthetic).await;
+    let keyframes = || viewer.stats().keyframes_received.load(Ordering::SeqCst);
+    assert_eq!(keyframes(), 1);
+
+    helper.desktop_changed(InputDesktop::Winlogon);
+    // Nothing signals that the capture thread saw the switch; it polls every 50 ms.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    viewer.request_keyframe();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        keyframes(),
+        1,
+        "the user's desktop isn't sent again once the secure desktop replaced it"
+    );
+    helper.frame(DISPLAY.id, solid(BLUE, None));
+    wait_for_frame(&mut frames, blue).await;
+    assert_eq!(keyframes(), 2);
+    helper.frame(DISPLAY.id, solid(BLUE, Some(RED)));
+    wait_for_frame(&mut frames, |frame| {
+        blue(frame) && looks(frame, 160, 90, RED)
+    })
+    .await;
+    assert_eq!(
+        keyframes(),
+        2,
+        "a second frame of the same source isn't a keyframe"
+    );
+    assert_eq!(*captured.lock().unwrap(), [DISPLAY.id]);
+
+    helper.desktop_changed(InputDesktop::Default);
+    wait_for_frame(&mut frames, synthetic).await;
+    assert_eq!(keyframes(), 3);
+    assert_eq!(*captured.lock().unwrap(), [DISPLAY.id, DISPLAY.id]);
+
+    while let Ok(event) = viewer_events.try_recv() {
+        if let ViewerEvent::HostStatus(status) = event {
+            assert_eq!(status.screen, Availability::Available);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_of_another_display_never_reaches_the_viewer() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, mut helper) = only_link(&links).await;
+    assert_eq!(
+        next_command(&mut helper).await,
+        Some(LinkCommand::SelectDisplay(DISPLAY.id))
+    );
+    helper.desktop_changed(InputDesktop::Winlogon);
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::Displays { .. })
+    })
+    .await;
+
+    viewer.select_display(SECOND_DISPLAY.id);
+    assert_eq!(
+        next_command(&mut helper).await,
+        Some(LinkCommand::SelectDisplay(SECOND_DISPLAY.id))
+    );
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::Displays { active, .. } if *active == SECOND_DISPLAY.id)
+    })
+    .await;
+    helper.frame(DISPLAY.id, solid(GREEN, None));
+    let mut frames = viewer.frames();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !frames
+            .borrow()
+            .as_deref()
+            .is_some_and(|frame| looks(frame, 10, 10, GREEN)),
+        "the viewer saw a frame of the display it didn't select"
+    );
+
+    helper.frame(SECOND_DISPLAY.id, solid(BLUE, None));
+    wait_for_frame(&mut frames, blue).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_helper_that_dies_on_the_secure_desktop_brings_back_the_notice() {
+    let (platform, links) = helper_platform();
+    let hidden = platform.secure_desktop.clone();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let mut screen = StatusChanges::of(|status| status.screen);
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::Available
+    );
+    let (_input, helper) = only_link(&links).await;
+    helper.desktop_changed(InputDesktop::Default);
+    let mut frames = viewer.frames();
+    wait_for_frame(&mut frames, synthetic).await;
+
+    hidden.store(true, Ordering::SeqCst);
+    helper.desktop_changed(InputDesktop::Winlogon);
+    helper.frame(DISPLAY.id, solid(BLUE, None));
+    wait_for_frame(&mut frames, blue).await;
+
+    helper.end("the helper closed its pipe".into());
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::SecureDesktop
+    );
+
+    hidden.store(false, Ordering::SeqCst);
+    assert_eq!(
+        screen.next_change(&mut viewer_events).await,
+        Availability::Available
+    );
+    wait_for_frame(&mut frames, synthetic).await;
 }

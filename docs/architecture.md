@@ -99,7 +99,12 @@ are retried for up to 30 seconds, after which `HostStatus` reports `PermissionDe
 secure desktop (a UAC prompt, the lock screen, Ctrl+Alt+Del) is not a failure either. Windows.Graphics.Capture can't
 see it: behind the lock screen it delivers nothing, and behind a UAC prompt it keeps delivering the dimmed desktop. The
 Windows capturer checks the input desktop every 300 ms, drops frames and reports `SecureDesktop` while the input
-desktop is not the user's, and reports `Available` again with the first frame after it.
+desktop is not the user's, and reports `Available` again with the first frame after it. When the probe sees the
+user's desktop again, it restarts the capture, because the frames around the switch were dropped and a still screen
+sends no more. A new capture session's first frame shows the desktop that came back. The capture thread also forgets
+its still frame during a secure desktop, so it never resends a picture of a screen that is gone. While the
+[secure-desktop helper](#the-secure-desktop-helper-windows) runs, the stream shows the helper's frames of that
+desktop instead, and `HostStatus` stays `Available`.
 
 ### Capture and backpressure
 
@@ -288,15 +293,17 @@ than through a manifest). When the display changes, the input coordinate space f
 
 Windows.Graphics.Capture and `SendInput` can't reach the Winlogon desktop, which shows UAC prompts, the lock screen,
 and the Ctrl+Alt+Del screen. Two more processes, both `dari-service.exe`, can. The
-[secure desktop design](design/secure-desktop.md) describes the whole plan. So far the helper only reports which
-desktop receives input; capture and input on Winlogon come later.
+[secure desktop design](design/secure-desktop.md) describes the whole plan. The helper reports which desktop receives
+input and captures every desktop other than `Default` with DXGI Desktop Duplication. Input on Winlogon comes later.
 
 ```text
 dari.exe (user, medium integrity)
   ├── \\.\pipe\dari-service ──► dari-service.exe service (LocalSystem, session 0)
   │                                   vets the client, starts the helper
   └── \\.\pipe\dari-helper-<random> ◄── dari-service.exe helper (SYSTEM, the user's session)
-                                        reports the input desktop every 100 ms
+        ▲                               reports the input desktop every 100 ms,
+        │                               duplicates the selected display off Default
+        └── frame section (read-only in dari.exe) ◄── the helper writes RGBA frames
 ```
 
 1. After the host user approves a viewer, the host session calls `HostPlatform::open_secure_desktop` with `input`
@@ -318,8 +325,61 @@ dari.exe (user, medium integrity)
    reads it, impersonates the client to check that it is LocalSystem, and only then accepts it.
 5. The session logs each `DesktopChanged` and drops the link when it ends (the service is missing or refused, the
    helper never connected or failed the check, or its pipe closed), without starting another helper that session.
-   At the session's end it drops the link first, which closes the helper's pipe, and the helper exits. PR 36's
-   `SecureDesktop` notice is unchanged.
+   At the session's end it drops the link first, which closes the helper's pipe, and the helper exits.
+
+#### Capturing the secure desktop
+
+The session owns the link, and each capture thread borrows a read-only `SecureDesktopView` of it, so `SelectDisplay`,
+`SetQuality`, and `SetFrameRate` restart capture without touching the helper. The session tells the link which
+display the viewer watches, before the first capture and before each display switch, and the link forwards it to the
+helper as `SelectDisplay`.
+
+The helper runs two threads. The main thread is the pipe's only reader and passes the app's messages to the screen
+thread. The screen thread is the pipe's only writer, so the pipe's order is the order things happened: a `Frame`
+after `DesktopChanged(Winlogon)` shows Winlogon. The screen thread polls the input desktop every 100 ms
+(`ScreenMachine` in `screen.rs`). On any desktop but `Default` it attaches to that desktop with `SetThreadDesktop`,
+finds the DXGI output whose `HMONITOR` matches the selected display on any adapter, creates a Direct3D 11 device on
+that adapter, and duplicates the output. `dxgi_result.rs` maps every DXGI result to an action:
+
+- `DXGI_ERROR_WAIT_TIMEOUT` from `AcquireNextFrame` means the screen is still.
+- Any other failure of `AcquireNextFrame`, of the copy, of `GetFramePointerShape`, or of `ReleaseFrame` means the
+  desktop switched or the mode changed. The helper drops the duplication, checks the desktop at once, and
+  duplicates again: at once if the duplication showed an image, otherwise 100 ms later. In the VM, `ACCESS_LOST`
+  comes on the way back to `Default`.
+- `E_ACCESSDENIED` from `DuplicateOutput` is retried after each desktop check, and reported as `ScreenUnavailable`
+  after 5 seconds. `DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SESSION_DISCONNECTED`, a rotated output, and a display
+  that matches no output are reported at once, until the desktop or display changes.
+
+A new duplication publishes nothing until its first frame with `AccumulatedFrames` above 0: the first frame can be a
+pointer-only update whose texture is black. A duplication that has no image after 1 second is replaced. When no
+attempt shows an image for 5 seconds after a desktop or display change, or after a duplication with an image ended,
+the helper reports `ScreenUnavailable` once and keeps retrying. Frames don't include the pointer, so the helper draws
+the shape from `GetFramePointerShape` at the frame's pointer position (`pointer.rs`), and forgets the pointer when the
+desktop changes. It logs each duplication's start, its first image's `AccumulatedFrames`, and a summary when it ends.
+Of attempts that show no image, it logs only the first and one summary of the rest.
+
+Pixels never cross the pipe. The helper creates an unnamed section laid out by `dari_proto::FrameLayout` (a header page,
+then two page-aligned slots of tightly packed RGBA) and duplicates a handle to it into the app's process with
+`FILE_MAP_READ` only, sent as `FrameSection`. The app can't write to the section, so it acknowledges frames over the
+pipe. `AppChannel` (`channel.rs`) publishes a frame as `Frame { display, slot, sequence }`. The app owns that slot until
+it answers with `RequestFrame`, which it sends for every `Frame`, kept or not. The helper writes only the other slot,
+keeps the newest frame there as a draft, and publishes the draft when the credit comes back. A desktop change, a display
+change, the end of the duplication that drew the draft, or `ScreenUnavailable` discards the draft. A size change waits
+until the app owns no slot, then sends a new `FrameSection` and closes the helper's handle to the old one. The app's
+view keeps the old section alive until the app maps the new one.
+
+In the app, the link's task maps each section read-only, copies a published slot into an `RgbaFrame` on a blocking
+thread, and checks the slot's sequence word before and after the copy. It copies only frames of the selected display
+on a desktop other than `Default`. The capture stream runs `TwoSourceCapturer` (`secure_desktop/capturer.rs`): the
+platform's capturer on `Default`, and the helper's frames on any other desktop while the helper is connected. A
+switch changes only where frames come from. The stream keeps its encoder. The capture that sees the switch reports it
+through `ScreenCapturer::take_source_change`, and the stream then drops its still frame and makes the next frame a
+keyframe, so nothing from the old source is sent again. Each capturer serves only the display its stream was opened
+for. On each return to `Default` it opens
+Windows.Graphics.Capture again, so a frame queued before the switch, such as the dimmed desktop behind a prompt, is
+never shown. While the helper is connected, the platform capturer's own `SecureDesktop` report is ignored, because the
+helper reports every switch. Before the helper connects and after its link ends, that report passes through, and the
+viewer gets PR 36's notice.
 
 Both pipes carry `dari-proto`'s local messages (`crates/proto/src/local.rs`) in 64 KiB postcard frames, and every
 message passes `Validate`. The service and the helper write to the Application event log under the source
