@@ -344,25 +344,29 @@ that adapter, and duplicates the output. `dxgi_result.rs` maps every DXGI result
 - `DXGI_ERROR_WAIT_TIMEOUT` from `AcquireNextFrame` means the screen is still.
 - Any other failure of `AcquireNextFrame`, of the copy, of `GetFramePointerShape`, or of `ReleaseFrame` means the
   desktop switched or the mode changed. The helper drops the duplication, checks the desktop at once, and
-  duplicates again. In the VM, `ACCESS_LOST` comes on the way back to `Default`.
+  duplicates again: at once if the duplication showed an image, otherwise 100 ms later. In the VM, `ACCESS_LOST`
+  comes on the way back to `Default`.
 - `E_ACCESSDENIED` from `DuplicateOutput` is retried after each desktop check, and reported as `ScreenUnavailable`
   after 5 seconds. `DXGI_ERROR_UNSUPPORTED`, `DXGI_ERROR_SESSION_DISCONNECTED`, a rotated output, and a display
   that matches no output are reported at once, until the desktop or display changes.
 
 A new duplication publishes nothing until its first frame with `AccumulatedFrames` above 0: the first frame can be a
-pointer-only update whose texture is black. A duplication that has no image after 1 second is replaced. Frames don't
-include the pointer, so the helper draws the shape from `GetFramePointerShape` at the frame's pointer position
-(`pointer.rs`). It logs each duplication's start, its first image's `AccumulatedFrames`, and a summary when it ends.
+pointer-only update whose texture is black. A duplication that has no image after 1 second is replaced. When no
+attempt shows an image for 5 seconds after a desktop or display change, or after a duplication with an image ended,
+the helper reports `ScreenUnavailable` once and keeps retrying. Frames don't include the pointer, so the helper draws
+the shape from `GetFramePointerShape` at the frame's pointer position (`pointer.rs`), and forgets the pointer when the
+desktop changes. It logs each duplication's start, its first image's `AccumulatedFrames`, and a summary when it ends.
+Of attempts that show no image, it logs only the first and one summary of the rest.
 
-Pixels never cross the pipe. The helper creates an unnamed section laid out by `dari_proto::FrameLayout` (a header
-page, then two page-aligned slots of tightly packed RGBA) and duplicates a handle to it into the app's process with
+Pixels never cross the pipe. The helper creates an unnamed section laid out by `dari_proto::FrameLayout` (a header page,
+then two page-aligned slots of tightly packed RGBA) and duplicates a handle to it into the app's process with
 `FILE_MAP_READ` only, sent as `FrameSection`. The app can't write to the section, so it acknowledges frames over the
-pipe. `AppChannel` (`channel.rs`) publishes a frame as `Frame { display, slot, sequence }`. The app owns that slot
-until it answers with `RequestFrame`, which it sends for every `Frame`, kept or not. The helper writes only the other
-slot, keeps the newest frame there as a draft, and publishes the draft when the credit comes back. A desktop change,
-a display change, or `ScreenUnavailable` discards the draft. A size change waits until the app owns no slot, then
-sends a new `FrameSection` and closes the helper's handle to the old one. The app's view keeps the old section alive
-until the app maps the new one.
+pipe. `AppChannel` (`channel.rs`) publishes a frame as `Frame { display, slot, sequence }`. The app owns that slot until
+it answers with `RequestFrame`, which it sends for every `Frame`, kept or not. The helper writes only the other slot,
+keeps the newest frame there as a draft, and publishes the draft when the credit comes back. A desktop change, a display
+change, the end of the duplication that drew the draft, or `ScreenUnavailable` discards the draft. A size change waits
+until the app owns no slot, then sends a new `FrameSection` and closes the helper's handle to the old one. The app's
+view keeps the old section alive until the app maps the new one.
 
 In the app, the link's task maps each section read-only, copies a published slot into an `RgbaFrame` on a blocking
 thread, and checks the slot's sequence word before and after the copy. It copies only frames of the selected display
