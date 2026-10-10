@@ -76,6 +76,13 @@ C++ build doesn't cross-compile to MSVC, so Windows CI covers it):
 cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
+```bash
+cargo clippy -p dari-winsvc --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+```
+
+`dari-winsvc` has no `allow(unsafe_code)`. The `unsafe` block inside `windows-service`'s
+`define_windows_service!` comes from another crate's macro, and rustc doesn't report `unsafe_code` there.
+
 ## Tests
 
 | Kind | Location | Coverage |
@@ -85,6 +92,7 @@ cargo clippy -p dari-input --target x86_64-pc-windows-msvc -- -D warnings
 | Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (the first stream already runs at the requested rate, with or without approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
 | GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
+| Installer template | `crates/app/tests/installer_template.rs` | `assets/installer.nsi` is cargo-packager's template plus the two `DariService` steps, each once at its place, and the workflows install the cargo-packager version it was copied from (see [Packaging and releases](#packaging-and-releases)) |
 | Cross-device | `crates/check`, `scripts/crosscheck/` | Two machines in both directions, for every pairing: Mac and Windows, two Macs, two Windows PCs; see [Cross-device checks](#cross-device-checks) |
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
 
@@ -158,9 +166,28 @@ default because it needs Screen Recording and Accessibility on macOS and moves t
 cargo test -p dari-session --test real_platform -- --ignored --nocapture
 ```
 
-The **Platform checks** workflow (`.github/workflows/platform.yml`, manual or on changes to it) runs that test on
-Windows and macOS runners, and installs the published Windows installer silently to host and connect a session
-with the installed `dari.exe`.
+The **Platform checks** workflow (`.github/workflows/platform.yml`, manual or on changes to it or the installer) runs
+that test on Windows and macOS runners, and installs the published Windows installer silently to host and connect a
+session with the installed `dari.exe`. It also builds the installer from the branch and checks the install itself:
+
+1. It uploads the branch's installer as the `windows-installer-branch` artifact, for installing in a VM.
+2. It creates a standard user, installs 0.0.3 for that user, and runs the branch's installer silently as that user.
+   The installer must exit with an error and change nothing: no `DariService`, no `C:\Program Files\Dari`, and the
+   user's per-user copy still in place. It then deletes the user.
+3. It installs 0.0.3, the last per-user release, for the runner's account. The per-user copy, its Start menu and
+   desktop shortcuts, and its `HKCU` keys must exist. It runs `dari.exe host` so it creates a device identity, adds
+   a `settings.toml`, and records the SHA-256 of every file in `%LOCALAPPDATA%\dari\dari\data`.
+4. It points the per-user uninstall key's `UninstallString` at a canary script that leaves a marker file when it
+   runs, and checks that it does when started the way NSIS's `ExecWait` starts a program.
+5. It installs the branch's installer silently over the per-user install. The canary's marker must not exist.
+   `DariService` must be running as LocalSystem, start automatically, restart on failure, and have the quoted image
+   path `"C:\Program Files\Dari\dari-service.exe" service`. Both executables must be in `C:\Program Files\Dari`,
+   and the per-user copy, its uninstaller, its two shortcuts, its `HKCU` uninstall key, and `HKCU\Software\dari\Dari`
+   must be gone. The install folder and `dari-service.exe` must grant no write right to Users, Everyone,
+   Authenticated Users, or INTERACTIVE, compared by SID. The data files must be unchanged.
+6. It runs the installer again, as a repair or an upgrade would, and checks the same.
+7. It uninstalls silently. The service, both executables, and the uninstall key must be gone, and the data files
+   must be unchanged.
 
 ### Cross-device checks
 
@@ -443,7 +470,39 @@ runner takes about 15 minutes for clippy and about 20 minutes for tests.
 ## Packaging and releases
 
 Packaging is configured in `[package.metadata.packager]` in `crates/app/Cargo.toml` (bundle ID `dev.dari.app`,
-macOS 13.0 minimum, per-user Windows NSIS install). The icon's source is `crates/app/assets/icon.svg`, from which
+macOS 13.0 minimum, per-machine Windows NSIS install). The packages carry two binaries: `dari` and `dari-service`
+from `crates/winsvc`. cargo-packager has no per-platform binaries, so the macOS app also carries the
+`dari-service` stub, which only exits with an error.
+
+The Windows installer installs for all users in `C:\Program Files\Dari` and needs administrator rights.
+`DariService` runs `dari-service.exe` as LocalSystem, so the binary must live where only administrators can
+replace it. cargo-packager 0.11.8 has no post-install or pre-uninstall hook, so the NSIS settings add the service in
+two places:
+
+- `preinstall-section` runs before files are copied. Its sections run in this order:
+  - `RequireAdministrator` stops the installer unless it runs as an administrator. The template's
+    `RequestExecutionLevel highest` shows no UAC prompt to a standard user, so the installer would otherwise run
+    unelevated and fail partway.
+  - `StopDariService` stops `DariService`, so an upgrade or a repair can replace `dari-service.exe`.
+  - `RemovePerUserInstall` finds a per-user install from 0.0.3 or earlier by its uninstall key under `HKCU`. It
+    closes a running per-user `dari.exe` and deletes what 0.0.3 created at 0.0.3's fixed locations: `dari.exe` and
+    `uninstall.exe` in `%LOCALAPPDATA%\Dari`, the user's Start menu and desktop shortcuts, the `HKCU` uninstall key,
+    and `HKCU\Software\dari\Dari`. It doesn't run the old uninstaller or read a path from the registry, because any
+    process of the user can change both, and the installer runs as an administrator. `%LOCALAPPDATA%\Dari` is the
+    same folder as the app's data in `%LOCALAPPDATA%\dari`, so nothing is deleted recursively and the identity and
+    settings stay.
+- `template` points at `crates/app/assets/installer.nsi`, a copy of cargo-packager 0.11.8's template with two
+  additions: `dari-service.exe install` at the end of `Section Install`, and `dari-service.exe uninstall` at the start
+  of `Section Uninstall`. Either one failing stops the installer or the uninstaller. Both commands converge, so
+  running them again changes nothing. `crates/app/tests/installer_template.rs` fails when the copy differs from
+  upstream in anything but those two additions, or when a workflow installs another cargo-packager version. After a
+  cargo-packager upgrade, copy the new version's template, apply the two additions again, and update the test's
+  version and hash.
+
+The Platform checks workflow checks that a standard user is refused, installs the branch's installer over a
+per-user 0.0.3 install, runs it again, and uninstalls it (see [Real screen and input](#real-screen-and-input)).
+
+The icon's source is `crates/app/assets/icon.svg`, from which
 the PNGs and `.icns` are generated with [librsvg](https://gitlab.gnome.org/GNOME/librsvg)'s `rsvg-convert` and
 `iconutil` (run from `crates/app/assets`). The home window's title bar shows `icon-128.png`, embedded in the binary.
 

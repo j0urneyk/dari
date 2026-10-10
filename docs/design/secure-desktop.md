@@ -279,9 +279,11 @@ service at all.
 - `dari-service.exe install` creates or updates the service (LocalSystem, automatic start, restart on failure, a
   quoted image path) and starts it. Running it twice leaves the same state, so an upgrade or a repair runs the same
   command.
-- The per-machine installer looks for the per-user install's uninstall key under `HKCU`, runs that uninstaller
-  silently, and keeps the user's data in `%LOCALAPPDATA%\dari`, which the app still uses because it still runs as
-  the user.
+- The per-machine installer looks for the per-user install's uninstall key under `HKCU` and deletes the files,
+  shortcuts, and keys that the per-user installer created, at that installer's fixed locations. It doesn't run the
+  old uninstaller or read a path from the registry: any process of the user can replace both, and the installer
+  runs as an administrator. It keeps the user's data in `%LOCALAPPDATA%\dari`, which the app still uses because it
+  still runs as the user.
 - Installing now shows a UAC prompt, and a user without administrator rights can't install Dari. That is the price
   of the service.
 - `platform.yml`'s installer smoke test already looks for `dari.exe` under `%ProgramFiles%`. The test must also
