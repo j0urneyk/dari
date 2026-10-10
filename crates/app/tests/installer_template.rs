@@ -1,21 +1,13 @@
-//! `assets/installer.nsi` is cargo-packager's own NSIS template plus Dari's two `DariService`
-//! steps. This test fails when the copy drifts from upstream, loses a step, or no longer matches
-//! the cargo-packager version the workflows install.
-
 use std::fs;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-/// The cargo-packager version `assets/installer.nsi` was copied from.
 const PACKAGER_VERSION: &str = "0.11.8";
 
-/// SHA-256 of `crates/packager/src/package/nsis/installer.nsi` at tag `cargo-packager-v0.11.8`.
 const UPSTREAM_SHA256: &str = "3ff5fde09ae24dfc031ab91f939b290f394e2c6d3549f2c43c37414716a47b7a";
 
-/// Ends `Section Install`.
 const INSTALL_ADDITION: &str = r#"
-  ; Dari: register and start DariService. The command converges, so a repair or an upgrade runs it too.
   ClearErrors
   ExecWait '"$INSTDIR\dari-service.exe" install' $0
   ${If} ${Errors}
@@ -25,10 +17,7 @@ const INSTALL_ADDITION: &str = r#"
   ${EndIf}
 "#;
 
-/// Starts `Section Uninstall`.
-const UNINSTALL_ADDITION: &str = r#"  ; Dari: remove DariService before its executable is deleted. DariWaitForServiceExit comes from
-  ; preinstall-section in crates/app/Cargo.toml.
-  ${If} ${FileExists} "$INSTDIR\dari-service.exe"
+const UNINSTALL_ADDITION: &str = r#"  ${If} ${FileExists} "$INSTDIR\dari-service.exe"
     ClearErrors
     ExecWait '"$INSTDIR\dari-service.exe" uninstall' $0
     ${If} ${Errors}

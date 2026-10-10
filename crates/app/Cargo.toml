@@ -74,12 +74,8 @@ minimum-system-version = "13.0"
 info-plist-path = "assets/Info.plist"
 
 [package.metadata.packager.nsis]
-# Per machine, so the SYSTEM service runs a binary only administrators can replace.
 installer-mode = "perMachine"
-# Upstream's template plus the DariService install and uninstall steps; tests/installer_template.rs
-# keeps it in step with the pinned cargo-packager.
 template = "assets/installer.nsi"
-# Inserted verbatim before the Install section, after the template's !defines.
 preinstall-section = '''
 !macro DariRefuse MESSAGE
   MessageBox MB_ICONSTOP|MB_OK "${MESSAGE}" /SD IDOK
@@ -108,16 +104,12 @@ Section RequireAdministrator
 SectionEnd
 
 Section StopDariService
-  ; Lets an upgrade or a repair replace dari-service.exe. Fails harmlessly when the service is absent.
   nsExec::Exec '"$SYSDIR\net.exe" stop DariService'
   Pop $0
   !insertmacro DariWaitForServiceExit
 SectionEnd
 
 Section RemovePerUserInstall
-  ; Releases up to 0.0.3 installed per user. Any process of the user can rewrite that install's registry
-  ; values and files, so this elevated installer runs nothing from there and reads no path from there: it
-  ; deletes what 0.0.3 created at the locations 0.0.3 used.
   ClearErrors
   EnumRegValue $0 HKCU "${UNINSTKEY}" 0
   ${IfNot} ${Errors}

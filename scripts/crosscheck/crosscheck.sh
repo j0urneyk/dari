@@ -510,9 +510,7 @@ install_release() {
   local side=$1 dir=$2
   if [[ $(field "$side" os) == windows ]]; then
     put "$side" "$(ls "$dir"/*-setup.exe)" 'C:\dari-check\dari-setup.exe'
-    # Releases up to 0.0.3 install per user under LOCALAPPDATA; later ones install per machine
-    # under Program Files, which needs the administrator rights the checks' account has. The
-    # release app gets the firewall treatment dari-check gets (prepare-peer.ps1): allowed up
+    # The release app gets the firewall treatment dari-check gets (prepare-peer.ps1): allowed up
     # front, so Windows never asks and never adds block rules.
     set_field "$side" app "$(on "$side" "\$ErrorActionPreference = 'Stop';
       Start-Process C:\\dari-check\\dari-setup.exe -ArgumentList '/S' -Wait;

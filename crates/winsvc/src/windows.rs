@@ -1,6 +1,3 @@
-//! The three commands. Each one converges the service control manager's `DariService` to one end
-//! state, however many times it runs and whatever state an earlier run left behind.
-
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Write};
@@ -22,8 +19,6 @@ const SERVICE_NAME: &str = "DariService";
 const DISPLAY_NAME: &str = "Dari Service";
 const DESCRIPTION: &str = "Lets Dari show and answer the Windows secure desktop, such as UAC prompts and the lock screen.";
 
-/// How long `install` and `uninstall` wait for the service to change state, or for an earlier
-/// deletion to finish.
 const WAIT_LIMIT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -35,11 +30,8 @@ const ERROR_SERVICE_MARKED_FOR_DELETE: i32 = 1072;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
-    /// The entry point the service control manager starts.
     Service,
-    /// `DariService` exists with this executable's settings and runs.
     Install,
-    /// `DariService` is gone, or marked for deletion.
     Uninstall,
 }
 
@@ -97,7 +89,6 @@ fn os_code(error: &windows_service::Error) -> Option<i32> {
     }
 }
 
-/// Treats the listed OS errors as success: they mean the call's goal already holds.
 fn unless_already(
     result: windows_service::Result<()>,
     already: &[i32],
@@ -128,7 +119,6 @@ pub(crate) fn main() -> ExitCode {
 }
 
 fn fail(message: &str) -> ExitCode {
-    // The exit code reports the failure even if stderr is gone.
     let _ = writeln!(io::stderr(), "dari-service: {message}");
     ExitCode::FAILURE
 }
@@ -145,21 +135,17 @@ fn service_main(_arguments: Vec<OsString>) {
     let (stop_sender, stop_receiver) = mpsc::channel();
     let handler = move |control| match control {
         ServiceControl::Stop | ServiceControl::Shutdown => {
-            // Fails only for a second stop request after the service has already stopped.
             let _ = stop_sender.send(());
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     };
-    // Without a status handle there is nothing to report to; the service control manager sees the
-    // service end before it ran.
     let Ok(status) = service_control_handler::register(SERVICE_NAME, handler) else {
         return;
     };
     let exit_code = match status.set_service_status(service_status(ServiceState::Running)) {
         Ok(()) => {
-            // The handler owns the sender for the life of the process, so this returns only on stop.
             let _ = stop_receiver.recv();
             ServiceExitCode::NO_ERROR
         }
@@ -299,7 +285,6 @@ fn uninstall() -> Result<(), Failure> {
     )
 }
 
-/// Polls the service's state and lets `step` act on it until `step` reports the goal reached.
 fn converge(
     service: &Service,
     goal: &'static str,

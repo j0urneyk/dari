@@ -1,9 +1,5 @@
 name: Platform checks
 
-# Exercises the real screen, input devices, the published Windows installer, and the installer
-# built from this branch on hosted runners. These steps move the pointer, capture the desktop,
-# and install a system service, so they stay out of the regular CI run. Trigger manually, or by
-# changing this workflow or the installer in a pull request.
 on:
   workflow_dispatch:
     inputs:
@@ -31,9 +27,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   RELEASE_TAG: ${{ inputs.release || 'v0.0.3' }}
-  # crates/app/tests/installer_template.rs checks that this matches release.yml and the NSIS template.
   CARGO_PACKAGER_VERSION: 0.11.8
-  # The last release that installed per user; the branch's installer must move it.
   PER_USER_RELEASE: v0.0.3
 
 jobs:
@@ -156,7 +150,6 @@ jobs:
               $process.ExitCode
             }
 
-            # The user's own per-user install, which a refused installer must leave alone.
             $code = Invoke-AsStandardUser $perUserSetup
             if ($code -ne 0) { throw "$env:PER_USER_RELEASE's installer exited with code $code for dari-standard" }
             $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $user.SID.Value).LocalPath
@@ -183,7 +176,6 @@ jobs:
           $dataDir = Join-Path $env:LOCALAPPDATA 'dari\dari\data'
           $installDir = Join-Path $env:ProgramFiles 'Dari'
           $setup = (Get-ChildItem target/release -Filter *-setup.exe | Select-Object -First 1).FullName
-          # The per-user shortcuts and the HKCU key that 0.0.3's installer adds besides its uninstall key.
           $perUserLinks = (Join-Path ([Environment]::GetFolderPath('Programs')) 'Dari\Dari.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dari.lnk')
           $perUserProductKey = 'HKCU:\Software\dari\Dari'
 
@@ -250,7 +242,6 @@ jobs:
             Write-Host "after ${after}: DariService runs as LocalSystem from $installDir"
           }
 
-          # A per-user install with the identity and settings a real user would have.
           Invoke-Setup (Get-ChildItem per-user-installer -Filter *-setup.exe | Select-Object -First 1).FullName "$env:PER_USER_RELEASE's installer"
           $perUserExe = Join-Path $perUserDir 'dari.exe'
           if (-not (Test-Path -LiteralPath $perUserExe)) { throw "$env:PER_USER_RELEASE did not install $perUserExe" }
@@ -275,8 +266,6 @@ jobs:
           }
           $dataHashes
 
-          # Any process of the user can rewrite this key, so the elevated installer must not run what it
-          # names. Started here the way ExecWait starts a program, the canary shows it leaves a marker when run.
           $canary = Join-Path $env:RUNNER_TEMP 'canary'
           New-Item -ItemType Directory -Path $canary | Out-Null
           $canaryMarker = Join-Path $canary 'ran.txt'

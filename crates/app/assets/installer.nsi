@@ -551,7 +551,6 @@ Section Install
   ; Auto close this page for passive mode
   ${IfThen} $PassiveMode == 1 ${|} SetAutoClose true ${|}
 
-  ; Dari: register and start DariService. The command converges, so a repair or an upgrade runs it too.
   ClearErrors
   ExecWait '"$INSTDIR\dari-service.exe" install' $0
   ${If} ${Errors}
@@ -585,8 +584,6 @@ Function un.onInit
 FunctionEnd
 
 Section Uninstall
-  ; Dari: remove DariService before its executable is deleted. DariWaitForServiceExit comes from
-  ; preinstall-section in crates/app/Cargo.toml.
   ${If} ${FileExists} "$INSTDIR\dari-service.exe"
     ClearErrors
     ExecWait '"$INSTDIR\dari-service.exe" uninstall' $0
