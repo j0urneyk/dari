@@ -1,4 +1,6 @@
 mod capturer;
+#[cfg(any(windows, test))]
+mod handover;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod win;
