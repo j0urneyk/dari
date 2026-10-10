@@ -377,7 +377,7 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         now: Instant,
         events: &mut Vec<ScreenEvent>,
     ) -> Capture<W::Duplication> {
-        let Some(display) = self.display else {
+        let (Some(display), Some(desktop)) = (self.display, self.desktop.clone()) else {
             return Capture::Idle;
         };
         let unavailable = |why, events: &mut Vec<ScreenEvent>| {
@@ -393,7 +393,7 @@ impl<W: DesktopWorld> ScreenMachine<W> {
                 };
                 events.push(ScreenEvent::Note(Note::Duplicated {
                     display,
-                    desktop: self.desktop.clone().unwrap_or(InputDesktop::Default),
+                    desktop,
                     size,
                 }));
                 Capture::Running(Running {

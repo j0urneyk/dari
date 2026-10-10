@@ -233,7 +233,7 @@ impl Duplication for DxgiDuplication {
         .map_err(hresult)?;
         let width = self.size.width as usize;
         let pitch = mapped.RowPitch as usize;
-        let len = pitch * (self.size.height as usize - 1) + width * 4;
+        let len = pitch * (self.size.height as usize).saturating_sub(1) + width * 4;
         // SAFETY: while mapped, `pData` points at `height` rows of `RowPitch` bytes, each holding
         // `width` BGRA pixels; the slice isn't used after the unmap below.
         let rows = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), len) };
