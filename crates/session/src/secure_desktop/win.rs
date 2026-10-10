@@ -83,6 +83,16 @@ async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
         connected = connect(input) => connected?,
         () = session_gone(driver) => return Ok(()),
     };
+    relay(messages, first, driver).await
+}
+
+/// Plays what a connected helper says into `driver` until the session drops the link or the
+/// helper's pipe ends.
+async fn relay(
+    messages: HelperMessages,
+    first: InputDesktop,
+    driver: &mut LinkDriver,
+) -> Result<(), LinkError> {
     driver.desktop_changed(first);
     let (mut messages, mut replies) = split(messages);
     if let Some(display) = driver.selected_display() {
@@ -514,10 +524,10 @@ impl Drop for SecurityDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     use windows::Win32::Foundation::{
-        DUPLICATE_SAME_ACCESS, DuplicateHandle, INVALID_HANDLE_VALUE,
+        CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, INVALID_HANDLE_VALUE,
     };
     use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, PAGE_READWRITE};
 
@@ -717,6 +727,43 @@ mod tests {
         section.header(1024, 1024);
         let claimed = FrameLayout::new(1024, 1024).unwrap();
         assert!(ReadOnlySection::map(section.handle(), claimed).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_section_the_helper_sends_as_the_session_ends_is_closed() {
+        let pipe = random_pipe_name().unwrap();
+        let server = create_helper_pipe(&pipe).unwrap();
+        let mut client = client_of(&pipe);
+        server.connect().await.unwrap();
+        let section = HelperSection::new(FrameLayout::new(1, 1).unwrap().total_len());
+        section.header(1, 1);
+        let handle = section.handle();
+        let helper = tokio::task::spawn_blocking(move || {
+            let _read = client.read(&mut [0u8; 64]);
+            let _sent = client.write_all(&frame(&HelperToApp::FrameSection {
+                handle,
+                width: 1,
+                height: 1,
+            }));
+        });
+
+        let (link, mut driver) = SecureDesktopLink::pair();
+        drop(link);
+        let messages = FramedRead::new(server, MessageCodec::<HelperToApp>::new(LOCAL_FRAME_LIMIT));
+        relay(messages, InputDesktop::Winlogon, &mut driver)
+            .await
+            .unwrap();
+        helper.await.unwrap();
+
+        let sent = HANDLE(std::ptr::with_exposed_provenance_mut(
+            usize::try_from(handle).unwrap(),
+        ));
+        // SAFETY: only compares the objects two handle values name; an invalid one names none.
+        let leaked = unsafe { CompareObjectHandles(sent, HANDLE(section.mapping.as_raw_handle())) };
+        assert!(
+            !leaked.as_bool(),
+            "the app kept the helper's section handle"
+        );
     }
 
     fn own_user() -> String {
