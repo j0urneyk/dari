@@ -285,7 +285,7 @@ where
         }
 
         let wait = match &still {
-            Some(screen) if !hidden_reported && !consumer_is_behind(sink, control) => {
+            Some(screen) if !consumer_is_behind(sink, control) => {
                 screen.capture_timeout(refinement, now)
             }
             _ => SOURCE_WAIT,
@@ -314,6 +314,9 @@ where
                 }
             }
             Err(CaptureError::SecureDesktop) => {
+                // The last frame may show a screen that is gone when the stretch ends (the
+                // helper's secure desktop, after the helper died), so it is never resent.
+                still = None;
                 if !std::mem::replace(&mut hidden_reported, true) {
                     deliver_error(sink, control, CaptureError::SecureDesktop.into());
                 }
@@ -909,6 +912,52 @@ mod tests {
             }
         }
         assert_eq!(notices, 2, "one notice for each hidden stretch");
+        stream.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_frame_from_before_a_secure_desktop_is_not_resent_after_it() {
+        let hidden_for = Duration::from_millis(300);
+        let still_for = Duration::from_millis(1000);
+        let moves_from = Instant::now() + hidden_for + still_for;
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            move || {
+                Ok(ScriptedScreen::new(
+                    vec![
+                        (Shows::SecureDesktop, hidden_for),
+                        (Shows::StillScreen, still_for),
+                    ],
+                    Arc::default(),
+                ))
+            },
+            settings(),
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(Err(StreamError::Capture(CaptureError::SecureDesktop)))
+        ));
+        // The viewer asks for a keyframe while no frames arrive.
+        let mut asks = tokio::time::interval(Duration::from_millis(100));
+        let resumed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    _ = asks.tick() => stream.request_keyframe(),
+                    received = receiver.recv() => break received,
+                }
+            }
+        })
+        .await
+        .expect("frames must resume once the screen moves");
+        assert!(matches!(resumed, Some(Ok(_))), "{resumed:?}");
+        let early = moves_from.saturating_duration_since(Instant::now());
+        assert!(
+            early.is_zero(),
+            "a frame from before the secure desktop was sent {early:?} before the screen moved"
+        );
         stream.stop();
     }
 
