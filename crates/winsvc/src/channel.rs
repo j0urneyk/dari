@@ -90,7 +90,7 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
         self.outbox.send(HelperToApp::ScreenUnavailable { display })
     }
 
-    pub(crate) fn display_selected(&mut self) {
+    pub(crate) fn capture_ended(&mut self) {
         self.discard_draft();
     }
 
@@ -421,7 +421,7 @@ mod tests {
                     _ => match random.below(3) {
                         0 => channel.desktop_changed(InputDesktop::Winlogon).unwrap(),
                         1 => channel.screen_unavailable(7).unwrap(),
-                        _ => channel.display_selected(),
+                        _ => channel.capture_ended(),
                     },
                 }
             }
@@ -483,24 +483,32 @@ mod tests {
     }
 
     #[test]
-    fn a_desktop_change_discards_the_unpublished_draft() {
-        let (mut channel, world) = channel();
-        let mut app = App::default();
-        channel.offer(layout(2, 1), 1, fill(1)).unwrap();
-        assert_eq!(
-            channel.offer(layout(2, 1), 1, fill(2)).unwrap(),
-            Offered::Drafted
-        );
-        channel.desktop_changed(InputDesktop::Default).unwrap();
+    fn a_desktop_change_or_an_ended_capture_discards_the_unpublished_draft() {
+        let discards: [fn(&mut Channel); 2] = [
+            |channel| channel.desktop_changed(InputDesktop::Default).unwrap(),
+            Channel::capture_ended,
+        ];
+        for discard in discards {
+            let (mut channel, world) = channel();
+            let mut app = App::default();
+            channel.offer(layout(2, 1), 1, fill(1)).unwrap();
+            assert_eq!(
+                channel.offer(layout(2, 1), 1, fill(2)).unwrap(),
+                Offered::Drafted
+            );
+            discard(&mut channel);
 
-        while app.read_next(&world.borrow()) {}
-        app.give_back();
-        deliver(&mut channel, &world, &mut app);
-        let sent = &world.borrow().sent;
-        assert!(
-            matches!(sent.last(), Some(HelperToApp::DesktopChanged(_))),
-            "{sent:?}"
-        );
+            while app.read_next(&world.borrow()) {}
+            app.give_back();
+            deliver(&mut channel, &world, &mut app);
+            let sent = &world.borrow().sent;
+            assert!(
+                !sent
+                    .iter()
+                    .any(|message| matches!(message, HelperToApp::Frame { sequence: 2, .. })),
+                "{sent:?}"
+            );
+        }
     }
 
     #[test]

@@ -164,14 +164,11 @@ fn run_screen<W: DesktopWorld, F: SectionFactory>(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return "the reader stopped",
             };
             let handled = match command {
-                ScreenCommand::SelectDisplay(display) => {
-                    channel.display_selected();
-                    deliver(
-                        machine.select_display(display, Instant::now()),
-                        &mut channel,
-                        log,
-                    )
-                }
+                ScreenCommand::SelectDisplay(display) => deliver(
+                    machine.select_display(display, Instant::now()),
+                    &mut channel,
+                    log,
+                ),
                 ScreenCommand::RequestFrame => channel.request_frame(),
             };
             if handled.is_err() {
@@ -194,6 +191,7 @@ fn deliver<F: SectionFactory>(
         match event {
             ScreenEvent::DesktopChanged(desktop) => channel.desktop_changed(desktop)?,
             ScreenEvent::Unavailable { display } => channel.screen_unavailable(display)?,
+            ScreenEvent::CaptureEnded => channel.capture_ended(),
             ScreenEvent::Note(note) => {
                 if let Some(log) = log {
                     log.info(&format!("helper: {note}"));

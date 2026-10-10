@@ -81,6 +81,9 @@ pub(crate) enum ScreenEvent {
     Unavailable {
         display: u32,
     },
+    /// The duplication that drew every frame offered so far ended, so none of them may be
+    /// published any more.
+    CaptureEnded,
     /// For the event log only.
     Note(Note),
 }
@@ -163,9 +166,9 @@ impl<W: DesktopWorld> ScreenMachine<W> {
             return Vec::new();
         }
         self.display = Some(display);
-        self.restart(Ended::DisplaySelected, now)
-            .into_iter()
-            .collect()
+        let mut events = Vec::new();
+        self.restart(Ended::DisplaySelected, now, &mut events);
+        events
     }
 
     /// One bounded step: checks the desktop when due, then advances the capture, blocking at most
@@ -177,7 +180,7 @@ impl<W: DesktopWorld> ScreenMachine<W> {
             if let Some(desktop) = self.tracker.poll(&mut self.world) {
                 self.desktop = Some(desktop.clone());
                 events.push(ScreenEvent::DesktopChanged(desktop));
-                events.extend(self.restart(Ended::DesktopChanged, now));
+                self.restart(Ended::DesktopChanged, now, &mut events);
             }
         }
         self.capture = match std::mem::replace(&mut self.capture, Capture::Idle) {
@@ -230,16 +233,15 @@ impl<W: DesktopWorld> ScreenMachine<W> {
                 .is_some_and(|desktop| *desktop != InputDesktop::Default)
     }
 
-    fn restart(&mut self, why: Ended, now: Instant) -> Option<ScreenEvent> {
+    fn restart(&mut self, why: Ended, now: Instant, events: &mut Vec<ScreenEvent>) {
         self.pointer = Pointer::default();
         let next = if self.wants_capture() {
             Capture::Starting(Starting::new(now))
         } else {
             Capture::Idle
         };
-        match std::mem::replace(&mut self.capture, next) {
-            Capture::Running(running) => Some(ended(&running, why, now)),
-            Capture::Idle | Capture::Starting(_) | Capture::Unavailable => None,
+        if let Capture::Running(running) = std::mem::replace(&mut self.capture, next) {
+            ended(&running, why, now, events);
         }
     }
 
@@ -410,19 +412,22 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         now: Instant,
         events: &mut Vec<ScreenEvent>,
     ) -> Capture<W::Duplication> {
-        events.push(ended(&running, why, now));
+        ended(&running, why, now, events);
         drop(running);
         self.next_poll = now;
         Capture::Starting(Starting::new(now))
     }
 }
 
-fn ended<D>(running: &Running<D>, why: Ended, now: Instant) -> ScreenEvent {
-    ScreenEvent::Note(Note::Ended {
+fn ended<D>(running: &Running<D>, why: Ended, now: Instant, events: &mut Vec<ScreenEvent>) {
+    if running.image.is_some() {
+        events.push(ScreenEvent::CaptureEnded);
+    }
+    events.push(ScreenEvent::Note(Note::Ended {
         why,
         stats: running.stats,
         lasted: now.duration_since(running.started),
-    })
+    }));
 }
 
 /// Copies rows of BGRA pixels, each starting `pitch` bytes after the previous one in `source`,
@@ -845,7 +850,10 @@ mod tests {
         }));
         assert_eq!(
             harness.app_events(),
-            [ScreenEvent::DesktopChanged(InputDesktop::Winlogon)]
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
+            ]
         );
     }
 
@@ -887,6 +895,7 @@ mod tests {
             harness.app_events(),
             [
                 ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
                 ScreenEvent::DesktopChanged(InputDesktop::Default),
             ]
         );
@@ -1018,11 +1027,14 @@ mod tests {
         let events = harness.machine.select_display(2, now);
         assert!(matches!(
             events[..],
-            [ScreenEvent::Note(Note::Ended {
-                why: Ended::DisplaySelected,
-                stats: Stats { images: 1, .. },
-                ..
-            })]
+            [
+                ScreenEvent::CaptureEnded,
+                ScreenEvent::Note(Note::Ended {
+                    why: Ended::DisplaySelected,
+                    stats: Stats { images: 1, .. },
+                    ..
+                })
+            ]
         ));
         assert_eq!(harness.offer(), None);
         harness.step();
@@ -1043,6 +1055,47 @@ mod tests {
         assert_eq!(harness.offer(), Some(with_pointer_at(solid(7), 3, 0)));
         harness.step();
         assert_eq!(harness.offer(), None, "a still screen offers nothing new");
+    }
+
+    #[test]
+    fn a_duplication_that_ends_after_an_image_ends_the_capture_for_the_channel() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![image(1), Acquire::Fail(Hresult::ACCESS_LOST)]),
+            Ok(vec![image(2)]),
+            Ok(vec![image(3)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(3, Duration::from_millis(1));
+        assert_eq!(
+            harness.app_events(),
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Winlogon),
+                ScreenEvent::CaptureEnded,
+            ],
+            "lost on the same desktop"
+        );
+
+        harness.run(2, Duration::from_millis(1));
+        let now = harness.now;
+        assert!(
+            harness
+                .machine
+                .select_display(2, now)
+                .contains(&ScreenEvent::CaptureEnded),
+            "another display selected"
+        );
+
+        harness.run(2, Duration::from_millis(1));
+        harness.machine.world.switch_to("Default");
+        harness.run(2, POLL_INTERVAL);
+        assert_eq!(
+            harness.app_events()[2..],
+            [
+                ScreenEvent::DesktopChanged(InputDesktop::Default),
+                ScreenEvent::CaptureEnded,
+            ],
+            "the desktop changed"
+        );
     }
 
     #[test]
