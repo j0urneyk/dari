@@ -145,15 +145,26 @@ impl SecureDesktopView {
         (state.epoch, state.route())
     }
 
-    /// Waits up to `timeout` for a frame of `epoch` other than frame `after`.
-    pub(crate) fn wait_frame(&self, epoch: u64, after: Option<u64>, timeout: Duration) -> Wait {
+    /// Waits up to `timeout` for a frame of `display` in `epoch` other than frame `after`.
+    pub(crate) fn wait_frame(
+        &self,
+        display: u32,
+        epoch: u64,
+        after: Option<u64>,
+        timeout: Duration,
+    ) -> Wait {
         let deadline = Instant::now() + timeout;
         let mut state = self.0.lock();
         loop {
             if state.epoch != epoch {
                 return Wait::Moved;
             }
-            if let Picture::Frame { number, image } = &state.picture
+            if let Picture::Frame {
+                display: shown,
+                number,
+                image,
+            } = &state.picture
+                && *shown == display
                 && Some(*number) != after
             {
                 return Wait::Frame {
@@ -164,8 +175,12 @@ impl SecureDesktopView {
             let now = Instant::now();
             if now >= deadline {
                 return match state.picture {
-                    Picture::Unavailable => Wait::Unavailable,
-                    Picture::Waiting | Picture::Frame { .. } => Wait::Nothing,
+                    Picture::Unavailable { display: shown } if shown == display => {
+                        Wait::Unavailable
+                    }
+                    Picture::Waiting | Picture::Frame { .. } | Picture::Unavailable { .. } => {
+                        Wait::Nothing
+                    }
                 };
             }
             state = self
@@ -239,8 +254,14 @@ enum Phase {
 #[derive(Debug)]
 enum Picture {
     Waiting,
-    Frame { number: u64, image: Arc<RgbaFrame> },
-    Unavailable,
+    Frame {
+        display: u32,
+        number: u64,
+        image: Arc<RgbaFrame>,
+    },
+    Unavailable {
+        display: u32,
+    },
 }
 
 impl Default for LinkState {
@@ -285,6 +306,7 @@ impl LinkState {
     fn frame(&mut self, display: u32, image: RgbaFrame) {
         if self.accepts(display) {
             self.picture = Picture::Frame {
+                display,
                 number: self.next_number,
                 image: Arc::new(image),
             };
@@ -294,7 +316,7 @@ impl LinkState {
 
     fn unavailable(&mut self, display: u32) {
         if self.accepts(display) {
-            self.picture = Picture::Unavailable;
+            self.picture = Picture::Unavailable { display };
         }
     }
 
@@ -338,7 +360,7 @@ mod tests {
     fn shown(state: &LinkState) -> Option<u8> {
         match &state.picture {
             Picture::Frame { image, .. } => Some(image.pixels()[0]),
-            Picture::Waiting | Picture::Unavailable => None,
+            Picture::Waiting | Picture::Unavailable { .. } => None,
         }
     }
 
@@ -415,7 +437,7 @@ mod tests {
         state.unavailable(8);
         assert_eq!(shown(&state), Some(1));
         state.unavailable(7);
-        assert!(matches!(state.picture, Picture::Unavailable));
+        assert!(matches!(state.picture, Picture::Unavailable { display: 7 }));
         state.frame(7, image(2));
         assert_eq!(shown(&state), Some(2));
         state.unavailable(7);
@@ -502,7 +524,8 @@ mod tests {
         link.select_display(7);
         driver.desktop_changed(InputDesktop::Winlogon);
         let view = link.view();
-        let waiting = std::thread::spawn(move || view.wait_frame(1, None, Duration::from_secs(10)));
+        let waiting =
+            std::thread::spawn(move || view.wait_frame(7, 1, None, Duration::from_secs(10)));
         driver.frame(7, image(3));
         let Wait::Frame { number, image } = waiting.join().unwrap() else {
             panic!("the view didn't get the frame");
@@ -511,11 +534,12 @@ mod tests {
 
         let view = link.view();
         assert!(matches!(
-            view.wait_frame(1, Some(number), Duration::from_millis(10)),
+            view.wait_frame(7, 1, Some(number), Duration::from_millis(10)),
             Wait::Nothing
         ));
-        let waiting =
-            std::thread::spawn(move || view.wait_frame(1, Some(number), Duration::from_secs(10)));
+        let waiting = std::thread::spawn(move || {
+            view.wait_frame(7, 1, Some(number), Duration::from_secs(10))
+        });
         driver.desktop_changed(InputDesktop::Default);
         assert!(matches!(waiting.join().unwrap(), Wait::Moved));
     }
@@ -528,7 +552,8 @@ mod tests {
         driver.screen_unavailable(7);
         let started = Instant::now();
         assert!(matches!(
-            link.view().wait_frame(1, None, Duration::from_millis(30)),
+            link.view()
+                .wait_frame(7, 1, None, Duration::from_millis(30)),
             Wait::Unavailable
         ));
         // The stream captures again at once after this error, so returning early would spin.

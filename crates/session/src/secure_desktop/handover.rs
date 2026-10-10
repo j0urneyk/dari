@@ -212,7 +212,7 @@ mod tests {
 
     fn held(view: &SecureDesktopView) -> Option<u8> {
         let (epoch, _) = view.route();
-        match view.wait_frame(epoch, None, Duration::ZERO) {
+        match view.wait_frame(DISPLAY, epoch, None, Duration::ZERO) {
             Wait::Frame { image, .. } => Some(image.pixels()[0]),
             Wait::Nothing | Wait::Unavailable | Wait::Moved => None,
         }
@@ -362,7 +362,7 @@ mod tests {
         );
         let (epoch, _) = view.route();
         assert!(matches!(
-            view.wait_frame(epoch, None, Duration::ZERO),
+            view.wait_frame(DISPLAY, epoch, None, Duration::ZERO),
             Wait::Unavailable
         ));
         handover

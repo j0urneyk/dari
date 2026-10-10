@@ -6,18 +6,21 @@ use super::{Route, SecureDesktopView, Wait};
 
 type OpenDefault = Box<dyn FnMut() -> Result<Box<dyn ScreenCapturer>, CaptureError>>;
 
-/// Reads the helper's frames of one desktop epoch from a link. Frames of any other epoch, such
-/// as the previous visit to the secure desktop, are never returned.
+/// Reads the helper's frames of one display and desktop epoch from a link. Frames of any other
+/// display, or of another epoch such as the previous visit to the secure desktop, are never
+/// returned.
 pub(crate) struct SecureDesktopCapturer {
     view: SecureDesktopView,
+    display: u32,
     epoch: u64,
     last: Option<u64>,
 }
 
 impl SecureDesktopCapturer {
-    pub(crate) fn new(view: SecureDesktopView, epoch: u64) -> Self {
+    pub(crate) fn new(view: SecureDesktopView, display: u32, epoch: u64) -> Self {
         Self {
             view,
+            display,
             epoch,
             last: None,
         }
@@ -26,7 +29,10 @@ impl SecureDesktopCapturer {
 
 impl ScreenCapturer for SecureDesktopCapturer {
     fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
-        match self.view.wait_frame(self.epoch, self.last, timeout) {
+        match self
+            .view
+            .wait_frame(self.display, self.epoch, self.last, timeout)
+        {
             Wait::Frame { number, image } => {
                 self.last = Some(number);
                 Ok(Some(CapturedFrame::Rgba(RgbaFrame::clone(&image))))
@@ -48,6 +54,7 @@ impl ScreenCapturer for SecureDesktopCapturer {
 pub(crate) struct TwoSourceCapturer {
     open_default: OpenDefault,
     view: SecureDesktopView,
+    display: u32,
     epoch: u64,
     source: Source,
     max_fps: u32,
@@ -63,10 +70,12 @@ enum Source {
 }
 
 impl Source {
-    fn for_route(route: Route, view: &SecureDesktopView, epoch: u64) -> Self {
+    fn for_route(route: Route, view: &SecureDesktopView, display: u32, epoch: u64) -> Self {
         match route {
             Route::Default { .. } => Source::Default(None),
-            Route::Secure => Source::Secure(SecureDesktopCapturer::new(view.clone(), epoch)),
+            Route::Secure => {
+                Source::Secure(SecureDesktopCapturer::new(view.clone(), display, epoch))
+            }
         }
     }
 }
@@ -75,13 +84,15 @@ impl TwoSourceCapturer {
     pub(crate) fn new(
         open_default: impl FnMut() -> Result<Box<dyn ScreenCapturer>, CaptureError> + 'static,
         view: SecureDesktopView,
+        display: u32,
         max_fps: u32,
     ) -> Self {
         let (epoch, route) = view.route();
         Self {
             open_default: Box::new(open_default),
-            source: Source::for_route(route, &view, epoch),
+            source: Source::for_route(route, &view, display, epoch),
             view,
+            display,
             epoch,
             max_fps,
             source_changed: false,
@@ -94,7 +105,7 @@ impl ScreenCapturer for TwoSourceCapturer {
         let (epoch, route) = self.view.route();
         if epoch != self.epoch {
             self.epoch = epoch;
-            self.source = Source::for_route(route, &self.view, epoch);
+            self.source = Source::for_route(route, &self.view, self.display, epoch);
             self.source_changed = true;
         }
         match &mut self.source {
@@ -175,6 +186,7 @@ mod tests {
     use crate::secure_desktop::{LinkDriver, SecureDesktopLink};
 
     const DISPLAY: u32 = 7;
+    const OTHER_DISPLAY: u32 = 8;
     const WAIT: Duration = Duration::from_millis(10);
     const SECURE: u8 = 200;
 
@@ -236,6 +248,7 @@ mod tests {
                 }) as Box<dyn ScreenCapturer>)
             },
             link.view(),
+            DISPLAY,
             30,
         );
         Setup {
@@ -299,6 +312,23 @@ mod tests {
         assert_eq!(shown(&mut capturer).unwrap(), None);
         driver.frame(DISPLAY, image(SECURE + 1));
         assert_eq!(shown(&mut capturer).unwrap(), Some(SECURE + 1));
+        assert_eq!(shown(&mut capturer).unwrap(), None);
+    }
+
+    #[test]
+    fn a_frame_of_another_display_is_never_returned() {
+        let Setup {
+            mut capturer,
+            driver,
+            _link: link,
+            ..
+        } = setup(Some(InputDesktop::Winlogon));
+        driver.frame(DISPLAY, image(SECURE));
+        assert_eq!(shown(&mut capturer).unwrap(), Some(SECURE));
+        link.select_display(OTHER_DISPLAY);
+        driver.frame(OTHER_DISPLAY, image(SECURE + 1));
+        assert_eq!(shown(&mut capturer).unwrap(), None);
+        driver.screen_unavailable(OTHER_DISPLAY);
         assert_eq!(shown(&mut capturer).unwrap(), None);
     }
 

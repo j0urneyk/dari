@@ -876,6 +876,7 @@ fn open_capturer(
         Some(view) => Ok(Box::new(TwoSourceCapturer::new(
             move || platform.open_capturer(display, settings),
             view,
+            display,
             settings.max_fps,
         ))),
     }
