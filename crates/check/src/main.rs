@@ -14,8 +14,10 @@
 
 mod audio;
 mod host;
+mod picture;
 mod probe;
 mod scenario;
+mod secure;
 mod viewer;
 
 use std::process::ExitCode;
@@ -40,6 +42,8 @@ enum Command {
     AudioHost(audio::AudioHostArgs),
     /// Connect to a `dari-check audio-host` and check its tone arrives.
     AudioView(audio::AudioViewArgs),
+    /// View a Windows host while a script shows it secure screens, and check each one arrives.
+    SecureView(secure::SecureViewArgs),
 }
 
 fn main() -> ExitCode {
@@ -55,6 +59,7 @@ fn main() -> ExitCode {
         Command::View(args) => block_on(viewer::run(args)),
         Command::AudioHost(args) => block_on(audio::host(args)),
         Command::AudioView(args) => block_on(audio::view(args)),
+        Command::SecureView(args) => block_on(secure::run(args)),
     };
     match outcome {
         Ok(code) => code,
