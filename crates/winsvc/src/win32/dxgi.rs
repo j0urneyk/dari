@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_UNSPECIFIED,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_OUTDUPL_FRAME_INFO,
@@ -217,6 +217,9 @@ impl Duplication for DxgiDuplication {
         if desc.Width != self.size.width || desc.Height != self.size.height {
             // A mode change DXGI hasn't reported yet: duplicate again.
             return Err(Hresult::ACCESS_LOST);
+        }
+        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+            return Err(Hresult::UNSUPPORTED);
         }
         let staging = self.staging(&desc)?;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
