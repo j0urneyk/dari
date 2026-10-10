@@ -18,6 +18,9 @@ use crate::win32::{
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WRITE_TIME: Duration = Duration::from_secs(5);
+/// The app is untrusted: a full queue stops the reader, so the pipe pushes back on the app
+/// instead of the helper's memory growing.
+const QUEUED_COMMANDS: usize = 8;
 const SCREEN_STOPPED: &str = "the screen thread stopped";
 
 pub(crate) fn run(args: &HelperArgs) -> ExitCode {
@@ -66,7 +69,7 @@ fn converse<W: DesktopWorld>(
     world: impl FnOnce() -> W + Send,
 ) -> Result<&'static str, String> {
     thread::scope(|scope| {
-        let (commands, received) = mpsc::channel();
+        let (commands, received) = mpsc::sync_channel(QUEUED_COMMANDS);
         let screen = scope.spawn(move || {
             let log = EventLog::open();
             let machine = ScreenMachine::new(world(), Instant::now());
@@ -95,7 +98,7 @@ enum ScreenCommand {
 fn read_app(
     pipe: &Pipe,
     app: &InheritedProcess,
-    commands: &mpsc::Sender<ScreenCommand>,
+    commands: &mpsc::SyncSender<ScreenCommand>,
     screen: &ScopedJoinHandle<'_, &'static str>,
 ) -> &'static str {
     let mut messages = MessageReader::<AppToHelper>::new();
