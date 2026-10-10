@@ -9,7 +9,7 @@ dari (app) ──► dari-session ──┬──► dari-net ───┐
                               ├──► dari-media ─┼──► dari-proto
                               └──► dari-input ─┘
 dari-relay ──► dari-net, dari-proto
-dari-winsvc (Windows only, no dari dependencies yet)
+dari-winsvc (Windows only) ──► dari-proto
 ```
 
 ## Crates
@@ -23,7 +23,7 @@ dari-winsvc (Windows only, no dari dependencies yet)
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
 | `dari` | `crates/app` | gpui-kit desktop app and the headless CLI (`host`, `connect`) | gpui-kit, clap, directories, toml |
-| `dari-winsvc` | `crates/winsvc` | `dari-service.exe`, Windows only: the `DariService` LocalSystem service, and the `install` and `uninstall` commands the installer runs. The service only reports that it runs so far; the [secure desktop design](design/secure-desktop.md) adds its work | windows-service |
+| `dari-winsvc` | `crates/winsvc` | `dari-service.exe`, Windows only: the `DariService` LocalSystem service, the SYSTEM helper it starts for a session, and the `install` and `uninstall` commands the installer runs (see [the secure-desktop helper](#the-secure-desktop-helper-windows)). No network code | windows-service, windows |
 
 ### External dependencies
 
@@ -40,7 +40,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
 | Settings, logging, errors, CLI | `directories`, `toml`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `clap`, `sys-locale` |
-| Windows service | `windows-service` |
+| Windows service | `windows-service`, and the `windows` crate for the pipes, tokens, and processes |
 | Packaging | `cargo-packager` |
 
 ## Threads and executors
@@ -89,7 +89,8 @@ end session) and receives state on a `HostEvent` channel (`PasswordChanged`, `Ap
    in the input queue are dropped, and keys and buttons still held are released. The service issues a new
    password.
 
-Screen and input sit behind the `HostPlatform` trait (`displays`, `open_capturer`, `open_input`, `clipboard`). The
+Screen and input sit behind the `HostPlatform` trait (`displays`, `open_capturer`, `open_input`, `clipboard`,
+`open_secure_desktop`). The
 real app uses `SystemPlatform`; tests use a synthetic screen and recorded input. That's what lets CI verify the
 real path end to end, QUIC and H.264 included.
 
@@ -282,6 +283,50 @@ enigo's absolute moves are relative to the primary monitor, which puts the point
 monitors. So the pointer is moved with `SetCursorPos`, which takes physical virtual-desktop coordinates, and the
 process enables Per-Monitor V2 DPI awareness with `SetProcessDpiAwarenessContext` at startup (at runtime rather
 than through a manifest). When the display changes, the input coordinate space follows it.
+
+### The secure-desktop helper (Windows)
+
+Windows.Graphics.Capture and `SendInput` can't reach the Winlogon desktop, which shows UAC prompts, the lock screen,
+and the Ctrl+Alt+Del screen. Two more processes, both `dari-service.exe`, can. The
+[secure desktop design](design/secure-desktop.md) describes the whole plan. So far the helper only reports which
+desktop receives input; capture and input on Winlogon come later.
+
+```text
+dari.exe (user, medium integrity)
+  ├── \\.\pipe\dari-service ──► dari-service.exe service (LocalSystem, session 0)
+  │                                   vets the client, starts the helper
+  └── \\.\pipe\dari-helper-<random> ◄── dari-service.exe helper (SYSTEM, the user's session)
+                                        reports the input desktop every 100 ms
+```
+
+1. After the host user approves a viewer, the host session calls `HostPlatform::open_secure_desktop` with `input`
+   set only if control is allowed. `SystemPlatform` returns a `SecureDesktopLink` on Windows and `None` elsewhere.
+2. The link's task creates `\\.\pipe\dari-helper-` plus 32 random hex digits (one instance, local clients only,
+   open to SYSTEM and the app's logon SID), connects to `\\.\pipe\dari-service` (waiting with `WaitNamedPipeW`
+   while every instance is busy, 5 seconds at most for the whole exchange), sends `StartHelper { pipe, input }`, and
+   reads `HelperStarted` or `Refused(reason)`.
+3. The service serves up to four clients at once, one per pipe instance and thread. Before it reads a byte, it opens
+   the client's process and checks that its image is `dari.exe` in the service's own folder and that its session is
+   active. It then finds that session's `winlogon.exe` (the system directory's, running as LocalSystem), duplicates
+   its token, removes every privilege but `SeChangeNotifyPrivilege`, and starts
+   `dari-service.exe helper <pipe> <input|no-input> <handle>` suspended on `winsta0\default`, inheriting exactly
+   one handle: a duplicate of the app's process handle. The helper joins a job that kills it when the service
+   exits, and then resumes. The service keeps one helper per session. A second `StartHelper` from the app process
+   that helper serves means the app's earlier session ended, so the service ends that helper and starts another.
+4. The helper restricts DLL loading to System32, logs its identity, connects to the app's pipe, and checks that the
+   pipe's server is the process behind its inherited handle. Its first message names the input desktop. The app
+   reads it, impersonates the client to check that it is LocalSystem, and only then accepts it.
+5. The session logs each `DesktopChanged` and drops the link when it ends (the service is missing or refused, the
+   helper never connected or failed the check, or its pipe closed), without starting another helper that session.
+   At the session's end it drops the link first, which closes the helper's pipe, and the helper exits. PR 36's
+   `SecureDesktop` notice is unchanged.
+
+Both pipes carry `dari-proto`'s local messages (`crates/proto/src/local.rs`) in 64 KiB postcard frames, and every
+message passes `Validate`. The service and the helper write to the Application event log under the source
+`DariService`: the service's start, a pipe it can't create, each helper it starts and each client it refuses (at
+most 10 refusals a minute; more are closed without a reply or a log entry), and the helper's user, integrity level,
+session, privileges, and why it exited. `dari-service.exe` is built without a console, and a test reads its import
+table to check that it never links `ws2_32.dll` or another Windows networking DLL.
 
 ## Viewer flow
 

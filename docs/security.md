@@ -156,13 +156,44 @@ session itself stays protected end to end.
 What the relay can learn: which devices are online, when connections happen, how much traffic flows, and both
 sides' public IPs.
 
+## The Windows secure-desktop helper
+
+On Windows, Dari adds two SYSTEM processes, `dari-service.exe service` and `dari-service.exe helper`, so it can later
+show and answer UAC prompts and the lock screen ([design](design/secure-desktop.md)). Neither has network code: a test
+reads `dari-service.exe`'s import table and fails if it links `ws2_32.dll` or another Windows networking DLL. A remote
+peer still reaches only `dari.exe`, and only after the password and approval: the app starts the helper only for an
+approved session, and with input off for a view-only one. So far the helper only reports which desktop receives input,
+and the app ignores every other message from it.
+
+| Boundary | Who is on the other side | Check |
+| --- | --- | --- |
+| `dari.exe` to `\\.\pipe\dari-service` | Any local process | The service creates all four instances of the pipe at start, the first with `FILE_FLAG_FIRST_PIPE_INSTANCE`, each with `PIPE_REJECT_REMOTE_CLIENTS` and a DACL that lets interactive users read and write data, but not create pipe instances. Only SYSTEM, the service's own user, may also create instances, which the service needs for the other three. Before reading a byte, the service reads the client's process ID and session from the pipe, opens the process, and accepts it only if its image is `dari.exe` in the service's own folder (compared without case) and its session is active. It keeps that process handle while the helper runs, so the ID can't be reused. A refused client is disconnected at once. A client that passed gets 2 seconds to send its request and 2 more, counted after the service acts on it, to read the reply. One helper per session: a `StartHelper` from the app process the running helper serves ends that helper and starts a new one, and one from another process is refused. At most 10 refusals a minute are answered and logged. An interactive user's process can keep connecting to all four instances, which at worst makes the app give up after 5 seconds and run the session without the helper: it denies service, and learns nothing but a refusal |
+| The helper's pipe, seen from `dari.exe` | The client that connects | The app creates `\\.\pipe\dari-helper-<32 random hex digits>` (one instance, local clients only, readable and writable by SYSTEM and the app's logon SID). The random part comes from the OS and is never logged. It is passed on the helper's command line, which a medium-integrity process couldn't read in the test VM. It is no secret anyway: any local process can list pipe names. A process of the user's logon session that connects before the helper is refused by the check below, and the helper then can't connect, so the worst it does is deny service. The app reads the client's first message, impersonates the client at identification level, and accepts it only if the token's user is LocalSystem (`S-1-5-18`), before acting on that message. Any SYSTEM process passes, and a SYSTEM process can read keystrokes anyway |
+| The helper's pipe, seen from the helper | The pipe's server | The helper compares `GetNamedPipeServerProcessId` with the process ID of the handle the service let it inherit before it sends anything. The service and the helper hold that handle open, so the ID can't be reused |
+| A squatter on `\\.\pipe\dari-service` | Any local process, while the service is stopped | It can refuse or ignore `StartHelper`, but no SYSTEM client connects to the app's pipe, so the app logs that the link ended and the session carries on with the `SecureDesktop` notice. The service then fails to create its pipe, logs an error, and stops with a service-specific exit code, which `scripts/crosscheck/windows/squat-service-pipe.ps1` checks in the VM |
+
+Before it duplicates a token, the service checks that the session's `winlogon.exe` process has the image `winlogon.exe`
+in the system directory (`GetSystemDirectoryW`) and that its token's user is LocalSystem, passing over any process that
+only shares the name. The helper runs with that token restricted by `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`,
+which keeps the SYSTEM SID and System integrity but removes every privilege except `SeChangeNotifyPrivilege`. Its first
+event log entry lists its user, integrity level, session, and privileges. It inherits only the app's process handle,
+runs in a job that ends it when the service exits, loads DLLs only from System32, creates no windows, and exits when its
+pipe closes or the app exits. `dari-service.exe` has no console, because a console program started as SYSTEM opens a
+console window on the user's desktop.
+
+Code running as the signed-in user can do what `dari.exe` can, including talking to the service and the helper as if it
+were the app. The image check stops other programs, not code injected into Dari. Such code can start `dari.exe`, inject
+into it, and drive the helper, which today reveals only desktop names and with #46 and #47 will see and answer the
+secure desktop. The design's [What this design can't stop](design/secure-desktop.md#what-this-design-cant-stop) explains
+why that cost was accepted.
+
 ## Known limitations
 
 - There's no TOFU (pinning the host certificate fingerprint on first sight). The one-time password authenticates
   every session, so it wasn't considered necessary, but it should be revisited if unattended access (permanent
   passwords) is ever added.
-- The Windows secure desktop (UAC, the lock screen) and Ctrl+Alt+Del can't be captured or injected from a regular
-  user process.
+- The Windows secure desktop (UAC, the lock screen) and Ctrl+Alt+Del can't be captured or injected yet. The helper
+  above only reports when the secure desktop is up.
 - The private key and settings are stored in plain files in the user data directory (no OS keychain).
 
 ## Hardening found in review
