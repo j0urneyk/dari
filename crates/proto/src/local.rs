@@ -5,6 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::frame_section::{FrameLayout, FrameSlot};
 use crate::input::InputEvent;
 use crate::validate::{Validate, ValidationError, sanitize_display_text, validate_display_text};
 
@@ -23,7 +24,6 @@ pub const MAX_DESKTOP_NAME_CHARS: usize = 64;
 const PIPE_PREFIX: &str = "dari-helper-";
 /// Random bytes in a helper pipe's name.
 pub const PIPE_RANDOM_BYTES: usize = 16;
-const MAX_FRAME_DIMENSION: u32 = 8192;
 
 /// The name of the pipe the app creates for the helper: `dari-helper-` and 32 lowercase hex
 /// digits.
@@ -154,8 +154,14 @@ pub enum AppToHelper {
     Input(InputEvent),
     /// Capture the display with this ID, as the viewer names displays.
     SelectDisplay(u32),
+    /// The credit: "I copied or discarded the frame of your last [`HelperToApp::Frame`]; that
+    /// slot is yours again." The app answers every `Frame` with exactly one `RequestFrame`, and
+    /// the helper starts each section with one credit and publishes one frame per credit, so it
+    /// never writes the slot the app is reading. The app can't write the section, so this is
+    /// its only way to say which slot it reads.
     RequestFrame,
-    /// The app closed its view of the last [`HelperToApp::FrameSection`].
+    /// The app closed its view of the section that a later [`HelperToApp::FrameSection`]
+    /// replaced, so the helper may close it.
     SectionReleased,
 }
 
@@ -168,17 +174,32 @@ impl Validate for AppToHelper {
     }
 }
 
-/// From the helper to the app.
+/// From the helper to the app. One thread in the helper writes every message, so the pipe's
+/// order is the order things happened: a `Frame` after `DesktopChanged(x)` shows desktop `x`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HelperToApp {
     DesktopChanged(InputDesktop),
-    /// A read-only handle, valid in the app's process, to the shared frame section.
+    /// A read-only handle, valid in the app's process, to a shared frame section laid out per
+    /// `FrameLayout::new(width, height)`. Every later `Frame` refers to this section.
     FrameSection {
         handle: u64,
         width: u32,
         height: u32,
     },
-    ScreenUnavailable,
+    /// `slot` of the current section holds frame `sequence` of display `display`, with the
+    /// pointer drawn in. The app owns that slot until it sends [`AppToHelper::RequestFrame`].
+    /// `display` lets the app drop a frame captured before the helper read its `SelectDisplay`.
+    /// `sequence` is never 0 and matches the slot's header word while the app owns the slot.
+    Frame {
+        display: u32,
+        slot: FrameSlot,
+        sequence: u64,
+    },
+    /// The selected display can't be captured right now. Names the display for the same reason
+    /// `Frame` does. Cleared by the next `Frame` or `DesktopChanged`.
+    ScreenUnavailable {
+        display: u32,
+    },
 }
 
 impl Validate for HelperToApp {
@@ -193,15 +214,15 @@ impl Validate for HelperToApp {
                 if *handle == 0 {
                     return Err(ValidationError::InvalidValue { field: "handle" });
                 }
-                if *width == 0 || *width > MAX_FRAME_DIMENSION {
-                    return Err(ValidationError::InvalidValue { field: "width" });
-                }
-                if *height == 0 || *height > MAX_FRAME_DIMENSION {
-                    return Err(ValidationError::InvalidValue { field: "height" });
+                FrameLayout::new(*width, *height).map(drop)
+            }
+            Self::Frame { sequence, .. } => {
+                if *sequence == 0 {
+                    return Err(ValidationError::InvalidValue { field: "sequence" });
                 }
                 Ok(())
             }
-            Self::ScreenUnavailable => Ok(()),
+            Self::ScreenUnavailable { .. } => Ok(()),
         }
     }
 }
@@ -333,9 +354,13 @@ mod tests {
         let mut body = prefix.to_vec();
         body.extend(postcard::to_allocvec(text).unwrap());
         body.extend_from_slice(suffix);
+        raw(&body)
+    }
+
+    fn raw(body: &[u8]) -> BytesMut {
         let mut frame = BytesMut::new();
         frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
-        frame.extend_from_slice(&body);
+        frame.extend_from_slice(body);
         frame
     }
 
@@ -373,7 +398,14 @@ mod tests {
             width: 3840,
             height: 2160,
         });
-        round_trip(&HelperToApp::ScreenUnavailable);
+        for slot in FrameSlot::ALL {
+            round_trip(&HelperToApp::Frame {
+                display: 65_537,
+                slot,
+                sequence: u64::MAX,
+            });
+        }
+        round_trip(&HelperToApp::ScreenUnavailable { display: 2 });
     }
 
     #[test]
@@ -484,9 +516,13 @@ mod tests {
 
     #[test]
     fn frame_sections_need_a_handle_and_a_real_size() {
-        for (handle, width, height) in
-            [(0, 1920, 1080), (4, 0, 1080), (4, 1920, 0), (4, 9000, 1080)]
-        {
+        for (handle, width, height) in [
+            (0, 1920, 1080),
+            (4, 0, 1080),
+            (4, 1920, 0),
+            (4, 8193, 1080),
+            (4, 1920, 8193),
+        ] {
             let message = HelperToApp::FrameSection {
                 handle,
                 width,
@@ -503,6 +539,26 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn frames_name_one_of_two_slots_and_a_nonzero_sequence() {
+        assert_eq!(
+            decode::<HelperToApp>(raw(&[2, 7, 1, 9])).unwrap(),
+            Some(HelperToApp::Frame {
+                display: 7,
+                slot: FrameSlot::Second,
+                sequence: 9
+            })
+        );
+        assert!(matches!(
+            decode::<HelperToApp>(raw(&[2, 7, 2, 9])),
+            Err(CodecError::Malformed(_))
+        ));
+        assert!(matches!(
+            decode::<HelperToApp>(raw(&[2, 7, 0, 0])),
+            Err(CodecError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 mod audio;
 mod codec;
 mod control;
+mod frame_section;
 mod handshake;
 mod input;
 mod local;
@@ -23,6 +24,9 @@ pub use codec::{
 pub use control::{
     Availability, ControlMessage, DisplayDescription, HostStatus, MAX_CLIPBOARD_BYTES,
     MAX_DISPLAYS, MAX_FRAME_RATE, QualityPreset,
+};
+pub use frame_section::{
+    FRAME_SECTION_MAGIC, FRAME_SECTION_VERSION, FrameLayout, FrameSlot, MAX_FRAME_DIMENSION,
 };
 pub use handshake::{
     AuthOutcome, ClientHello, HandshakeMessage, KEY_CONFIRMATION_LEN, Os, RejectReason, ServerHello,

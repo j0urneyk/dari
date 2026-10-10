@@ -96,7 +96,11 @@ async fn run(input: bool, events: &mpsc::UnboundedSender<SecureDesktopEvent>) ->
             Some(Ok(HelperToApp::DesktopChanged(desktop))) => {
                 let _sent = events.send(SecureDesktopEvent::DesktopChanged(desktop));
             }
-            Some(Ok(HelperToApp::FrameSection { .. } | HelperToApp::ScreenUnavailable)) => {}
+            Some(Ok(
+                HelperToApp::FrameSection { .. }
+                | HelperToApp::Frame { .. }
+                | HelperToApp::ScreenUnavailable { .. },
+            )) => {}
             Some(Err(error)) => return error.into(),
             None => return LinkError::HelperClosed,
         }
