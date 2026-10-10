@@ -332,6 +332,17 @@ scripts/crosscheck/vm/enable-uac.sh
 scripts/crosscheck/vm/enable-uac.sh --off
 ```
 
+With UAC on and Dari installed per machine, `windows/squat-service-pipe.ps1`, run in the VM from an elevated
+PowerShell (the SSH session is one), checks that DariService fails loudly when another process took its pipe first.
+It stops DariService, holds `\\.\pipe\dari-service` from a medium-integrity PowerShell in the signed-in session,
+starts the service, prints the service's state and the Application and System log entries, and then ends the
+squatter and starts the service again. `-HoldSeconds 120` keeps the squatter that long, so a session can be tried
+meanwhile.
+
+```powershell
+C:\dari-check\src\scripts\crosscheck\windows\squat-service-pipe.ps1 -HoldSeconds 120
+```
+
 Don't remove the VM's CD drives: that moves the system disk to another PCI address and Windows stops booting.
 
 Scripts in `scripts/crosscheck/` that run on Windows are ASCII only, which CI checks: Windows PowerShell 5.1 reads
