@@ -159,6 +159,14 @@ unsafe impl Send for ReadOnlySection {}
 // SAFETY: as for `Send`; nothing writes through the view.
 unsafe impl Sync for ReadOnlySection {}
 
+// Rust allows an atomic load of read-only memory only when it is relaxed and no wider than the
+// target's limit, 8 bytes on x86_64 and aarch64. On 32-bit targets the limit is 4 bytes, and a
+// 64-bit atomic load may write.
+const _: () = assert!(
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
+    "the frame section's 64-bit sequence words need 8-byte read-only atomic loads"
+);
+
 impl ReadOnlySection {
     fn map(handle: u64, layout: FrameLayout) -> io::Result<Self> {
         let raw =
@@ -212,8 +220,9 @@ impl ReadOnlySection {
 
     fn sequence(&self, slot: FrameSlot) -> &AtomicU64 {
         // SAFETY: the sequence word is 8-byte aligned inside the header page, which lives as
-        // long as `self`, and the helper only writes it atomically. An atomic load of read-only
-        // memory is sound for a word no wider than a pointer.
+        // long as `self`, and the helper writes it only atomically. The view is mapped
+        // read-only, which allows only relaxed loads of at most 8 bytes on the targets asserted
+        // above, so every load of the word is relaxed and the copy is ordered by fences.
         unsafe {
             AtomicU64::from_ptr(
                 self.base()
@@ -228,9 +237,10 @@ impl ReadOnlySection {
 impl MappedSection for ReadOnlySection {
     fn copy(&self, slot: FrameSlot, sequence: u64) -> Option<RgbaFrame> {
         let word = self.sequence(slot);
-        if word.load(Ordering::Acquire) != sequence {
+        if word.load(Ordering::Relaxed) != sequence {
             return None;
         }
+        fence(Ordering::Acquire);
         let len = self.layout.slot_len();
         let mut pixels = Vec::<u8>::with_capacity(len);
         // SAFETY: the slot lies inside the view per `FrameLayout`, `pixels` has room for `len`
