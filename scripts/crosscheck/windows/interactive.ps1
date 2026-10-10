@@ -9,6 +9,7 @@ the signed-in user's session instead, so a user must be signed in (autologon on 
 
   start -Name host -Exe C:\dari-check\dari-check.exe -Arguments 'host','--approve','allow' -Log C:\dari-check\logs\host.log
   start -Name view -Exe ...\dari.exe -Arguments 'connect','10.0.0.2' -InputFile C:\dari-check\password.txt -Log ...
+  start -Name host -RunLevel Limited ...   # with UAC on, runs with the user's filtered token (medium integrity), like the installed app
   wait  -Name host -TimeoutSeconds 180   # exits with the program's exit code
   stop  -Name host
 #>
@@ -24,7 +25,9 @@ param(
     [string] $Log,
     # A file the program reads as its standard input.
     [string] $InputFile,
-    [int] $TimeoutSeconds = 300
+    [int] $TimeoutSeconds = 300,
+    [ValidateSet('Limited', 'Highest')]
+    [string] $RunLevel = 'Highest'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,7 +72,7 @@ switch ($Action) {
         $command = '"{0}" {1} > "{2}" 2>&1' -f $Exe, ($Arguments -join ' '), $Log
         if ($InputFile) { $command += ' < "{0}"' -f $InputFile }
         $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$command`""
-        $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
+        $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel $RunLevel
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
         Register-ScheduledTask -TaskName $task -Action $taskAction -Principal $principal -Settings $settings -Force | Out-Null
         Start-ScheduledTask -TaskName $task
