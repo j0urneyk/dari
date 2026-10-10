@@ -1,6 +1,7 @@
 use dari_input::{EnigoBackend, InjectError, InputBackend};
 
 use crate::clipboard::{ClipboardFactory, SystemClipboard};
+use crate::secure_desktop::SecureDesktopLink;
 use dari_media::{
     AudioCapturer, AudioError, CaptureError, DisplayCapturer, DisplayInfo, PermissionState,
     ScreenCapturer, StreamSettings, SystemAudioCapturer, list_displays, system_audio_access,
@@ -32,6 +33,12 @@ pub trait HostPlatform: Send + Sync + 'static {
     /// [`PermissionState::NotDetermined`] means opening the capturer will ask the user and wait.
     fn audio_access(&self) -> PermissionState {
         PermissionState::NotRequired
+    }
+    /// Starts the helper that sees the Windows secure desktop, for a session the host user
+    /// approved. `input` is false for a view-only session. Called from the session's runtime;
+    /// `None` means this platform has no such helper.
+    fn open_secure_desktop(&self, _input: bool) -> Option<SecureDesktopLink> {
+        None
     }
 }
 

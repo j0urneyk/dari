@@ -20,11 +20,14 @@ use dari_media::{
 };
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
-use dari_proto::{Availability, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition};
+use dari_proto::{
+    Availability, InputDesktop, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition,
+};
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
-    HostPolicy, RelayStatus, SessionEndReason, Transfer, TransferDirection, TransferState,
-    ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer, start_host,
+    HostPolicy, RelayStatus, SecureDesktopEvent, SecureDesktopLink, SessionEndReason, Transfer,
+    TransferDirection, TransferState, ViewerConfig, ViewerEvent, ViewerTarget, connect_viewer,
+    start_host,
 };
 use tokio::sync::mpsc;
 
@@ -66,7 +69,10 @@ struct TestPlatform {
     /// until the screen changes, which it never does.
     still_screen: bool,
     secure_desktop: Arc<AtomicBool>,
+    secure_links: Option<SecureLinks>,
 }
+
+type SecureLinks = Arc<Mutex<Vec<(bool, mpsc::UnboundedSender<SecureDesktopEvent>)>>>;
 
 struct HideableCapturer {
     screen: SyntheticCapturer,
@@ -221,6 +227,12 @@ impl HostPlatform for TestPlatform {
             return Err(InjectError::PermissionDenied);
         }
         Ok(Box::new(SharedRecorder(self.actions.clone())))
+    }
+    fn open_secure_desktop(&self, input: bool) -> Option<SecureDesktopLink> {
+        let links = self.secure_links.as_ref()?;
+        let (events, receiver) = mpsc::unbounded_channel();
+        links.lock().unwrap().push((input, events));
+        Some(SecureDesktopLink::new(receiver))
     }
     fn audio_access(&self) -> PermissionState {
         if self.audio_unasked {
@@ -1519,4 +1531,129 @@ async fn a_slow_audio_device_does_not_stall_the_session() {
     // Asking again opens it for real.
     viewer.set_audio(true);
     wait_until(|| peak.load(Ordering::SeqCst) > 300).await;
+}
+
+fn helper_platform() -> (TestPlatform, SecureLinks) {
+    let links = SecureLinks::default();
+    let platform = TestPlatform {
+        secure_links: Some(links.clone()),
+        ..TestPlatform::default()
+    };
+    (platform, links)
+}
+
+async fn only_link(links: &SecureLinks) -> (bool, mpsc::UnboundedSender<SecureDesktopEvent>) {
+    wait_until(|| !links.lock().unwrap().is_empty()).await;
+    let links = links.lock().unwrap();
+    assert_eq!(links.len(), 1, "the session opened more than one link");
+    links[0].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_secure_desktop_helper_starts_after_approval_and_stops_with_the_session() {
+    let (platform, links) = helper_platform();
+    let mut host = start_with(platform, true).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    assert_eq!(
+        next_event(&mut viewer_events).await,
+        ViewerEvent::AwaitingApproval
+    );
+    assert!(links.lock().unwrap().is_empty(), "started before approval");
+
+    approve(&mut host, ApprovalDecision::AllowControl).await;
+    let (input, helper) = only_link(&links).await;
+    assert!(input);
+    for desktop in [
+        InputDesktop::Default,
+        InputDesktop::Winlogon,
+        InputDesktop::Default,
+    ] {
+        helper
+            .send(SecureDesktopEvent::DesktopChanged(desktop))
+            .unwrap();
+    }
+    let mut frames = viewer.frames();
+    tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!helper.is_closed());
+
+    viewer.disconnect();
+    tokio::time::timeout(Duration::from_secs(10), helper.closed())
+        .await
+        .expect("the session kept the helper's link after it ended");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declined_viewers_never_start_the_secure_desktop_helper() {
+    let (platform, links) = helper_platform();
+    let mut host = start_with(platform, true).await;
+    let (_viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    approve(&mut host, ApprovalDecision::Deny).await;
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::Ended(_))
+    })
+    .await;
+    wait_for_event(&mut host.events, |event| {
+        matches!(event, HostEvent::SessionEnded { .. })
+    })
+    .await;
+    assert!(links.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_only_sessions_start_the_secure_desktop_helper_without_input() {
+    let (platform, links) = helper_platform();
+    let mut host = start_with(platform, true).await;
+    let (_viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    approve(&mut host, ApprovalDecision::ViewOnly).await;
+    let (input, _helper) = only_link(&links).await;
+    assert!(!input);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secure_desktop_link_that_ends_leaves_the_session_running() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, helper) = only_link(&links).await;
+    helper
+        .send(SecureDesktopEvent::Ended(
+            "the helper closed its pipe".into(),
+        ))
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), helper.closed())
+        .await
+        .expect("the session kept a link that ended");
+
+    let mut frames = viewer.frames();
+    tokio::time::timeout(Duration::from_secs(10), frames.wait_for(Option::is_some))
+        .await
+        .unwrap()
+        .unwrap();
+    frames.mark_unchanged();
+    tokio::time::timeout(Duration::from_secs(10), frames.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(links.lock().unwrap().len(), 1);
+
+    host.handle.end_session();
+    assert_eq!(
+        wait_for_event(&mut viewer_events, |event| matches!(
+            event,
+            ViewerEvent::Ended(_)
+        ))
+        .await,
+        ViewerEvent::Ended(SessionEndReason::HostEnded)
+    );
 }

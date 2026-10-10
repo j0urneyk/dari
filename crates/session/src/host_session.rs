@@ -30,6 +30,7 @@ use crate::SessionEndReason;
 use crate::clipboard::ClipboardSync;
 use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent, HostPolicy};
 use crate::platform::HostPlatform;
+use crate::secure_desktop::{SecureDesktopEvent, SecureDesktopLink};
 use crate::transfer::{
     PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
 };
@@ -161,6 +162,7 @@ pub(crate) async fn serve_viewer(
         audio_generation: 0,
         audio_opened: None,
         clipboard: None,
+        secure_desktop: None,
     };
 
     let reason = match session
@@ -211,6 +213,7 @@ struct HostSession {
     /// Where opened capturers report back; set while the session runs.
     audio_opened: Option<mpsc::UnboundedSender<AudioOpened>>,
     clipboard: Option<ClipboardSync>,
+    secure_desktop: Option<SecureDesktopLink>,
 }
 
 enum AudioState {
@@ -393,6 +396,9 @@ impl HostSession {
                         return reason;
                     }
                 }
+                event = next_secure_desktop_event(self.secure_desktop.as_mut()) => {
+                    self.secure_desktop_event(event);
+                }
                 opened = opened_audio.recv() => {
                     let Some(opened) = opened else { continue };
                     if let Err(reason) = self.audio_opened(opened).await {
@@ -447,6 +453,19 @@ impl HostSession {
         }
     }
 
+    fn secure_desktop_event(&mut self, event: Option<SecureDesktopEvent>) {
+        match event {
+            Some(SecureDesktopEvent::DesktopChanged(desktop)) => {
+                info!("secure-desktop helper: DesktopChanged({desktop})");
+            }
+            Some(SecureDesktopEvent::Ended(reason)) => {
+                info!(%reason, "secure-desktop helper link ended");
+                self.secure_desktop = None;
+            }
+            None => self.secure_desktop = None,
+        }
+    }
+
     /// Starts input, the video stream, clipboard sync, and file transfer, and tells the viewer
     /// what it gets. Returns the viewer's file streams when file transfer is allowed.
     async fn start(
@@ -455,6 +474,7 @@ impl HostSession {
         status_updates: mpsc::Sender<Availability>,
         clipboard_out: mpsc::Sender<String>,
     ) -> Result<Option<IncomingFiles>, SessionEndReason> {
+        self.secure_desktop = self.platform.open_secure_desktop(control_allowed);
         self.displays = match self.platform.displays() {
             Ok(mut displays) => {
                 displays.truncate(MAX_DISPLAYS);
@@ -810,6 +830,7 @@ impl HostSession {
     }
 
     async fn shut_down(mut self, reason: &SessionEndReason) {
+        drop(self.secure_desktop.take());
         if let Some(pump) = self.pump.take() {
             pump.abort();
         }
@@ -832,6 +853,15 @@ impl HostSession {
             let _closed = tokio::time::timeout(DISCONNECT_GRACE, self.link.closed()).await;
         }
         self.link.close();
+    }
+}
+
+async fn next_secure_desktop_event(
+    link: Option<&mut SecureDesktopLink>,
+) -> Option<SecureDesktopEvent> {
+    match link {
+        Some(link) => link.next().await,
+        None => std::future::pending().await,
     }
 }
 
