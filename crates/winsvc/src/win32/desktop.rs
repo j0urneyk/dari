@@ -1,15 +1,16 @@
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::StationsAndDesktops::{
-    CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
-    GetUserObjectInformationW, HDESK, OpenInputDesktop, SetThreadDesktop, UOI_NAME,
+    CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, GetUserObjectInformationW, HDESK,
+    OpenInputDesktop, SetThreadDesktop, UOI_NAME,
 };
 
 use super::from_wide;
 use crate::tracker::{DesktopSource, Observation};
 
-/// Every desktop-specific right (`DESKTOP_READOBJECTS` through `DESKTOP_SWITCHDESKTOP`), as the
-/// Phase 0 spike attached with before duplicating `Winlogon`.
-const ATTACH_RIGHTS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(0x01FF);
+/// Naming, attaching to, and duplicating `Winlogon` or `Default` need no desktop-specific right,
+/// as measured in the test VM. `SendInput` needs `DESKTOP_JOURNALPLAYBACK`, so the input thread
+/// of #47 must open its own handle with that right rather than widen this one.
+const NO_RIGHTS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(0);
 
 #[derive(Debug, Default)]
 pub(crate) struct InputDesktopSource;
@@ -17,8 +18,7 @@ pub(crate) struct InputDesktopSource;
 impl DesktopSource for InputDesktopSource {
     fn poll(&mut self) -> Observation {
         // SAFETY: `OpenInputDesktop` takes no pointers; the handle is closed before returning.
-        let Ok(desktop) =
-            (unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) })
+        let Ok(desktop) = (unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, NO_RIGHTS) })
         else {
             return Observation::Unreadable;
         };
@@ -40,7 +40,7 @@ impl AttachedDesktop {
     pub(crate) fn attach() -> windows::core::Result<(Self, Observation)> {
         // SAFETY: `OpenInputDesktop` takes no pointers; the handle is owned by the result.
         let desktop =
-            Self(unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, ATTACH_RIGHTS)? });
+            Self(unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, NO_RIGHTS)? });
         // SAFETY: `desktop` is an open desktop handle that outlives the call.
         unsafe { SetThreadDesktop(desktop.0)? };
         let name = name(desktop.0);

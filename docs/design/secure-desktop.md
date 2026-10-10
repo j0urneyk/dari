@@ -352,6 +352,10 @@ screen nor send input. This design adds two SYSTEM processes, so it must also an
   this token is enough, as x64 under emulation and as native Arm64. With only that privilege, the helper attached to
   `Winlogon`, duplicated both of the VM's outputs, answered a UAC prompt with Alt+Y, and unlocked the lock screen.
   The restricted token still has the SYSTEM SID and System integrity. The helper keeps no other privilege.
+- The helper opens the input desktop with no desktop-specific access rights. That is enough to name it, attach to
+  it, and capture it. In the test VM, `SendInput` on `Winlogon` and `Default` needed `DESKTOP_JOURNALPLAYBACK` and
+  nothing else, so the input thread (#47) opens its own handle with only that right. The helper never requests the
+  other rights, such as hook control, journal record, write objects, or switch desktop.
 - The helper creates no windows and runs no message loop, so other processes can't send it window messages.
   `dari-service.exe` must be built with `windows_subsystem = "windows"`. In Phase 0 a console build of the helper,
   started with `CreateProcessAsUser`, opened a console window owned by SYSTEM on the user's desktop. The helper
