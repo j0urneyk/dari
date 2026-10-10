@@ -273,7 +273,10 @@ Both pipes carry `dari-proto`'s length-bounded postcard framing with a 64 KiB li
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
 doesn't stop another process from creating the name first. It makes the server's own creation fail loudly when that
-happened. The helper pipe's random name, which nothing logs, is what keeps other processes from guessing it.
+happened. The helper pipe's random name doesn't keep other processes from finding it, as the build found: any local
+process can list pipe names. What guards that pipe is its DACL (SYSTEM and the app's logon SID), its single instance,
+and the app's check that the client is LocalSystem. A process of the same session that connects first can only deny
+service.
 
 ### Installer
 

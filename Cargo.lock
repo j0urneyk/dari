@@ -1858,6 +1858,7 @@ name = "dari-session"
 version = "0.0.3"
 dependencies = [
  "arboard",
+ "bytes",
  "dari-input",
  "dari-media",
  "dari-net",
@@ -1865,17 +1866,26 @@ dependencies = [
  "dari-relay",
  "enigo",
  "futures-util",
+ "getrandom 0.3.4",
  "image",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]
 name = "dari-winsvc"
 version = "0.0.3"
 dependencies = [
+ "bytes",
+ "dari-proto",
+ "object",
+ "serde",
+ "tokio-util",
+ "windows 0.62.2",
  "windows-service",
 ]
 

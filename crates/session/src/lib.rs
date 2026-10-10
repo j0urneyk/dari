@@ -9,6 +9,7 @@ mod clipboard;
 mod host;
 mod host_session;
 mod platform;
+mod secure_desktop;
 mod transfer;
 mod viewer;
 
@@ -18,6 +19,7 @@ pub use host::{
     RelayStatus, start_host,
 };
 pub use platform::{HostPlatform, SystemPlatform};
+pub use secure_desktop::{SecureDesktopEvent, SecureDesktopLink};
 pub use transfer::{Transfer, TransferDirection, TransferState};
 pub use viewer::{
     ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, ViewerTarget, connect_viewer,

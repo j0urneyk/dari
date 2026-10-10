@@ -1,6 +1,6 @@
 [package]
 name = "dari-winsvc"
-description = "The DariService Windows service and its install and uninstall commands"
+description = "DariService and its helper, which let Dari show and answer the Windows secure desktop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,33 @@ license.workspace = true
 name = "dari-service"
 path = "src/main.rs"
 
+[dependencies]
+dari-proto.workspace = true
+
 [target.'cfg(windows)'.dependencies]
+bytes.workspace = true
+serde.workspace = true
+tokio-util.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_EventLog",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 windows-service.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+object.workspace = true
 
 [lints]
 workspace = true
