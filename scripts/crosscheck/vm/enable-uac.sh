@@ -25,6 +25,8 @@ ssh_options=(-i "$state/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o Co
 # The command reaches PowerShell as one -Command argument, so statements are joined onto one line.
 win() { ssh "${ssh_options[@]}" "dari@$ip" "${1//$'\n'/ }"; }
 
+# Read before writing anything, so a failed read leaves the VM unchanged.
+boot=$(win '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o")' | tr -d '\r')
 changed=$(win "\$want = '$want';"'
   $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
   $now = Get-ItemProperty $key;
@@ -44,7 +46,7 @@ echo "Set: ${changed//$'\n'/ }"
 if [[ $changed != *EnableLUA* ]]; then exit 0; fi
 
 echo "Restarting..."
-boot=$(win '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o"); Restart-Computer -Force' | tr -d '\r') || true
+win 'Restart-Computer -Force' || true
 # SSH answers before autologon has started the desktop, so wait for a new boot with explorer running.
 deadline=$((SECONDS + 600))
 while ((SECONDS < deadline)); do
