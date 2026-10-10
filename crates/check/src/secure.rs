@@ -51,7 +51,6 @@ pub(crate) struct SecureViewArgs {
     out: PathBuf,
 }
 
-/// A secure screen the script shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Screen {
     label: String,
@@ -60,16 +59,11 @@ pub(crate) struct Screen {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expect {
-    /// The host streams the screen while it is up, and its screen status stays Available.
     Captured,
-    /// Streamed until `SEEN`. Then the script ends the host's secure-desktop helper, and the
-    /// host shows PR 36's notice (screen status `SecureDesktop`) until the screen is gone.
     Notice,
 }
 
 impl Expect {
-    /// Whether the screen statuses the host reported during a screen, before and after `SEEN`,
-    /// are the ones it allows.
     fn allows(self, before_seen: &[Availability], after_seen: &[Availability]) -> bool {
         let allowed_after: &[Availability] = match self {
             Expect::Captured => &[Availability::Available],
@@ -107,26 +101,19 @@ impl Screen {
     }
 }
 
-/// A frame and its thumbnail.
 struct Shot {
     frame: Arc<DecodedFrame>,
     picture: Thumbnail,
 }
 
-/// The viewer's frames and events, read together so each status change is recorded while the
-/// check is still in the step it belongs to.
 struct Feed<'a> {
     viewer: &'a ViewerHandle,
     session: Session,
     frames: watch::Receiver<Option<Arc<DecodedFrame>>>,
-    /// Prints a line the script waits for.
     say: &'a (dyn Fn(&str) + Sync),
 }
 
 impl Feed<'_> {
-    /// The next frame, handling session events meanwhile. Hosts send frames only when their
-    /// screen changes, so a pause brings a keyframe request. None once `deadline` passes or the
-    /// session ends.
     async fn next_frame(&mut self, deadline: Instant) -> Option<Arc<DecodedFrame>> {
         loop {
             if self.session.ended.is_some() {
@@ -160,7 +147,6 @@ impl Feed<'_> {
         }
     }
 
-    /// The first frame for which `done` holds, before `deadline`.
     async fn follow(
         &mut self,
         deadline: Instant,
@@ -175,7 +161,6 @@ impl Feed<'_> {
         }
     }
 
-    /// The display's picture once it has stopped changing.
     async fn settled(
         &mut self,
         display: &DisplayDescription,
@@ -185,7 +170,6 @@ impl Feed<'_> {
         let aspect = f64::from(display.width) / f64::from(display.height);
         let mut settle = Settle::new(quiet);
         self.follow(deadline, |_, frame, picture| {
-            // The first frames after a switch may still show the previous display.
             let frame_aspect = f64::from(frame.width) / f64::from(frame.height);
             (frame_aspect - aspect).abs() < 0.02 && settle.feed(picture, std::time::Instant::now())
         })
@@ -205,7 +189,6 @@ impl Feed<'_> {
     }
 }
 
-/// A display and its picture before any secure screen.
 struct Baseline {
     display: DisplayDescription,
     picture: Thumbnail,
@@ -248,7 +231,6 @@ pub(crate) async fn run(args: SecureViewArgs) -> anyhow::Result<ExitCode> {
     Ok(check(&args, &viewer, events, &say).await.finish())
 }
 
-/// Runs the check on a connected viewer, saying each line the script waits for with `say`.
 async fn check(
     args: &SecureViewArgs,
     viewer: &ViewerHandle,
@@ -362,8 +344,6 @@ async fn view_screens(args: &SecureViewArgs, feed: &mut Feed<'_>, verdict: &mut 
     }
 }
 
-/// Follows one screen from its appearance to its end. Returns false when the turn-taking with
-/// the script broke and later screens can't be told apart.
 async fn view_screen(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -452,8 +432,6 @@ async fn view_screen(
     true
 }
 
-/// Waits for a screen to appear and settle on the active display, and saves it and every other
-/// display's picture of it. Returns false when it never appeared or settled.
 async fn see(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -526,8 +504,6 @@ async fn see(
     true
 }
 
-/// Selects another display while a secure screen is up, and checks it shows its own secure
-/// desktop rather than its picture from before.
 async fn view_other_display(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -590,14 +566,11 @@ mod tests {
 
     use super::*;
 
-    /// What the fake host's screen shows.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Scene {
         Desktop,
-        /// The secure desktop's first frames, before the prompt draws.
         Dimmed,
         Prompt,
-        /// The secure desktop with no helper to capture it.
         Uncapturable,
     }
 
@@ -659,8 +632,6 @@ mod tests {
         }
     }
 
-    /// Hosts the scene, connects a viewer, and runs the check with these arguments in the
-    /// background; returns the lines it says and its verdict.
     async fn start_check(
         scene: &Arc<Mutex<Scene>>,
         arguments: &[&str],
@@ -738,7 +709,6 @@ mod tests {
         (said, check, out)
     }
 
-    /// The brightness of the centre of a saved frame.
     fn centre(path: &std::path::Path) -> u8 {
         let image = image::open(path).unwrap().into_luma8();
         image.get_pixel(image.width() / 2, image.height() / 2).0[0]
@@ -751,7 +721,6 @@ mod tests {
         assert_eq!(line.as_deref(), Some(expected));
     }
 
-    /// The check waits for the script's next move.
     async fn expect_silence(said: &mut mpsc::UnboundedReceiver<String>) {
         if let Ok(line) = tokio::time::timeout(Duration::from_secs(2), said.recv()).await {
             panic!("said {line:?} before the screen changed");

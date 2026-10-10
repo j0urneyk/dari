@@ -7,7 +7,6 @@ use tracing::warn;
 
 use super::LinkDriver;
 
-/// Maps the frame sections the helper hands the app.
 pub(crate) trait SectionMapper {
     type Section: MappedSection;
 
@@ -32,8 +31,6 @@ pub(crate) enum HandoverError {
     Copy(#[from] tokio::task::JoinError),
 }
 
-/// The app's side of the frame section protocol: plays each helper message into the link's
-/// driver and says what to reply.
 pub(crate) struct Handover<M: SectionMapper> {
     mapper: M,
     section: Option<Arc<M::Section>>,
@@ -116,7 +113,6 @@ mod tests {
 
     const DISPLAY: u32 = 7;
 
-    /// What the fake sections did, in order.
     #[derive(Clone, Default)]
     struct Log(Arc<Mutex<Vec<String>>>);
 
@@ -214,7 +210,6 @@ mod tests {
         }
     }
 
-    /// The red channel of the frame the link holds now.
     fn held(view: &SecureDesktopView) -> Option<u8> {
         let (epoch, _) = view.route();
         match view.wait_frame(epoch, None, Duration::ZERO) {

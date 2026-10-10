@@ -159,6 +159,7 @@ pub enum AppToHelper {
     /// the helper starts each section with one credit and publishes one frame per credit, so it
     /// never writes the slot the app is reading. The app can't write the section, so this is
     /// its only way to say which slot it reads.
+    /// never writes the slot the app is reading.
     RequestFrame,
     /// The app closed its view of the section that a later [`HelperToApp::FrameSection`]
     /// replaced, so the helper may close it.

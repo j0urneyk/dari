@@ -4,7 +4,6 @@ use dari_media::{CaptureError, CapturedFrame, RgbaFrame, ScreenCapturer};
 
 use super::{Route, SecureDesktopView, Wait};
 
-/// Opens the platform's capturer for the user's desktop.
 type OpenDefault = Box<dyn FnMut() -> Result<Box<dyn ScreenCapturer>, CaptureError>>;
 
 /// Reads the helper's frames of one desktop epoch from a link. Frames of any other epoch, such
@@ -52,7 +51,6 @@ pub(crate) struct TwoSourceCapturer {
     epoch: u64,
     source: Source,
     max_fps: u32,
-    /// The source changed and hasn't returned a frame yet.
     switched: bool,
     keyframe_requested: bool,
 }
@@ -126,8 +124,6 @@ impl ScreenCapturer for TwoSourceCapturer {
         captured
     }
 
-    /// Windows.Graphics.Capture paces itself, the helper's frames arrive when the secure
-    /// desktop changes, and a polled source is wrapped in [`Paced`].
     fn paces_itself(&self) -> bool {
         true
     }
@@ -148,7 +144,6 @@ fn paced(source: Box<dyn ScreenCapturer>, max_fps: u32) -> Box<dyn ScreenCapture
     })
 }
 
-/// A polled source made self-paced at a frame rate.
 struct Paced {
     inner: Box<dyn ScreenCapturer>,
     interval: Duration,
@@ -187,12 +182,8 @@ mod tests {
 
     const DISPLAY: u32 = 7;
     const WAIT: Duration = Duration::from_millis(10);
-    /// The red channel of every helper frame; the default screen's frames carry their open's
-    /// number there instead.
     const SECURE: u8 = 200;
 
-    /// The user's desktop: each open is numbered from 1, and `hidden` plays the source's own
-    /// secure-desktop check.
     #[derive(Clone, Default)]
     struct DefaultScreen {
         opens: Arc<AtomicUsize>,
@@ -261,7 +252,6 @@ mod tests {
         }
     }
 
-    /// The red channel of the captured frame, `None` for no frame.
     fn shown(capturer: &mut TwoSourceCapturer) -> Result<Option<u8>, CaptureError> {
         Ok(capturer.capture(WAIT)?.map(|frame| match frame {
             CapturedFrame::Rgba(frame) => frame.pixels()[0],

@@ -73,8 +73,6 @@ struct TestPlatform {
     secure_links: Option<SecureLinks>,
 }
 
-/// Each link the session opened: whether it asked for input, and the helper's end until a test
-/// takes it to play the helper.
 type SecureLinks = Arc<Mutex<Vec<(bool, Option<LinkDriver>)>>>;
 
 struct HideableCapturer {
@@ -1553,7 +1551,6 @@ async fn only_link(links: &SecureLinks) -> (bool, LinkDriver) {
     (*input, driver.take().expect("the link was taken already"))
 }
 
-/// Whether the session still holds the link, taking the commands it sent so far.
 fn link_held(driver: &mut LinkDriver) -> bool {
     loop {
         match driver.command().now_or_never() {
@@ -1673,7 +1670,6 @@ async fn a_secure_desktop_link_that_ends_leaves_the_session_running() {
 const STREAM_WIDTH: u32 = 320;
 const STREAM_HEIGHT: u32 = 180;
 
-/// A helper frame the size of the synthetic screen, so no resize can explain a keyframe.
 fn solid(rgb: [u8; 3], square: Option<[u8; 3]>) -> RgbaFrame {
     let mut pixels = Vec::new();
     for y in 0..STREAM_HEIGHT {
@@ -1693,7 +1689,6 @@ const BLUE: [u8; 3] = [0, 0, 255];
 const GREEN: [u8; 3] = [0, 255, 0];
 const RED: [u8; 3] = [255, 0, 0];
 
-/// Whether the decoded pixel at (`x`, `y`) is close to `rgb`.
 fn looks(frame: &DecodedFrame, x: u32, y: u32, rgb: [u8; 3]) -> bool {
     let at = ((y * frame.width + x) * 4) as usize;
     let bgr = &frame.bgra[at..at + 3];
@@ -1703,7 +1698,6 @@ fn looks(frame: &DecodedFrame, x: u32, y: u32, rgb: [u8; 3]) -> bool {
         .all(|(&got, want)| got.abs_diff(want) < 60)
 }
 
-/// The synthetic screen: its bottom-right corner is orange, and no helper frame here is.
 fn synthetic(frame: &DecodedFrame) -> bool {
     looks(frame, STREAM_WIDTH - 10, STREAM_HEIGHT - 10, [246, 128, 9])
 }
@@ -1769,7 +1763,6 @@ async fn the_secure_desktop_replaces_the_screen_in_one_stream_with_a_keyframe_at
     helper.desktop_changed(InputDesktop::Default);
     wait_for_frame(&mut frames, synthetic).await;
     assert_eq!(keyframes(), 3);
-    // The screen source reopens after the secure desktop; the stream stays the same.
     assert_eq!(*captured.lock().unwrap(), [DISPLAY.id, DISPLAY.id]);
 
     while let Ok(event) = viewer_events.try_recv() {
@@ -1839,7 +1832,6 @@ async fn a_helper_that_dies_on_the_secure_desktop_brings_back_the_notice() {
     let mut frames = viewer.frames();
     wait_for_frame(&mut frames, synthetic).await;
 
-    // Windows.Graphics.Capture's own check sees the secure desktop too.
     hidden.store(true, Ordering::SeqCst);
     helper.desktop_changed(InputDesktop::Winlogon);
     helper.frame(DISPLAY.id, solid(BLUE, None));

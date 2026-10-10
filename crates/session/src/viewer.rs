@@ -107,7 +107,6 @@ impl std::fmt::Debug for ViewerConfig {
 pub struct ViewerStats {
     pub frames_decoded: AtomicU64,
     pub bytes_received: AtomicU64,
-    /// Video packets the host marked as keyframes.
     pub keyframes_received: AtomicU64,
 }
 

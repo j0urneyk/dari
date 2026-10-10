@@ -6,17 +6,14 @@
 //! The helper writes only the other slot and publishes at most one frame per credit. A section is
 //! replaced only while the app owns nothing, and at most one replaced section waits for
 //! `SectionReleased`.
-
 use std::io;
 
 use dari_proto::{FrameLayout, FrameSlot, HelperToApp, InputDesktop};
 
-/// Writes messages to the app: the pipe in production, a list in tests.
 pub(crate) trait Outbox {
     fn send(&mut self, message: HelperToApp) -> io::Result<()>;
 }
 
-/// Creates sections and hands the app a read-only handle to each.
 pub(crate) trait SectionFactory {
     type Section: SectionMemory;
     /// A section laid out for `layout` with its header written, and the value of a handle to it,
@@ -51,9 +48,7 @@ struct Draft {
 
 #[derive(Debug)]
 enum Credit {
-    /// The app owns no slot: the next frame is published at once.
     Free,
-    /// The app owns `slot`. `draft`, in the other slot, waits for the credit.
     Held {
         slot: FrameSlot,
         draft: Option<Draft>,
@@ -71,7 +66,6 @@ pub(crate) struct AppChannel<O, F: SectionFactory> {
     outbox: O,
     factory: F,
     current: Option<Current<F::Section>>,
-    /// The section `current` replaced, kept open until the app sends `SectionReleased`.
     retiring: Option<F::Section>,
     credit: Credit,
     next_sequence: u64,
@@ -89,24 +83,20 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
         }
     }
 
-    /// Discards the unpublished draft, which shows the old desktop, and tells the app.
     pub(crate) fn desktop_changed(&mut self, desktop: InputDesktop) -> io::Result<()> {
         self.discard_draft();
         self.outbox.send(HelperToApp::DesktopChanged(desktop))
     }
 
-    /// Discards the draft and tells the app the display can't be captured.
     pub(crate) fn screen_unavailable(&mut self, display: u32) -> io::Result<()> {
         self.discard_draft();
         self.outbox.send(HelperToApp::ScreenUnavailable { display })
     }
 
-    /// The app selected another display, so the draft shows the old one.
     pub(crate) fn display_selected(&mut self) {
         self.discard_draft();
     }
 
-    /// Offers a frame laid out per `layout` from `display`. `pixels` fills the slot.
     pub(crate) fn offer(
         &mut self,
         layout: FrameLayout,
@@ -140,8 +130,6 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
         }
     }
 
-    /// The app's `RequestFrame`: it is done with the slot it owned. Publishes the draft, if any.
-    /// A credit the app didn't owe changes nothing.
     pub(crate) fn request_frame(&mut self) -> io::Result<()> {
         match std::mem::replace(&mut self.credit, Credit::Free) {
             Credit::Held {
@@ -151,13 +139,10 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
         }
     }
 
-    /// The app's `SectionReleased`: closes the replaced section.
     pub(crate) fn section_released(&mut self) {
         self.retiring = None;
     }
 
-    /// The current section if it fits `layout`, else a new one, or `None` while it can't be
-    /// replaced.
     fn section_for(&mut self, layout: FrameLayout) -> io::Result<Option<&mut F::Section>> {
         if self
             .current
@@ -215,17 +200,12 @@ mod tests {
 
     use super::*;
 
-    /// What the helper did, as the app and the protocol see it.
     #[derive(Debug, Default)]
     struct World {
         sent: Vec<HelperToApp>,
         sections: Vec<TestSection>,
-        /// The section of the last `FrameSection` sent.
         last_section: Option<usize>,
-        /// The slot the app owns from the moment its `Frame` is sent until its `RequestFrame`
-        /// reaches the channel, as `(section, slot)`.
         owned: Option<(usize, FrameSlot)>,
-        /// The byte each frame's pixels were filled with, by sequence.
         fills: HashMap<u64, u8>,
     }
 
@@ -326,20 +306,17 @@ mod tests {
         }
     }
 
-    /// The app's side of the protocol, reading what the helper sent in order.
     #[derive(Debug, Default)]
     struct App {
         read: usize,
         mapped: Option<usize>,
         frame: Option<(FrameSlot, u64)>,
         replies: VecDeque<AppToHelper>,
-        /// It mapped a new section and hasn't released the old one yet.
         unreleased: bool,
         frames_copied: usize,
     }
 
     impl App {
-        /// Reads the next message. Returns false if there was none.
         fn read_next(&mut self, world: &World) -> bool {
             let Some(message) = world.sent.get(self.read) else {
                 return false;
@@ -371,8 +348,6 @@ mod tests {
             true
         }
 
-        /// Copies the owned frame the way the app checks it: the slot's sequence word matches
-        /// before and after, and the pixels are the ones written with that sequence.
         fn copy(&mut self, world: &mut World) {
             let (Some(id), Some((slot, sequence))) = (self.mapped, self.frame) else {
                 return;
@@ -487,7 +462,6 @@ mod tests {
                 app.frames_copied
             );
 
-            // Whatever state it ended in, a frame of either size still gets through.
             let mut published = None;
             for _round in 0..8 {
                 while app.read_next(&world.borrow()) {}
@@ -525,8 +499,6 @@ mod tests {
         while app.read_next(&world.borrow()) {}
         app.give_back();
         deliver(&mut channel, &world, &mut app);
-        // The old-size draft was dropped for the newer frame, so returning the credit publishes
-        // nothing.
         assert!(matches!(
             world.borrow().sent.last(),
             Some(HelperToApp::Frame { sequence: 1, .. })
@@ -553,7 +525,6 @@ mod tests {
         );
         assert!(world.borrow().sections[0].open, "closed before released");
         while app.read_next(&world.borrow()) {}
-        // The app answers the frame before it releases the old section.
         app.give_back();
         deliver(&mut channel, &world, &mut app);
         assert_eq!(

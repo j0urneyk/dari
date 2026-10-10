@@ -93,7 +93,6 @@ enum ScreenCommand {
     SectionReleased,
 }
 
-/// Reads the app's messages and hands them to the screen thread. Returns why it stopped.
 fn read_app(
     pipe: &Pipe,
     app: &InheritedProcess,
@@ -130,8 +129,6 @@ fn read_app(
     }
 }
 
-/// Follows the desktop, captures, and writes every message to the app until the reader stops
-/// or a write fails. Returns why it stopped.
 fn run_screen<W: DesktopWorld, F: SectionFactory>(
     mut machine: ScreenMachine<W>,
     mut channel: AppChannel<PipeOutbox<'_>, F>,
@@ -235,7 +232,6 @@ mod tests {
     use crate::tracker::{DesktopSource, Observation};
     use crate::win32::open_client_process;
 
-    /// `Winlogon`, with no output for any display.
     #[derive(Debug)]
     struct NoOutputs;
 

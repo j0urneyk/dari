@@ -1,14 +1,8 @@
-//! Telling pictures apart: whether the host's screen changed clearly, came back, or has stopped
-//! changing. Frames are compared as a coarse brightness grid, so video noise and a blinking caret
-//! don't count while a dimmed desktop, a dialog, or a lock screen does.
-
 use std::time::{Duration, Instant};
 
 const COLUMNS: usize = 32;
 const ROWS: usize = 18;
-/// Samples per cell along each axis.
 const SAMPLES: usize = 8;
-/// How much a cell's mean brightness (0..=255) must move to count as changed.
 const CELL_DELTA: f32 = 12.0;
 
 /// Share of cells that must change for the picture to differ clearly from another: a UAC prompt
@@ -17,8 +11,6 @@ pub(crate) const CLEARLY_DIFFERENT: f64 = 0.3;
 /// Share of cells that may still differ from the baseline once the screen is back, for a clock or
 /// a closing window.
 pub(crate) const NEAR: f64 = 0.1;
-/// Share of cells whose change restarts the wait for the picture to settle; a dialog fading in
-/// over a dimmed desktop is about a tenth of the screen.
 const STILL: f64 = 0.02;
 
 /// A frame reduced to the mean brightness of each cell of a grid.
@@ -84,7 +76,6 @@ pub(crate) struct Settle {
 }
 
 impl Settle {
-    /// Settled once nothing has changed for `quiet`.
     pub(crate) fn new(quiet: Duration) -> Self {
         Self {
             quiet,
@@ -114,10 +105,8 @@ mod tests {
     const HEIGHT: u32 = 360;
     const PROMPT: (f64, f64, f64, f64) = (0.35, 0.3, 0.65, 0.7);
 
-    /// A rectangle given in fractions of the frame (left, top, right, bottom), and its level.
     type Patch = ((f64, f64, f64, f64), u8);
 
-    /// A frame of one grey level, with brighter or darker rectangles given in fractions.
     fn frame(level: u8, patches: &[Patch]) -> Thumbnail {
         let mut bgra = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
         for y in 0..HEIGHT {

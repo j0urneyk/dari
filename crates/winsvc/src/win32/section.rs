@@ -16,7 +16,6 @@ use windows::core::PCWSTR;
 use super::{owned, raw};
 use crate::channel::{SectionFactory, SectionMemory};
 
-/// Creates frame sections and duplicates a read-only handle to each into the app's process.
 #[derive(Debug)]
 pub(crate) struct AppSections<'a, P> {
     app: &'a P,
@@ -38,7 +37,6 @@ impl<P: AsRawHandle> SectionFactory for AppSections<'_, P> {
     }
 }
 
-/// An unnamed section laid out per `FrameLayout`, with the helper's writable view of it.
 #[derive(Debug)]
 pub(crate) struct Section {
     mapping: OwnedHandle,
@@ -97,13 +95,8 @@ impl Section {
         Ok(section)
     }
 
-    /// A handle to the section, valid in `process`, that can map it only for reading.
     fn duplicate_read_only(&self, process: &impl AsRawHandle) -> io::Result<u64> {
         let mut duplicate = HANDLE::default();
-        // The handle belongs to `process` from here on. If the app's link ends before it reads
-        // the `FrameSection` naming it, nobody closes it and the section leaks in the app until
-        // the app exits. That takes a size change at the instant the session ends, and draining
-        // the pipe for it isn't worth the machinery.
         // SAFETY: duplicates a handle this process owns into `process`, which the service opened
         // with PROCESS_DUP_HANDLE; the new handle is only read as a value.
         unsafe {

@@ -26,7 +26,6 @@ pub enum SecureDesktopEvent {
     Ended(String),
 }
 
-/// What the link does on the session's behalf.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkCommand {
     /// Capture the display with this ID on the secure desktop.
@@ -74,7 +73,6 @@ impl SecureDesktopLink {
         let _sent = self.commands.send(LinkCommand::SelectDisplay(display));
     }
 
-    /// What a capture thread reads the helper's frames through.
     pub(crate) fn view(&self) -> SecureDesktopView {
         SecureDesktopView(self.shared.clone())
     }
@@ -109,7 +107,6 @@ impl LinkDriver {
         self.shared.update(|state| state.frame(display, image));
     }
 
-    /// The helper can't capture `display` right now.
     pub fn screen_unavailable(&self, display: u32) {
         self.shared.update(|state| state.unavailable(display));
     }
@@ -124,7 +121,6 @@ impl LinkDriver {
         self.commands.recv().await
     }
 
-    /// Ends the link and tells the session why.
     pub fn end(self, reason: String) {
         self.shared.update(LinkState::end);
         let _sent = self.events.send(SecureDesktopEvent::Ended(reason));
@@ -198,7 +194,6 @@ pub(crate) enum Wait {
         image: Arc<RgbaFrame>,
     },
     Nothing,
-    /// The helper can't capture the selected display.
     Unavailable,
     /// The desktop changed: ask for the route again.
     Moved,
@@ -230,14 +225,12 @@ struct LinkState {
     /// Default, Default: the default source may hold a frame from before the switch.
     epoch: u64,
     selected: Option<u32>,
-    /// For the current epoch and selected display only.
     picture: Picture,
     next_number: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// Waiting for the helper to name its first desktop.
     Connecting,
     Live,
     Ended,

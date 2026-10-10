@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
-# Checks that a viewer sees a Windows host's secure screens (a UAC prompt, the lock screen) and
-# that the session survives them. This Mac is the viewer, running `dari-check secure-view`; the
-# Windows peer, reached over SSH, runs the per-machine installed `dari.exe host` at medium
-# integrity in its signed-in session, so DariService and its secure-desktop helper are real.
-#
-# The peer needs what crosscheck.sh needs (windows/setup-vm.ps1 on the local VM), UAC on
-# (vm/enable-uac.sh), and Dari installed per machine. The viewer can't answer a prompt before
-# #47, so this script dismisses each UAC prompt over SSH by ending consent.exe, and with --lock a
-# person unlocks the peer in its window (the UTM window for the VM) when asked.
-#
-#   scripts/crosscheck/secure-desktop.sh --b windows:dari@192.168.64.5 \
-#     --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts
-#   ... --lock --helper-killed --second-display
+# The viewer can't answer a prompt before #47, so this script dismisses each UAC prompt over SSH
+# by ending consent.exe.
 #
 # Runs on the macOS /bin/bash (3.2).
 set -euo pipefail
@@ -90,8 +79,8 @@ peer_host_log="$dir\\logs\\secure-host.log"
 on() { ssh "${ssh_options[@]}" "$dest" "${1//$'\n'/ }"; }
 put() { scp -q "${ssh_options[@]}" "$1" "$dest:${2//\\//}"; }
 fetch() { scp -q "${ssh_options[@]}" "$dest:${1//\\//}" "$2"; }
-# Runs a peer script with arguments (PowerShell tokens), exiting with its exit code. Windows
-# client editions refuse scripts by default, so execution is allowed for this process only.
+# Windows client editions refuse scripts by default, so execution is allowed for this process
+# only.
 script() {
   local name=$1
   shift
@@ -99,7 +88,6 @@ script() {
     try { & '$dir\\$name' $*; exit \$LASTEXITCODE } catch { Write-Output \$_.Exception.Message; exit 1 }"
 }
 secure() { script secure-desktop.ps1 "$@"; }
-# Starts secure-desktop.ps1 ACTION at medium integrity in the peer's signed-in session.
 start_secure() {
   script interactive.ps1 start -Name "secure-$1" -RunLevel Limited \
     -Exe "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'" \
@@ -108,7 +96,6 @@ start_secure() {
 }
 stop_task() { script interactive.ps1 stop -Name "$1" >/dev/null 2>&1 || true; }
 
-# Prints the value of the first "KEY: value" line of the peer's host log, waiting up to $2 seconds.
 wait_for_host_line() {
   local key=$1 deadline=$((SECONDS + $2))
   while ((SECONDS < deadline)); do
@@ -123,8 +110,6 @@ wait_for_host_line() {
 }
 
 view_pid=''
-# Waits for the viewer to print the line $1. The viewer bounds each of its steps by --timeout and
-# exits when one runs out, so this outwaits it and lets it report its own failure.
 wait_for_viewer() {
   local line=$1 limit=$((timeout * 4 + 60))
   local deadline=$((SECONDS + limit))
@@ -177,8 +162,6 @@ view_args=(secure-view "$ip:$port" --password-file "$out/password" --out "$out/f
 "$root/target/debug/dari-check" "${view_args[@]}" >"$view_log" 2>&1 &
 view_pid=$!
 
-# Shows a UAC prompt, waits for the viewer to see it, does $2 (if any) while it is up, and
-# cancels it.
 prompt_case() {
   local label=$1 meanwhile=${2:-}
   start_secure uac || return 1
@@ -221,7 +204,6 @@ else
   fail 'the viewer connects and saves a baseline'
   ran=0
 fi
-# With the turn-taking broken, the viewer is waiting for something that won't come.
 ((ran)) || kill "$view_pid" 2>/dev/null || true
 
 view_code=0
@@ -232,7 +214,6 @@ grep -E '^(FAIL|RESULT)' "$view_log" | sed 's/^/  view: /' || true
 
 stop_task secure-host
 fetch "$peer_host_log" "$host_log" || true
-# The helper that reports the way back is gone after helper-killed.
 desktops=(Winlogon)
 ((uac || lock)) && desktops+=(Default)
 for desktop in "${desktops[@]}"; do

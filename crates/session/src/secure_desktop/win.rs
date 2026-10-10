@@ -78,7 +78,6 @@ pub(crate) fn open(input: bool) -> SecureDesktopLink {
     link
 }
 
-/// Runs the link until it fails, or until the session drops it (`Ok`).
 async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
     let (messages, first) = tokio::select! {
         connected = connect(input) => connected?,
@@ -110,8 +109,6 @@ async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
 
 type HelperReplies = FramedWrite<WriteHalf<NamedPipeServer>, MessageCodec<AppToHelper>>;
 
-/// Splits the pipe into its reader and its writer, which is the app's only one. Bytes the
-/// reader already buffered stay with it.
 fn split(
     messages: HelperMessages,
 ) -> (
@@ -126,7 +123,6 @@ fn split(
     (messages, replies)
 }
 
-/// Has the service start the helper, and waits for it to connect and name its desktop.
 async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkError> {
     let pipe = random_pipe_name()?;
     let server = create_helper_pipe(&pipe)?;
@@ -142,7 +138,6 @@ async fn session_gone(driver: &mut LinkDriver) {
     while driver.command().await.is_some() {}
 }
 
-/// Maps the sections the helper duplicates into this process.
 struct ReadOnlySections;
 
 impl SectionMapper for ReadOnlySections {
@@ -153,7 +148,6 @@ impl SectionMapper for ReadOnlySections {
     }
 }
 
-/// The app's read-only view of one frame section. Unmapped on drop.
 struct ReadOnlySection {
     view: MEMORY_MAPPED_VIEW_ADDRESS,
     layout: FrameLayout,
@@ -166,8 +160,6 @@ unsafe impl Send for ReadOnlySection {}
 unsafe impl Sync for ReadOnlySection {}
 
 impl ReadOnlySection {
-    /// Maps the section `handle` names and closes the handle, since the view keeps the section.
-    /// Fails if the section is smaller than `layout` or its header doesn't match it.
     fn map(handle: u64, layout: FrameLayout) -> io::Result<Self> {
         let raw =
             usize::try_from(handle).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
@@ -596,7 +588,6 @@ mod tests {
         );
     }
 
-    /// A section laid out like the helper's, written here.
     struct HelperSection {
         mapping: OwnedHandle,
         view: MEMORY_MAPPED_VIEW_ADDRESS,
@@ -650,7 +641,6 @@ mod tests {
             self.write(FrameLayout::HEIGHT_OFFSET, &height.to_le_bytes());
         }
 
-        /// A new handle to the section, as the helper's `DuplicateHandle` makes one.
         fn handle(&self) -> u64 {
             let mut duplicate = HANDLE::default();
             // SAFETY: duplicates an open handle within this process; `map` takes ownership.

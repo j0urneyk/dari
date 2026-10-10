@@ -1,6 +1,5 @@
 //! Follows the input desktop and keeps a duplication of the selected display on any desktop but
 //! `Default`. Every decision is here, in pure code: `win32::DxgiWorld` only makes the calls.
-
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -73,7 +72,6 @@ pub(crate) struct AcquiredFrame {
     pub(crate) shape_changed: bool,
 }
 
-/// What the screen thread passes on, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ScreenEvent {
     DesktopChanged(InputDesktop),
@@ -84,8 +82,6 @@ pub(crate) enum ScreenEvent {
     Note(Note),
 }
 
-/// A line for the event log. A duplication logs its start, its first image, and its end with a
-/// summary, never each frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Note {
     Duplicated {
@@ -96,7 +92,6 @@ pub(crate) enum Note {
     FirstImage {
         accumulated_frames: u32,
         last_present_time: i64,
-        /// Pointer-only frames before it, each skipped.
         skipped: u32,
         after: Duration,
     },
@@ -105,7 +100,6 @@ pub(crate) enum Note {
         stats: Stats,
         lasted: Duration,
     },
-    /// The first failure, and each change of code, while trying to duplicate.
     CannotDuplicate {
         display: u32,
         code: Hresult,
@@ -114,7 +108,6 @@ pub(crate) enum Note {
         display: u32,
         why: Unavailable,
     },
-    /// A pointer shape that didn't parse; the previous one stays.
     BadPointerShape {
         kind: u32,
     },
@@ -132,7 +125,6 @@ pub(crate) enum Ended {
 pub(crate) struct Stats {
     pub(crate) images: u32,
     pub(crate) pointer_only: u32,
-    /// Frames handed to the app's channel, published or drafted.
     pub(crate) offered: u32,
 }
 
@@ -140,7 +132,6 @@ pub(crate) struct Stats {
 pub(crate) enum Unavailable {
     NoSuchDisplay,
     Unsupported(Hresult),
-    /// Still failing after `DENIED_LIMIT`, with the last code if there was one.
     StillFailing(Option<Hresult>),
     TooLarge(Size),
 }
@@ -206,11 +197,9 @@ impl fmt::Display for Note {
 
 #[derive(Debug)]
 enum Capture<D> {
-    /// `Default`, the desktop not read yet, or no display selected: nothing to capture.
     Idle,
     Starting(Starting),
     Running(Running<D>),
-    /// Until the desktop or display changes.
     Unavailable,
 }
 
@@ -223,7 +212,6 @@ struct Starting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GiveUp {
-    /// Report the screen unavailable if no duplication has started by then.
     At(Instant),
     Reported,
 }
@@ -246,13 +234,11 @@ struct Running<D> {
     /// `None` until this duplication's first frame with an image, and dropped with it, so nothing
     /// shows a previous desktop's or display's pixels (issue #46, first comment).
     image: Option<Vec<u8>>,
-    /// The image or the pointer changed since the app was last offered a frame.
     dirty: bool,
     stats: Stats,
 }
 
 enum Attempt {
-    /// Attach found another desktop than the last check: check again at once.
     Moved,
     Retry(Option<Hresult>),
     Unavailable(Unavailable),
@@ -266,7 +252,6 @@ pub(crate) struct ScreenMachine<W: DesktopWorld> {
     display: Option<u32>,
     capture: Capture<W::Duplication>,
     next_poll: Instant,
-    /// Survives duplications of one display, so a pointer-only first frame still places it.
     pointer: Pointer,
 }
 
@@ -283,7 +268,6 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         }
     }
 
-    /// The app's `SelectDisplay`. The same display again changes nothing.
     pub(crate) fn select_display(&mut self, display: u32, now: Instant) -> Vec<ScreenEvent> {
         if self.display == Some(display) {
             return Vec::new();
@@ -327,7 +311,6 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         }
     }
 
-    /// The frame to offer the app, if the image or the pointer changed since the last offer.
     pub(crate) fn dirty_frame(&self) -> Option<Composed<'_>> {
         let (Capture::Running(running), Some(display)) = (&self.capture, self.display) else {
             return None;
@@ -358,7 +341,6 @@ impl<W: DesktopWorld> ScreenMachine<W> {
                 .is_some_and(|desktop| *desktop != InputDesktop::Default)
     }
 
-    /// Drops any duplication and starts over for the current desktop and display.
     fn restart(&mut self, why: Ended, now: Instant) -> Option<ScreenEvent> {
         let next = if self.wants_capture() {
             Capture::Starting(Starting::new(now))
@@ -531,7 +513,6 @@ impl<W: DesktopWorld> ScreenMachine<W> {
         Ok(())
     }
 
-    /// Drops a duplication that failed and checks the desktop at once before duplicating again.
     fn lose(
         &mut self,
         running: Running<W::Duplication>,
@@ -566,7 +547,6 @@ pub(crate) fn rgba_from_bgra_rows(source: &[u8], pitch: usize, width: usize, int
     }
 }
 
-/// An image with the pointer, ready to be written into a section slot.
 #[derive(Debug)]
 pub(crate) struct Composed<'a> {
     pub(crate) display: u32,
@@ -613,7 +593,6 @@ mod tests {
 
     type Calls = Rc<RefCell<Vec<Call>>>;
 
-    /// One acquire's script: the frame info, or the failure.
     #[derive(Debug, Clone)]
     enum Acquire {
         Frame {
@@ -687,8 +666,6 @@ mod tests {
         }
     }
 
-    /// A duplication that plays its script, then times out forever. It panics on any call DXGI
-    /// would refuse, such as acquiring before releasing.
     #[derive(Debug)]
     struct Scripted {
         id: usize,
@@ -777,7 +754,6 @@ mod tests {
         }
     }
 
-    /// A pointer-only update whose image is black, placing a new 1x1 pointer at `(x, y)`.
     fn pointer_only(x: i32, y: i32) -> Acquire {
         Acquire::Frame {
             frame: AcquiredFrame {
@@ -813,7 +789,6 @@ mod tests {
             }
         }
 
-        /// Steps `count` times, `every` apart.
         fn run(&mut self, count: u32, every: Duration) {
             for _ in 0..count {
                 let events = self.machine.step(self.now);
@@ -837,7 +812,6 @@ mod tests {
                 .count()
         }
 
-        /// The dirty frame's pixels, then marks it offered.
         fn offer(&mut self) -> Option<Vec<[u8; 4]>> {
             let frame = self.machine.dirty_frame()?;
             let mut slot = vec![0; frame.layout().slot_len()];
@@ -891,7 +865,6 @@ mod tests {
 
     #[test]
     fn bgra_rows_with_padding_become_packed_opaque_rgba() {
-        // Two rows of two pixels, each row padded to 12 bytes; the last row isn't padded.
         let source = [
             1, 2, 3, 0, 4, 5, 6, 0, 99, 99, 99, 99, //
             7, 8, 9, 0, 10, 11, 12, 0,
@@ -1200,7 +1173,6 @@ mod tests {
     #[test]
     fn a_duplication_too_large_for_a_section_is_unavailable() {
         struct Huge(World);
-        // Reuses the scripted world but reports a size past MAX_FRAME_DIMENSION.
         impl DesktopSource for Huge {
             fn poll(&mut self) -> Observation {
                 self.0.poll()

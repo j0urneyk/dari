@@ -124,18 +124,14 @@ impl Pointer {
     }
 }
 
-/// Where one axis of a shape, placed at a signed position, lands inside the frame.
 #[derive(Debug, Clone, Copy)]
 struct Overlap {
-    /// The first shape index inside the frame.
     shape: usize,
-    /// The frame index it lands on.
     frame: usize,
     count: usize,
 }
 
 impl Overlap {
-    /// `None` when the shape's `len` indices starting at `start` miss `0..limit`.
     fn of(start: i32, len: usize, limit: usize) -> Option<Self> {
         let start = i64::from(start);
         let len = i64::try_from(len).ok()?;
@@ -153,7 +149,6 @@ impl Overlap {
     }
 }
 
-/// Blends one shape pixel into `rgb`, the frame's red, green, and blue bytes. Alpha stays.
 fn blend(shape: &PointerShape, row: usize, column: usize, rgb: &mut [u8]) {
     match shape.kind {
         ShapeKind::Monochrome => {
@@ -221,7 +216,6 @@ mod tests {
         pointer
     }
 
-    /// A `width` x `height` color shape where every pixel is `bgra`.
     fn solid(kind: u32, width: u32, height: u32, bgra: [u8; 4]) -> RawPointerShape {
         RawPointerShape {
             kind,
@@ -234,7 +228,6 @@ mod tests {
 
     #[test]
     fn monochrome_masks_follow_the_and_xor_truth_table() {
-        // Four pixels in one row: AND bits 1,0,0,1 then XOR bits 0,0,1,1.
         let shape = RawPointerShape {
             kind: MONOCHROME,
             width: 4,

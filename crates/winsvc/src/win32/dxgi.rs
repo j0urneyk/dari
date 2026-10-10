@@ -25,7 +25,6 @@ use crate::screen::{
 };
 use crate::tracker::{DesktopSource, Observation};
 
-/// The screen thread's view of the desktop and DXGI. It makes the calls and decides nothing.
 #[derive(Debug, Default)]
 pub(crate) struct DxgiWorld {
     attached: Option<AttachedDesktop>,
@@ -134,13 +133,11 @@ pub(crate) struct DxgiDuplication {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     duplication: IDXGIOutputDuplication,
-    /// Created at the first copy and reused for every frame.
     staging: Option<ID3D11Texture2D>,
     size: Size,
     held: Option<Held>,
 }
 
-/// What `AcquireNextFrame` returned with the frame this duplication holds.
 #[derive(Debug)]
 struct Held {
     image: Option<IDXGIResource>,
@@ -291,8 +288,6 @@ mod tests {
     use super::*;
     use crate::screen::{ScreenEvent, ScreenMachine};
 
-    /// The real world, except that `Default` reads as another desktop, so the machine captures
-    /// it the way it captures `Winlogon`. A signed-in user may duplicate `Default`.
     #[derive(Debug, Default)]
     struct DefaultAsSecure(DxgiWorld);
 

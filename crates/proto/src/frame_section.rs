@@ -1,5 +1,4 @@
 //! The layout of the shared frame section the secure-desktop helper writes and the app reads.
-//! Neither side repeats an offset: both go through [`FrameLayout`].
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +14,7 @@ const PAGE_LEN: usize = 4096;
 
 /// One of the section's two frame buffers. An enum, not an index, so a message can't name a
 /// third buffer: anything else fails to decode.
+/// One of the section's two frame buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FrameSlot {
     First,

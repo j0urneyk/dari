@@ -628,7 +628,6 @@ mod tests {
         stream.stop();
     }
 
-    /// A polled source that asks for a keyframe on its `asks_on`-th frame, counting from 1.
     struct KeyframeAsker {
         inner: SyntheticCapturer,
         captured: u32,
@@ -674,8 +673,6 @@ mod tests {
             );
         }
         stream.stop();
-        // A polled source is only captured while the sink has room, so every captured frame is
-        // encoded and the fifth captured is the fifth received.
         assert_eq!(keyframes, [0, 4]);
     }
 
@@ -940,7 +937,6 @@ mod tests {
             receiver.recv().await,
             Some(Err(StreamError::Capture(CaptureError::SecureDesktop)))
         ));
-        // The viewer asks for a keyframe while no frames arrive.
         let mut asks = tokio::time::interval(Duration::from_millis(100));
         let resumed = tokio::time::timeout(Duration::from_secs(5), async {
             loop {

@@ -63,7 +63,6 @@ pub(crate) struct ViewArgs {
 pub(crate) struct Session {
     pub(crate) events: mpsc::UnboundedReceiver<ViewerEvent>,
     pub(crate) status: Option<HostStatus>,
-    /// Every screen status the host reported, in order.
     pub(crate) screen_history: Vec<Availability>,
     pub(crate) displays: Vec<DisplayDescription>,
     pub(crate) active: Option<u32>,

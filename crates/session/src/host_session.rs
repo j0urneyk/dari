@@ -865,8 +865,6 @@ impl HostSession {
     }
 }
 
-/// Opens the stream's capturer on the capture thread: the platform's, or, while the session
-/// holds a helper link, one that switches to the helper's frames on the secure desktop.
 fn open_capturer(
     platform: Arc<dyn HostPlatform>,
     display: u32,
