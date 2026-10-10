@@ -11,6 +11,9 @@ mod command;
 mod dxgi_result;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod limiter;
+// Wired into the helper once its screen thread lands.
+#[allow(dead_code)]
+mod pointer;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod slot;
 #[cfg_attr(not(windows), allow(dead_code))]
