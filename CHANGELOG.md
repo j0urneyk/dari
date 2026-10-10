@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The Windows installer now installs Dari for all users in `C:\Program Files\Dari` and needs administrator rights.
+  It adds the `DariService` Windows service, which later releases use to show and answer UAC prompts and the lock
+  screen. Installing over an earlier per-user install moves it and keeps your settings and device identity.
 - Text on a still remote screen sharpens within half a second after it stops changing, and the Quality preset streams
   screens up to 3840x2160 at their full resolution instead of scaling them to 2560 pixels.
 

@@ -50,6 +50,13 @@ Release builds aren't signed with a developer certificate. The first time you op
 could not verify it; choose **Done**, then open System Settings → Privacy & Security and choose **Open Anyway**
 next to the message about Dari. On Windows, choose **More info → Run anyway** when SmartScreen warns you.
 
+Installing Dari on Windows needs administrator rights, and the installer asks for them. On a standard account it
+can't ask, so it stops before changing anything; right-click the installer and choose **Run as administrator**
+instead. It installs Dari for all users in `C:\Program Files\Dari` and adds the `DariService` Windows service. If
+Dari 0.0.3 or earlier is installed for your user, the installer deletes that copy, its shortcuts, and its uninstall
+entry, and keeps your settings and device identity. Uninstalling removes the service and the program files, and
+keeps your settings.
+
 ### macOS permissions
 
 A Mac that shares its screen needs these permissions, granted in System Settings → Privacy & Security. The app's

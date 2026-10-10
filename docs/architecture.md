@@ -9,6 +9,7 @@ dari (app) ──► dari-session ──┬──► dari-net ───┐
                               ├──► dari-media ─┼──► dari-proto
                               └──► dari-input ─┘
 dari-relay ──► dari-net, dari-proto
+dari-winsvc (Windows only, no dari dependencies yet)
 ```
 
 ## Crates
@@ -22,6 +23,7 @@ dari-relay ──► dari-net, dari-proto
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
 | `dari` | `crates/app` | gpui-kit desktop app and the headless CLI (`host`, `connect`) | gpui-kit, clap, directories, toml |
+| `dari-winsvc` | `crates/winsvc` | `dari-service.exe`, Windows only: the `DariService` LocalSystem service, and the `install` and `uninstall` commands the installer runs. The service only reports that it runs so far; the [secure desktop design](design/secure-desktop.md) adds its work | windows-service |
 
 ### External dependencies
 
@@ -38,6 +40,7 @@ Rather than reinventing anything, each area uses a widely adopted crate.
 | Input injection | `enigo`, plus the `windows` crate on Windows |
 | Clipboard and LAN discovery | `arboard`, `mdns-sd` |
 | Settings, logging, errors, CLI | `directories`, `toml`, `tracing`, `tracing-subscriber`, `thiserror`, `anyhow`, `clap`, `sys-locale` |
+| Windows service | `windows-service` |
 | Packaging | `cargo-packager` |
 
 ## Threads and executors

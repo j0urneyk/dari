@@ -510,12 +510,11 @@ install_release() {
   local side=$1 dir=$2
   if [[ $(field "$side" os) == windows ]]; then
     put "$side" "$(ls "$dir"/*-setup.exe)" 'C:\dari-check\dari-setup.exe'
-    # The installer is per-user, so it installs for the account the checks run as. The release
-    # app gets the firewall treatment dari-check gets (prepare-peer.ps1): allowed up front, so
-    # Windows never asks and never adds block rules.
+    # The release app gets the firewall treatment dari-check gets (prepare-peer.ps1): allowed up
+    # front, so Windows never asks and never adds block rules.
     set_field "$side" app "$(on "$side" "\$ErrorActionPreference = 'Stop';
       Start-Process C:\\dari-check\\dari-setup.exe -ArgumentList '/S' -Wait;
-      \$exe = (Get-ChildItem -Path \$env:LOCALAPPDATA -Filter dari.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName;
+      \$exe = (Get-ChildItem -Path (Join-Path \$env:ProgramFiles Dari), \$env:LOCALAPPDATA -Filter dari.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName;
       Get-NetFirewallApplicationFilter -Program \$exe -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object Action -eq 'Block' | Remove-NetFirewallRule;
       Remove-NetFirewallRule -Name dari-release -ErrorAction SilentlyContinue;
       New-NetFirewallRule -Name dari-release -DisplayName 'dari (release)' -Direction Inbound -Program \$exe -Action Allow -Profile Any | Out-Null;

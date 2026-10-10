@@ -38,6 +38,7 @@ objc2-core-graphics.workspace = true
 [dev-dependencies]
 dari-relay.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
+sha2.workspace = true
 tempfile = "3"
 
 [[test]]
@@ -63,13 +64,95 @@ icons = [
     "assets/icons/icon-512.png",
     "assets/icons/icon-1024.png",
 ]
-before-packaging-command = "cargo build --release --locked -p dari"
+before-packaging-command = "cargo build --release --locked -p dari -p dari-winsvc"
 out-dir = "../../target/release"
-binaries = [{ path = "dari", main = true }]
+# cargo-packager has no per-platform binaries, so the macOS app carries the dari-service stub too.
+binaries = [{ path = "dari", main = true }, { path = "dari-service" }]
 
 [package.metadata.packager.macos]
 minimum-system-version = "13.0"
 info-plist-path = "assets/Info.plist"
 
 [package.metadata.packager.nsis]
-installer-mode = "currentUser"
+installer-mode = "perMachine"
+template = "assets/installer.nsi"
+preinstall-section = '''
+!macro DariRefuse MESSAGE
+  MessageBox MB_ICONSTOP|MB_OK "${MESSAGE}" /SD IDOK
+  Abort "${MESSAGE}"
+!macroend
+
+!macro DariWaitForServiceExit
+  ; The service reports Stopped just before its process exits, and dari-service.exe stays locked until then.
+  StrCpy $1 0
+  ${Do}
+    nsis_tauri_utils::FindProcess "dari-service.exe"
+    Pop $0
+    ${IfThen} $0 <> 0 ${|} ${ExitDo} ${|}
+    Sleep 250
+    IntOp $1 $1 + 1
+  ${LoopUntil} $1 >= 40
+!macroend
+
+!macro DariDelete FILE
+  ; Explorer can hold a file it just saw created, such as a new shortcut, for a few seconds.
+  StrCpy $1 0
+  ${Do}
+    Delete "${FILE}"
+    ${IfNot} ${FileExists} "${FILE}"
+      ${ExitDo}
+    ${EndIf}
+    Sleep 250
+    IntOp $1 $1 + 1
+  ${LoopUntil} $1 >= 40
+!macroend
+
+Section RequireAdministrator
+  ; RequestExecutionLevel highest runs the installer unelevated for a standard user, without a UAC prompt.
+  UserInfo::GetAccountType
+  Pop $0
+  ${If} $0 != "Admin"
+    !insertmacro DariRefuse "Installing Dari needs administrator rights. Right-click the installer and choose Run as administrator."
+  ${EndIf}
+SectionEnd
+
+Section StopDariService
+  nsExec::Exec '"$SYSDIR\net.exe" stop DariService'
+  Pop $0
+  !insertmacro DariWaitForServiceExit
+SectionEnd
+
+Section RemovePerUserInstallAtFixedPaths
+  ClearErrors
+  EnumRegValue $0 HKCU "${UNINSTKEY}" 0
+  ${IfNot} ${Errors}
+    SetShellVarContext current
+    nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
+    Pop $0
+    ${If} $0 = 0
+      ${IfNot} ${Silent}
+      ${AndIf} $PassiveMode != 1
+        MessageBox MB_OKCANCEL "$(appRunningOkKill)" IDOK +2
+        Abort "$(appRunning)"
+      ${EndIf}
+      nsis_tauri_utils::KillProcess "${MAINBINARYNAME}.exe"
+      Pop $0
+      Sleep 500
+    ${EndIf}
+    !insertmacro DariDelete "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe"
+    ${If} ${FileExists} "$LOCALAPPDATA\${PRODUCTNAME}\${MAINBINARYNAME}.exe"
+      !insertmacro DariRefuse "Dari could not remove its earlier copy in $LOCALAPPDATA\${PRODUCTNAME}. Close Dari and run the installer again."
+    ${EndIf}
+    !insertmacro DariDelete "$LOCALAPPDATA\${PRODUCTNAME}\uninstall.exe"
+    !insertmacro DariDelete "$SMPROGRAMS\${PRODUCTNAME}\${PRODUCTNAME}.lnk"
+    RMDir "$SMPROGRAMS\${PRODUCTNAME}"
+    !insertmacro DariDelete "$DESKTOP\${PRODUCTNAME}.lnk"
+    ; Never recursive: this folder is also %LOCALAPPDATA%\dari, which holds the app's identity and settings.
+    RMDir "$LOCALAPPDATA\${PRODUCTNAME}"
+    DeleteRegKey HKCU "${MANUPRODUCTKEY}"
+    DeleteRegKey /ifempty HKCU "Software\${MANUFACTURER}"
+    DeleteRegKey HKCU "${UNINSTKEY}"
+    SetShellVarContext all
+  ${EndIf}
+SectionEnd
+'''
