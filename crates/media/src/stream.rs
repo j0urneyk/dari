@@ -28,6 +28,14 @@ pub trait ScreenCapturer {
     fn paces_itself(&self) -> bool {
         false
     }
+
+    /// Whether the frame [`ScreenCapturer::capture`] just returned comes from a different picture
+    /// source than the one before it (the Windows secure desktop replacing the user's, or back),
+    /// so the stream must encode it as a keyframe. The stream asks once after each frame, and
+    /// asking clears the request.
+    fn take_keyframe_request(&mut self) -> bool {
+        false
+    }
 }
 
 impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
@@ -37,6 +45,10 @@ impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
 
     fn paces_itself(&self) -> bool {
         (**self).paces_itself()
+    }
+
+    fn take_keyframe_request(&mut self) -> bool {
+        (**self).take_keyframe_request()
     }
 }
 
@@ -51,6 +63,17 @@ pub struct StreamSettings {
     /// Media Foundation hardware encoder on Windows), falling back to OpenH264.
     pub hardware_encoder: bool,
     pub still_refinement: StillRefinement,
+}
+
+impl StreamSettings {
+    #[expect(clippy::cast_precision_loss, reason = "frame rates are small integers")]
+    fn encoder_settings(self) -> EncoderSettings {
+        EncoderSettings {
+            bitrate_bps: self.bitrate_bps,
+            max_fps: self.max_fps.max(1) as f32,
+            hardware: self.hardware_encoder,
+        }
+    }
 }
 
 impl Default for StreamSettings {
@@ -237,12 +260,7 @@ where
     let mut capturer = open_capturer()?;
     let paced_by_source = capturer.paces_itself();
     let mut scaler = FrameScaler::default();
-    #[expect(clippy::cast_precision_loss, reason = "frame rates are small integers")]
-    let mut encoder = VideoEncoder::new(EncoderSettings {
-        bitrate_bps: settings.bitrate_bps,
-        max_fps: settings.max_fps.max(1) as f32,
-        hardware: settings.hardware_encoder,
-    })?;
+    let mut encoder = VideoEncoder::new(settings.encoder_settings())?;
 
     let interval = Duration::from_secs(1) / settings.max_fps.max(1);
     let refinement = settings.still_refinement;
@@ -275,6 +293,10 @@ where
         let (captured, resend) = match capturer.capture(wait).inspect(|_| hidden_reported = false) {
             Ok(Some(frame)) => {
                 failing_since = None;
+                if capturer.take_keyframe_request() {
+                    // Sticky, so a frame skipped for a full sink passes it on to the next one.
+                    control.keyframe_requested.store(true, Ordering::Relaxed);
+                }
                 if paced_by_source {
                     still = Some(StillScreen::new(frame.clone()));
                 }
@@ -601,6 +623,57 @@ mod tests {
         let after = receiver.recv().await.unwrap().unwrap();
         assert!(next.keyframe || after.keyframe);
         stream.stop();
+    }
+
+    /// A polled source that asks for a keyframe on its `asks_on`-th frame, counting from 1.
+    struct KeyframeAsker {
+        inner: SyntheticCapturer,
+        captured: u32,
+        asks_on: u32,
+    }
+
+    impl ScreenCapturer for KeyframeAsker {
+        fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            self.captured += 1;
+            self.inner.capture(timeout)
+        }
+
+        fn take_keyframe_request(&mut self) -> bool {
+            self.captured == self.asks_on
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_capturer_can_ask_for_a_keyframe() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let stream = spawn_capture_stream(
+            || {
+                Ok(KeyframeAsker {
+                    inner: SyntheticCapturer::new(64, 64),
+                    captured: 0,
+                    asks_on: 5,
+                })
+            },
+            settings(),
+            sender,
+        )
+        .unwrap();
+        let mut decoder = crate::codec::VideoDecoder::new().unwrap();
+        let mut keyframes = Vec::new();
+        for index in 0..10 {
+            let frame = receiver.recv().await.unwrap().unwrap();
+            if frame.keyframe {
+                keyframes.push(index);
+            }
+            assert!(
+                decoder.decode(&frame.data).unwrap().is_some(),
+                "frame {index}"
+            );
+        }
+        stream.stop();
+        // A polled source is only captured while the sink has room, so every captured frame is
+        // encoded and the fifth captured is the fifth received.
+        assert_eq!(keyframes, [0, 4]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
