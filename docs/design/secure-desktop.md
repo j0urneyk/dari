@@ -1,7 +1,8 @@
 # Answering the Windows secure desktop from a viewer
 
-Status: approved. Option B, a per-machine-only installer, and secure-screen control on by default. Nothing here is
-built yet.
+Status: approved. Option B, a per-machine-only installer, and secure-screen control on by default. Built so far:
+the per-machine install and `DariService` (#44), the helper, its pipes, and desktop following (#45), and the capture
+of the secure desktop (#46). Input on the secure desktop (#47) and Ctrl+Alt+Del (#48) aren't built yet.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
@@ -183,7 +184,7 @@ threads that each attach to it: capture and input. Neither thread creates a wind
 
 ### Capturing the secure desktop with DXGI Desktop Duplication
 
-On a switch to `Winlogon`, the capture thread re-attaches, then finds the output whose `DXGI_OUTPUT_DESC.Monitor`
+On a switch to any desktop but `Default`, the capture thread re-attaches, then finds the output whose `DXGI_OUTPUT_DESC.Monitor`
 matches the viewer's display ID (the same low-32-bit `HMONITOR` that xcap and `find_monitor` use). It enumerates
 every adapter for that, because `DuplicateOutput` must be called with a Direct3D 11 device created on the adapter
 that owns the output, and a laptop with two GPUs can split outputs between them. A display ID that matches no output
@@ -192,18 +193,22 @@ reports the screen unavailable. The thread then calls `IDXGIOutput1::DuplicateOu
 
 | Result | What the helper does |
 | --- | --- |
-| A frame | Copies it to a staging texture, maps it, and publishes BGRA to the app |
+| A frame | Copies it to a staging texture, maps it, and publishes it to the app as RGBA |
 | `DXGI_ERROR_WAIT_TIMEOUT` | Nothing. The screen is still, and like Windows.Graphics.Capture the source paces itself |
-| `DXGI_ERROR_ACCESS_LOST` or `DXGI_ERROR_INVALID_CALL` from `AcquireNextFrame` | The desktop switched or the mode changed. In Phase 0, `AcquireNextFrame` returned `ACCESS_LOST` on the switch to `Winlogon` and `INVALID_CALL` on the switch back. Releases the duplication, re-checks the input desktop, re-attaches, and duplicates again |
+| Any other failure of `AcquireNextFrame`, of the copy, of `GetFramePointerShape`, or of `ReleaseFrame` | The desktop switched or the mode changed. In Phase 0, `AcquireNextFrame` returned `ACCESS_LOST` on the switch to `Winlogon` and `INVALID_CALL` on the switch back. `INVALID_CALL` is documented only for an `AcquireNextFrame` without a `ReleaseFrame`, and the spike ignored `ReleaseFrame`'s result, so a failed release may have caused it (#46). The helper checks every `ReleaseFrame`. It releases the duplication, re-checks the input desktop, re-attaches, and duplicates again |
 | `E_ACCESSDENIED` from `DuplicateOutput` | Transient during a switch. Retries after the next desktop check, then reports the screen unavailable after 5 seconds |
 | `DXGI_ERROR_UNSUPPORTED` or `DXGI_ERROR_SESSION_DISCONNECTED` | Reports the screen unavailable until the next desktop change |
 
 In Phase 0 a new duplication succeeded 40 to 380 ms after `AcquireNextFrame` reported the switch. In three of four
 runs, the first frame from `Winlogon` was all black and came with a pointer update. The pointer probe's black frame
-had `AccumulatedFrames` set to 0, which means Windows hadn't updated the desktop image. The helper therefore
-publishes a frame only when `AccumulatedFrames` is nonzero, and handles a pointer-only update by redrawing the
-pointer on the last frame. The first frame with an image showed the dimmed desktop, and the UAC prompt appeared in
-later frames. A test that saves a `Winlogon` frame must wait for one that shows the prompt.
+had `AccumulatedFrames` set to 0, which means Windows hadn't updated the desktop image. Microsoft's
+`DXGI_OUTDUPL_FRAME_INFO` documentation says a pointer-only update sets `AccumulatedFrames` and `LastPresentTime`
+to 0. The helper therefore publishes nothing from a duplication until its first frame with `AccumulatedFrames`
+above 0, so the viewer never sees the previous desktop's last frame with the new pointer on it. After that first
+image, a pointer-only update redraws the pointer on that duplication's last image. A duplication with no image after
+1 second is replaced. The helper logs the first image's `AccumulatedFrames`. The first frame with an image showed the
+dimmed desktop, and the UAC prompt appeared in later frames. A test that saves a `Winlogon` frame must wait for one
+that shows the prompt.
 
 Desktop Duplication doesn't draw the pointer. In Phase 0 the frame had no cursor while the frame info reported the
 pointer visible. The helper reads `PointerPosition` and the shape from `GetFramePointerShape` and blends the pointer
@@ -211,19 +216,23 @@ into the copy, since a UAC prompt is answered with clicks.
 
 Frames go to the app through an unnamed shared memory section that the helper creates. The helper duplicates a handle
 with `FILE_MAP_READ` access only into the app's process, using the client process handle it got from the service, and
-sends the duplicated value in `FrameSection`. Only the app can map it, and only for reading. The section holds two
-frame buffers and a header. The helper writes the next frame into the buffer the app isn't reading, then publishes
-that buffer's index with a new sequence number and signals an event, so the app never reads a half-written frame. When
-the output's size changes, the helper creates a new section, sends a new `FrameSection`, and closes the old one only
-after the app replies `SectionReleased`. On the app side, a new `SecureDesktopCapturer` implements `ScreenCapturer`,
-reads the newest frame as `CapturedFrame::Rgba`, and returns `paces_itself() == true`. The app's existing scaler and
+sends the duplicated value in `FrameSection`. Only the app can map it, and only for reading. The section holds a
+header and two frame buffers of tightly packed RGBA, laid out by `dari_proto::FrameLayout`. The app can't write to
+the section, so it tells the helper which buffer it reads over the pipe. The helper publishes a frame with a
+`Frame { display, slot, sequence }` message, and the app owns that buffer until it replies `RequestFrame`. The helper
+writes only the other buffer, so the app never reads a half-written frame. Frames and `DesktopChanged` travel on the
+same pipe, written by one helper thread, so a frame can't pass the desktop change it follows. An earlier draft used a
+sequence number and an event instead. That would have put frames and desktop changes on two channels with no order
+between them. When the output's size changes, the helper creates a new section, sends a new `FrameSection`, and
+closes the old one only after the app replies `SectionReleased`. On the app side, a new `SecureDesktopCapturer`
+implements `ScreenCapturer`, reads the newest frame as `CapturedFrame::Rgba`, and returns `paces_itself() == true`. The app's existing scaler and
 encoder handle the rest. A 4K frame is 33 MB, but the secure desktop changes only when the user acts on it, so the
 copy cost doesn't matter.
 
 The app's Windows capturer becomes a two-source capturer: Windows.Graphics.Capture while the helper reports
-`Default`, and `SecureDesktopCapturer` while it reports `Winlogon`. A switch changes the frame source but keeps the
-encoder, so the stream needs no restart. The encoder already starts a keyframe on a resolution change, and the app
-requests one at each switch. `HostStatus.screen` stays `Available` throughout.
+`Default`, and `SecureDesktopCapturer` while it reports any other desktop. A switch changes the frame source but keeps
+the encoder, so the stream needs no restart. The encoder already starts a keyframe on a resolution change, and the
+first frame from the new source asks for one at each switch. `HostStatus.screen` stays `Available` throughout.
 
 ### Injecting input
 
@@ -264,12 +273,13 @@ didn't try values 0, 2, or 3.
 ### IPC
 
 Both pipes carry `dari-proto`'s length-bounded postcard framing with a 64 KiB limit, and every message passes
-`Validate`. Frames never travel on a pipe; they go through the shared section.
+`Validate`. Pixels never travel on a pipe. They go through the shared section, and `Frame` only names the buffer
+that holds them.
 
 | Pipe and server | From app | To app |
 | --- | --- | --- |
 | `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
-| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame`, `SectionReleased` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `ScreenUnavailable` |
+| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame`, `SectionReleased` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
 doesn't stop another process from creating the name first. It makes the server's own creation fail loudly when that

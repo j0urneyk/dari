@@ -173,7 +173,7 @@ Set the log level with the `RUST_LOG` environment variable (default `info`), for
 | The screen is black or shows only the wallpaper | The remote Mac needs Screen Recording permission, and the app must be restarted after granting it |
 | **No sound permission** instead of the sound button | The remote Mac refused Dari system audio recording. On that Mac, turn Dari on under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only |
 | The screen is visible but control doesn't work | Check the remote Mac's Accessibility permission, or whether the other side chose "View only" |
-| UAC prompts or the lock screen don't appear on Windows | A known limitation: regular apps can't capture or control the secure desktop |
+| A UAC prompt or the lock screen on Windows can't be clicked | A known limitation: the viewer sees the secure desktop but can't answer it yet. Ask someone at the host. If the viewer shows a notice instead of the prompt, check that `DariService` runs on the host |
 | The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
 | "Set a relay server to connect by ID" | Enter the same relay address as the other side in your "Relay server" field |
 | "Cannot reach the relay (…). Retrying…" | Check the relay address and firewall. The app keeps retrying every 2 to 60 seconds. See [relay operations](relay.md) |

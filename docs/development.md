@@ -69,11 +69,13 @@ cargo deny check
   `libIOReport.dylib`. Its unsafe blocks carry `SAFETY` comments too.
 - `crates/winsvc/src/win32/`, every Win32 call of `dari-service.exe`'s service and helper: the pipes, client
   vetting, the check of `winlogon.exe`'s image and user and its restricted token, `CreateProcessAsUserW`, the job
-  object, the event log, and the input-desktop probe. It returns safe types, and the policy built on them (`service.rs`, `helper.rs`) has no
-  `unsafe`, so review can read the crate's `unsafe` in one directory.
+  object, the event log, the input-desktop probe and `SetThreadDesktop`, DXGI Desktop Duplication and Direct3D 11
+  (`dxgi.rs`), and the frame sections and the read-only handle duplicated into the app (`section.rs`). It returns
+  safe types, and the policy built on them (`service.rs`, `helper.rs`, `screen.rs`, `channel.rs`, `pointer.rs`) has
+  no `unsafe`, so review can read the crate's `unsafe` in one directory.
 - `crates/session/src/secure_desktop/win.rs`, the app's end of the helper's pipe: its security descriptor, the
-  wait for a free instance of the service pipe and the handle handed to tokio, and the impersonation that checks the
-  helper is LocalSystem.
+  wait for a free instance of the service pipe and the handle handed to tokio, the impersonation that checks the
+  helper is LocalSystem, and the read-only mapping of the helper's frame sections and the copy out of them.
 
 `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
 capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's
@@ -96,10 +98,10 @@ Outside `win32/`, `dari-winsvc` has no `unsafe`. The `unsafe` block inside `wind
 | --- | --- | --- |
 | Unit tests | Each crate's `src/` | Codec limits, message validation, password generation and parsing, attempt throttling, handshake (MITM, version mismatch), downscaling, encode/decode with OpenH264 and each hardware backend (VideoToolbox on macOS; on Windows the machine's Media Foundation hardware encoder if it has one, and Media Foundation's software encoder through the same code so it runs on CI too), GPU conversion to NV12 matching OpenH264's colors (Windows, on WARP where there is no GPU), AVCC to Annex-B conversion, still-screen keyframes and refinement, frame rate and bitrate selection, key mapping, letterbox coordinates, relay forwarder |
 | Transport E2E | `crates/net/tests/loopback.rs` | Real QUIC loopback: success, wrong password, consumed password, busy, throttling, oversized pre-auth frame, viewers barred from unidirectional streams |
-| Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (the first stream already runs at the requested rate, with or without approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay, the secure-desktop helper link (opened only after approval, without input in view-only sessions, dropped when it ends and at the session's end) |
+| Session E2E | `crates/session/tests/loopback.rs` | The full host and viewer path with a synthetic screen and recorded input: frames arrive, input is injected, keys are released, permission status is reported, approval allow/deny/view-only, display switching, frame rate requests capped by each display's refresh rate (the first stream already runs at the requested rate, with or without approval), two-way clipboard, file transfer both ways (NFC names, no overwrite, decline, cancel cleanup, view-only refusal), audio from a synthetic tone to a recording output (mute stops capture, view-only still hears, no capture unless asked), connecting through a relay, the secure-desktop helper link (opened only after approval, without input in view-only sessions, dropped when it ends and at the session's end), and the secure desktop in one stream (the helper's frames replace the screen and back with a keyframe at each switch while the status stays Available, a frame of another display never shows, and a helper that dies on the secure desktop brings back the notice) |
 | Relay E2E | `crates/relay/tests/relay.rs` | Connect by ID, wrong password rejected by the host, unknown ID, same ID after a relay restart |
 | GUI | `crates/app/tests/gui.rs` | Renders real windows with the headless Metal renderer and injects input (below) |
-| Secure-desktop helper | `crates/winsvc`, `crates/session/src/secure_desktop/win.rs` | The desktop tracker against a scripted desktop source, the refusal limit, which app may replace a session's helper, the helper's arguments, and the local pipe messages (`crates/proto/src/local.rs`) on every platform. On Windows: the service refuses a client whose image isn't `dari.exe` beside it and lets refused clients go at once, so clients that never hang up can't hold its pipe; a pipe read that times out loses nothing; the helper refuses a pipe server that isn't the app it was handed; the app refuses a helper pipe client that isn't LocalSystem, and ends the link at once when DariService isn't running; and `dari-service.exe` imports no Windows networking DLL (`crates/winsvc/tests/imports.rs`) |
+| Secure-desktop helper | `crates/winsvc`, `crates/session/src/secure_desktop/` | The desktop tracker against a scripted desktop source, the refusal limit, which app may replace a session's helper, the helper's arguments, and the local pipe messages (`crates/proto/src/local.rs`) and the frame section layout (`crates/proto/src/frame_section.rs`) on every platform. Also on every platform: the screen machine against a scripted DXGI (every DXGI result's action, `ReleaseFrame` failures, a pointer-only first frame publishes nothing, the 1-second no-image limit, `E_ACCESSDENIED` reported once after 5 seconds, a switch between the desktop check and the attach), pointer blending, a randomized model of the frame credit (the helper never writes the slot the app owns), the app's link state, the two-source capturer, and the app's frame handover (every `Frame` answered once, `SectionReleased` once per replaced section). On Windows: the service refuses a client whose image isn't `dari.exe` beside it and lets refused clients go at once, so clients that never hang up can't hold its pipe; a pipe read that times out loses nothing; the helper refuses a pipe server that isn't the app it was handed; the app refuses a helper pipe client that isn't LocalSystem, and ends the link at once when DariService isn't running; `dari-service.exe` imports no Windows networking DLL (`crates/winsvc/tests/imports.rs`); a section handle duplicated with `FILE_MAP_READ` can't be mapped for writing; the app copies a slot only while its sequence word matches; and an ignored test captures the primary display with the real DXGI code in the signed-in session |
 | Installer template | `crates/app/tests/installer_template.rs` | `assets/installer.nsi` is cargo-packager's template plus the two `DariService` steps, each once at its place, and the workflows install the cargo-packager version it was copied from (see [Packaging and releases](#packaging-and-releases)) |
 | Cross-device | `crates/check`, `scripts/crosscheck/` | Two machines in both directions, for every pairing: Mac and Windows, two Macs, two Windows PCs; see [Cross-device checks](#cross-device-checks) |
 | mDNS | `crates/net/src/discovery.rs` | Needs local-network multicast, so skipped by default. Run with `cargo test -p dari-net -- --ignored` |
@@ -349,6 +351,26 @@ meanwhile.
 
 ```powershell
 C:\dari-check\src\scripts\crosscheck\windows\squat-service-pipe.ps1 -HoldSeconds 120
+```
+
+`secure-desktop.sh` checks that a viewer on this Mac sees the VM's secure screens. It needs UAC on and a per-machine
+install of the build under test. The script starts the installed `dari.exe host` at medium integrity, so
+`DariService` and its helper are real, and runs `dari-check secure-view` here. For each case it shows a secure screen
+in the VM, waits for the viewer to see it settle, saves the frame, and waits for the desktop to come back:
+
+- `uac`: a UAC prompt from a medium-integrity task, cancelled over SSH by ending `consent.exe`, because the viewer
+  can't answer it before #47.
+- `--lock`: the lock screen. Unlock the VM by hand in the UTM window when the script asks.
+- `--second-display`: while each screen is up, the viewer also selects the second display (`vm/add-second-display.sh`)
+  and checks that it shows the secure desktop too.
+- `--helper-killed`: during a UAC prompt the script ends the helper. The viewer must get the secure-desktop notice,
+  then the desktop after the prompt closes, and the session must go on. It runs last.
+
+The viewer's frames and both logs go to `target/crosscheck/secure-<time>/`. The script also checks the host log for
+the helper's `DesktopChanged(Winlogon)` and `DesktopChanged(Default)`.
+
+```bash
+scripts/crosscheck/secure-desktop.sh --b windows:dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --second-display --helper-killed
 ```
 
 Don't remove the VM's CD drives: that moves the system disk to another PCI address and Windows stops booting.
