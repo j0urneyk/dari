@@ -29,11 +29,11 @@ pub trait ScreenCapturer {
         false
     }
 
-    /// Whether the frame [`ScreenCapturer::capture`] just returned comes from a different picture
-    /// source than the one before it (the Windows secure desktop replacing the user's, or back),
-    /// so the stream must encode it as a keyframe. The stream asks once after each frame, and
-    /// asking clears the request.
-    fn take_keyframe_request(&mut self) -> bool {
+    /// Whether the last [`ScreenCapturer::capture`] moved to a different picture source (the
+    /// Windows secure desktop replacing the user's, or back), so the stream must not resend a
+    /// frame from before it and must encode the next frame as a keyframe. The stream asks after
+    /// every capture, whatever it returned, and asking clears the change.
+    fn take_source_change(&mut self) -> bool {
         false
     }
 }
@@ -47,8 +47,8 @@ impl<T: ScreenCapturer + ?Sized> ScreenCapturer for Box<T> {
         (**self).paces_itself()
     }
 
-    fn take_keyframe_request(&mut self) -> bool {
-        (**self).take_keyframe_request()
+    fn take_source_change(&mut self) -> bool {
+        (**self).take_source_change()
     }
 }
 
@@ -290,13 +290,15 @@ where
             }
             _ => SOURCE_WAIT,
         };
-        let (captured, resend) = match capturer.capture(wait).inspect(|_| hidden_reported = false) {
+        let captured = capturer.capture(wait);
+        if capturer.take_source_change() {
+            still = None;
+            // Sticky, so a frame skipped for a full sink passes it on to the next one.
+            control.keyframe_requested.store(true, Ordering::Relaxed);
+        }
+        let (captured, resend) = match captured.inspect(|_| hidden_reported = false) {
             Ok(Some(frame)) => {
                 failing_since = None;
-                if capturer.take_keyframe_request() {
-                    // Sticky, so a frame skipped for a full sink passes it on to the next one.
-                    control.keyframe_requested.store(true, Ordering::Relaxed);
-                }
                 if paced_by_source {
                     still = Some(StillScreen::new(frame.clone()));
                 }
@@ -628,32 +630,32 @@ mod tests {
         stream.stop();
     }
 
-    struct KeyframeAsker {
+    struct SourceSwitcher {
         inner: SyntheticCapturer,
         captured: u32,
-        asks_on: u32,
+        changes_on: u32,
     }
 
-    impl ScreenCapturer for KeyframeAsker {
+    impl ScreenCapturer for SourceSwitcher {
         fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
             self.captured += 1;
             self.inner.capture(timeout)
         }
 
-        fn take_keyframe_request(&mut self) -> bool {
-            self.captured == self.asks_on
+        fn take_source_change(&mut self) -> bool {
+            self.captured == self.changes_on
         }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_capturer_can_ask_for_a_keyframe() {
+    async fn a_source_change_makes_the_next_frame_a_keyframe() {
         let (sender, mut receiver) = mpsc::channel(1);
         let stream = spawn_capture_stream(
             || {
-                Ok(KeyframeAsker {
+                Ok(SourceSwitcher {
                     inner: SyntheticCapturer::new(64, 64),
                     captured: 0,
-                    asks_on: 5,
+                    changes_on: 5,
                 })
             },
             settings(),
@@ -674,6 +676,93 @@ mod tests {
         }
         stream.stop();
         assert_eq!(keyframes, [0, 4]);
+    }
+
+    /// A source on its own clock that shows one frame, moves to another source at the next
+    /// capture, which shows nothing until `shows_from`, and then a moving screen.
+    struct SwitchesWithoutAFrame {
+        inner: SyntheticCapturer,
+        captured: u32,
+        shows_from: Instant,
+    }
+
+    impl ScreenCapturer for SwitchesWithoutAFrame {
+        fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError> {
+            self.captured += 1;
+            if self.captured > 1 && Instant::now() < self.shows_from {
+                std::thread::sleep(timeout);
+                return Ok(None);
+            }
+            self.inner.capture(timeout)
+        }
+
+        fn paces_itself(&self) -> bool {
+            true
+        }
+
+        fn take_source_change(&mut self) -> bool {
+            self.captured == 2
+        }
+    }
+
+    /// Runs [`SwitchesWithoutAFrame`] and returns the first frame after the switch, failing if it
+    /// came before the new source showed anything.
+    async fn first_frame_after_a_frameless_switch(
+        settings: StreamSettings,
+        ask_for_keyframes: bool,
+    ) -> EncodedFrame {
+        let shows_from = Instant::now() + Duration::from_millis(800);
+        let (sender, mut receiver) = mpsc::channel(4);
+        let stream = spawn_capture_stream(
+            move || {
+                Ok(SwitchesWithoutAFrame {
+                    inner: SyntheticCapturer::new(64, 64),
+                    captured: 0,
+                    shows_from,
+                })
+            },
+            settings,
+            sender,
+        )
+        .unwrap();
+        assert!(receiver.recv().await.unwrap().unwrap().keyframe);
+        let mut asks = tokio::time::interval(Duration::from_millis(50));
+        let next = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    _ = asks.tick(), if ask_for_keyframes => stream.request_keyframe(),
+                    received = receiver.recv() => break received,
+                }
+            }
+        })
+        .await
+        .expect("frames must resume once the new source shows one");
+        let early = shows_from.saturating_duration_since(Instant::now());
+        assert!(
+            early.is_zero(),
+            "a frame was sent {early:?} before the new source showed one"
+        );
+        stream.stop();
+        next.unwrap().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_frame_from_before_a_source_change_is_never_resent() {
+        let next = first_frame_after_a_frameless_switch(settings(), true).await;
+        assert!(next.keyframe);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_change_without_a_frame_makes_the_next_frame_a_keyframe() {
+        let settings = StreamSettings {
+            still_refinement: StillRefinement {
+                frames: 0,
+                ..REFINEMENT
+            },
+            ..settings()
+        };
+        let next = first_frame_after_a_frameless_switch(settings, false).await;
+        assert!(next.keyframe, "the new source's first frame");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -43,16 +43,15 @@ impl ScreenCapturer for SecureDesktopCapturer {
 
 /// The capturer a session runs while it holds a helper link: the platform's capturer on the
 /// user's desktop, and the helper's frames on any other desktop while the helper is connected.
-/// A switch changes only where frames come from, so the stream keeps its encoder, and the
-/// first frame from the new source asks for a keyframe.
+/// A switch changes only where frames come from, so the stream keeps its encoder; the capture
+/// that sees it reports a source change.
 pub(crate) struct TwoSourceCapturer {
     open_default: OpenDefault,
     view: SecureDesktopView,
     epoch: u64,
     source: Source,
     max_fps: u32,
-    switched: bool,
-    keyframe_requested: bool,
+    source_changed: bool,
 }
 
 enum Source {
@@ -85,8 +84,7 @@ impl TwoSourceCapturer {
             view,
             epoch,
             max_fps,
-            switched: false,
-            keyframe_requested: false,
+            source_changed: false,
         }
     }
 }
@@ -97,9 +95,9 @@ impl ScreenCapturer for TwoSourceCapturer {
         if epoch != self.epoch {
             self.epoch = epoch;
             self.source = Source::for_route(route, &self.view, epoch);
-            self.switched = true;
+            self.source_changed = true;
         }
-        let captured = match &mut self.source {
+        match &mut self.source {
             Source::Secure(source) => source.capture(timeout),
             Source::Default(slot) => {
                 let source = match slot {
@@ -117,19 +115,15 @@ impl ScreenCapturer for TwoSourceCapturer {
                     other => other,
                 }
             }
-        };
-        if matches!(captured, Ok(Some(_))) && std::mem::take(&mut self.switched) {
-            self.keyframe_requested = true;
         }
-        captured
     }
 
     fn paces_itself(&self) -> bool {
         true
     }
 
-    fn take_keyframe_request(&mut self) -> bool {
-        std::mem::take(&mut self.keyframe_requested)
+    fn take_source_change(&mut self) -> bool {
+        std::mem::take(&mut self.source_changed)
     }
 }
 
@@ -261,16 +255,16 @@ mod tests {
     }
 
     #[test]
-    fn the_first_frame_after_each_switch_asks_for_a_keyframe_and_no_other_does() {
+    fn each_switch_is_reported_once_by_the_capture_that_sees_it() {
         let Setup {
             mut capturer,
             driver,
             ..
         } = setup(Some(InputDesktop::Default));
-        let mut keyframes = Vec::new();
+        let mut changes = Vec::new();
         let mut capture = |capturer: &mut TwoSourceCapturer| {
             let shown = shown(capturer).unwrap();
-            keyframes.push(capturer.take_keyframe_request());
+            changes.push(capturer.take_source_change());
             shown
         };
 
@@ -286,8 +280,8 @@ mod tests {
         assert_eq!(capture(&mut capturer), Some(2));
         assert_eq!(capture(&mut capturer), Some(2));
 
-        assert_eq!(keyframes, [false, false, false, true, false, true, false]);
-        assert!(!capturer.take_keyframe_request());
+        assert_eq!(changes, [false, false, true, false, false, true, false]);
+        assert!(!capturer.take_source_change());
     }
 
     #[test]
@@ -320,7 +314,8 @@ mod tests {
         driver.desktop_changed(InputDesktop::Winlogon);
         driver.desktop_changed(InputDesktop::Default);
         assert_eq!(shown(&mut capturer).unwrap(), Some(2));
-        assert!(capturer.take_keyframe_request());
+        assert!(capturer.take_source_change());
+        assert!(!capturer.take_source_change());
         assert_eq!(screen.opens(), 2);
     }
 
@@ -399,16 +394,17 @@ mod tests {
         } = setup(Some(InputDesktop::Winlogon));
         driver.frame(DISPLAY, image(SECURE));
         assert_eq!(shown(&mut capturer).unwrap(), Some(SECURE));
-        capturer.take_keyframe_request();
+        assert!(!capturer.take_source_change());
         screen.hidden.store(true, Ordering::SeqCst);
         driver.end("the helper closed its pipe".into());
         assert!(matches!(
             shown(&mut capturer),
             Err(CaptureError::SecureDesktop)
         ));
+        assert!(capturer.take_source_change());
         screen.hidden.store(false, Ordering::SeqCst);
         assert_eq!(shown(&mut capturer).unwrap(), Some(1));
-        assert!(capturer.take_keyframe_request());
+        assert!(!capturer.take_source_change());
     }
 
     struct Polled(Arc<AtomicUsize>);

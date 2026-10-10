@@ -1745,6 +1745,14 @@ async fn the_secure_desktop_replaces_the_screen_in_one_stream_with_a_keyframe_at
     assert_eq!(keyframes(), 1);
 
     helper.desktop_changed(InputDesktop::Winlogon);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    viewer.request_keyframe();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        keyframes(),
+        1,
+        "the user's desktop isn't sent again once the secure desktop replaced it"
+    );
     helper.frame(DISPLAY.id, solid(BLUE, None));
     wait_for_frame(&mut frames, blue).await;
     assert_eq!(keyframes(), 2);
