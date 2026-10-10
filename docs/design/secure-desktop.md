@@ -198,10 +198,12 @@ reports the screen unavailable. The thread then calls `IDXGIOutput1::DuplicateOu
 | `E_ACCESSDENIED` from `DuplicateOutput` | Transient during a switch. Retries after the next desktop check, then reports the screen unavailable after 5 seconds |
 | `DXGI_ERROR_UNSUPPORTED` or `DXGI_ERROR_SESSION_DISCONNECTED` | Reports the screen unavailable until the next desktop change |
 
-In Phase 0 a new duplication succeeded 40 to 380 ms after either switch. The first frame from `Winlogon` arrived about
-20 ms after the switch and showed only the dimmed desktop. The UAC prompt appeared in later frames. The helper
-publishes every frame, so the viewer sees the prompt as soon as Windows draws it. A test that saves a `Winlogon`
-frame must wait for one that shows the prompt.
+In Phase 0 a new duplication succeeded 40 to 380 ms after `AcquireNextFrame` reported the switch. In three of four
+runs, the first frame from `Winlogon` was all black and came with a pointer update. The pointer probe's black frame
+had `AccumulatedFrames` set to 0, which means Windows hadn't updated the desktop image. The helper therefore
+publishes a frame only when `AccumulatedFrames` is nonzero, and handles a pointer-only update by redrawing the
+pointer on the last frame. The first frame with an image showed the dimmed desktop, and the UAC prompt appeared in
+later frames. A test that saves a `Winlogon` frame must wait for one that shows the prompt.
 
 Desktop Duplication doesn't draw the pointer. In Phase 0 the frame had no cursor while the frame info reported the
 pointer visible. The helper reads `PointerPosition` and the shape from `GetFramePointerShape` and blends the pointer
@@ -336,7 +338,7 @@ screen nor send input. This design adds two SYSTEM processes, so it must also an
   `Winlogon`, duplicated both of the VM's outputs, answered a UAC prompt with Alt+Y, and unlocked the lock screen.
   The restricted token still has the SYSTEM SID and System integrity. The helper keeps no other privilege.
 - The helper creates no windows and runs no message loop, so other processes can't send it window messages.
-  `dari-service.exe` is built with `windows_subsystem = "windows"`. In Phase 0 a console build of the helper,
+  `dari-service.exe` must be built with `windows_subsystem = "windows"`. In Phase 0 a console build of the helper,
   started with `CreateProcessAsUser`, opened a console window owned by SYSTEM on the user's desktop. The helper
   calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` before loading anything.
 - The helper lives only while a session is live, and the job object ends it with the service.
@@ -384,7 +386,8 @@ Two controls limit it further:
 ### Unit and integration tests
 
 - The helper's desktop-following state machine runs against a fake desktop source, including a switch that happens
-  between a check and `SetThreadDesktop`, and a duplication that reports `DXGI_ERROR_ACCESS_LOST` mid-frame.
+  between a check and `SetThreadDesktop`, and a duplication that reports `DXGI_ERROR_ACCESS_LOST` or
+  `DXGI_ERROR_INVALID_CALL` mid-frame.
 - Pipe messages round-trip and fail `Validate` on oversized or malformed input, as the protocol tests do now.
 - The two-source capturer, on the synthetic platform, keeps one encoder and one reference chain across
   `Default` → `Winlogon` → `Default`, and the viewer receives a keyframe at each switch.
@@ -413,7 +416,7 @@ consent prompt to answer, and an elevated host would hide integrity problems. Th
 
 | Case | Host action | Viewer action | Passes when |
 | --- | --- | --- | --- |
-| `uac-allow` | Starts `cmd.exe /c whoami /groups > result.txt` with `Start-Process -Verb RunAs` from a medium-integrity task | Waits for a frame from `Winlogon`, saves it, sends Alt+Y | `result.txt` lists `High Mandatory Level`, and the helper reported `Winlogon` then `Default` |
+| `uac-allow` | Starts `cmd.exe /c whoami /groups > result.txt` with `Start-Process -Verb RunAs` from a medium-integrity task | Waits for a frame from `Winlogon` that shows the prompt, saves it, sends Alt+Y | `result.txt` lists `High Mandatory Level`, and the helper reported `Winlogon` then `Default` |
 | `uac-deny` | Same | Sends Esc | No `result.txt`, and the desktop returns to `Default` |
 | `lock-unlock` | `rundll32 user32.dll,LockWorkStation` | Waits for the lock screen, types the VM user's password from `~/.dari-check-vm`, presses Enter | The desktop returns to `Default` and the host's interactive task still runs |
 | `cad` | None | Sends `SecureAttention`, waits for a `Winlogon` frame, sends Esc | The helper reported `Winlogon` then `Default` |
