@@ -372,8 +372,10 @@ In the app, the link's task maps each section read-only, copies a published slot
 thread, and checks the slot's sequence word before and after the copy. It copies only frames of the selected display
 on a desktop other than `Default`. The capture stream runs `TwoSourceCapturer` (`secure_desktop/capturer.rs`): the
 platform's capturer on `Default`, and the helper's frames on any other desktop while the helper is connected. A
-switch changes only where frames come from. The stream keeps its encoder, and the first frame from the new source
-asks for a keyframe through `ScreenCapturer::take_keyframe_request`. On each return to `Default` it opens
+switch changes only where frames come from. The stream keeps its encoder. The capture that sees the switch reports it
+through `ScreenCapturer::take_source_change`, and the stream then drops its still frame and makes the next frame a
+keyframe, so nothing from the old source is sent again. Each capturer serves only the display its stream was opened
+for. On each return to `Default` it opens
 Windows.Graphics.Capture again, so a frame queued before the switch, such as the dimmed desktop behind a prompt, is
 never shown. While the helper is connected, the platform capturer's own `SecureDesktop` report is ignored, because the
 helper reports every switch. Before the helper connects and after its link ends, that report passes through, and the

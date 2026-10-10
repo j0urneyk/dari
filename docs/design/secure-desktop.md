@@ -232,8 +232,9 @@ copy cost doesn't matter.
 
 The app's Windows capturer becomes a two-source capturer: Windows.Graphics.Capture while the helper reports
 `Default`, and `SecureDesktopCapturer` while it reports any other desktop. A switch changes the frame source but keeps
-the encoder, so the stream needs no restart. The encoder already starts a keyframe on a resolution change, and the
-first frame from the new source asks for one at each switch. `HostStatus.screen` stays `Available` throughout.
+the encoder, so the stream needs no restart. The encoder already starts a keyframe on a resolution change. At each
+switch the capturer also tells the stream that the source changed, and the stream drops its last frame and makes the
+next one a keyframe. `HostStatus.screen` stays `Available` throughout.
 
 ### Injecting input
 
