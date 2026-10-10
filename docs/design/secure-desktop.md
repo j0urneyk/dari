@@ -169,8 +169,9 @@ The helper keeps one state value, the input desktop, as `Default`, `Winlogon`, o
 threads that each attach to it: capture and input. Neither thread creates a window or installs a hook, because
 `SetThreadDesktop` fails on a thread that has either.
 
-- Every 100 ms, and right after any `DXGI_ERROR_ACCESS_LOST`, the helper calls `OpenInputDesktop` and reads the
-  desktop's name with `GetUserObjectInformationW(UOI_NAME)`, the same check PR 36 uses.
+- Every 100 ms, and right after `AcquireNextFrame` fails with `DXGI_ERROR_ACCESS_LOST` or
+  `DXGI_ERROR_INVALID_CALL`, the helper calls `OpenInputDesktop` and reads the desktop's name with
+  `GetUserObjectInformationW(UOI_NAME)`, the same check PR 36 uses.
 - When the name changes, the helper sends `DesktopChanged(kind)` to the app. Each thread then calls
   `SetThreadDesktop` on the new desktop before its next capture or injection, the same idea as RustDesk's
   `try_change_desktop`.
@@ -193,12 +194,18 @@ reports the screen unavailable. The thread then calls `IDXGIOutput1::DuplicateOu
 | --- | --- |
 | A frame | Copies it to a staging texture, maps it, and publishes BGRA to the app |
 | `DXGI_ERROR_WAIT_TIMEOUT` | Nothing. The screen is still, and like Windows.Graphics.Capture the source paces itself |
-| `DXGI_ERROR_ACCESS_LOST` | The desktop switched or the mode changed. Releases the duplication, re-checks the input desktop, re-attaches, and duplicates again |
+| `DXGI_ERROR_ACCESS_LOST` or `DXGI_ERROR_INVALID_CALL` from `AcquireNextFrame` | The desktop switched or the mode changed. In Phase 0, `AcquireNextFrame` returned `ACCESS_LOST` on the switch to `Winlogon` and `INVALID_CALL` on the switch back. Releases the duplication, re-checks the input desktop, re-attaches, and duplicates again |
 | `E_ACCESSDENIED` from `DuplicateOutput` | Transient during a switch. Retries after the next desktop check, then reports the screen unavailable after 5 seconds |
 | `DXGI_ERROR_UNSUPPORTED` or `DXGI_ERROR_SESSION_DISCONNECTED` | Reports the screen unavailable until the next desktop change |
 
-Desktop Duplication doesn't draw the pointer. The helper reads `PointerPosition` and the shape from
-`GetFramePointerShape` and blends the pointer into the copy, since a UAC prompt is answered with clicks.
+In Phase 0 a new duplication succeeded 40 to 380 ms after either switch. The first frame from `Winlogon` arrived about
+20 ms after the switch and showed only the dimmed desktop. The UAC prompt appeared in later frames. The helper
+publishes every frame, so the viewer sees the prompt as soon as Windows draws it. A test that saves a `Winlogon`
+frame must wait for one that shows the prompt.
+
+Desktop Duplication doesn't draw the pointer. In Phase 0 the frame had no cursor while the frame info reported the
+pointer visible. The helper reads `PointerPosition` and the shape from `GetFramePointerShape` and blends the pointer
+into the copy, since a UAC prompt is answered with clicks.
 
 Frames go to the app through an unnamed shared memory section that the helper creates. The helper duplicates a handle
 with `FILE_MAP_READ` access only into the app's process, using the client process handle it got from the service, and
@@ -246,6 +253,11 @@ that moment, any service can raise the sequence, including ones that run as Loca
 it only shows the Ctrl+Alt+Del screen, so the exposure is small. When the value exists and doesn't allow services,
 an administrator or a Group Policy chose that. The service then refuses, never writes the value, and reports
 `SecureAttentionStatus(Unavailable)`.
+
+Phase 0 called `SendSAS(FALSE)` from a LocalSystem service in three states. With the value absent, the call
+returned and nothing happened. With the value set to 1, and with the value set only around the call, the
+Ctrl+Alt+Del screen appeared. In that last run a script wrote and deleted the value, not the service. Phase 0
+didn't try values 0, 2, or 3.
 
 ### IPC
 
@@ -309,7 +321,7 @@ screen nor send input. This design adds two SYSTEM processes, so it must also an
 | --- | --- | --- |
 | Network to `dari.exe` | A remote peer | Unchanged: QUIC with TLS 1.3, SPAKE2 with the one-time password, throttling, approval, view-only |
 | `dari.exe` to `\\.\pipe\dari-service` | Any local process | The pipe's DACL admits SYSTEM and interactive users only. The service reads the client's session with `GetNamedPipeClientSessionId` and its process with `GetNamedPipeClientProcessId`, and accepts only a process whose image is `C:\Program Files\Dari\dari.exe` in an active session. It holds the client's process handle from then on, so the vetted process can't exit and be replaced under the same ID. It starts at most one helper per session and rate-limits refusals |
-| The helper's pipe, seen from `dari.exe` | The client that connects | The app created the pipe, so no other process can be its server. The helper connects with `SECURITY_SQOS_PRESENT \| SECURITY_IDENTIFICATION`. The app calls `ImpersonateNamedPipeClient`, which needs no privilege at identification level, and accepts the client only if its token's user is LocalSystem (`S-1-5-18`). This is the check that keeps a viewer's lock-screen password from reaching any process but the helper |
+| The helper's pipe, seen from `dari.exe` | The client that connects | The app created the pipe, so no other process can be its server. The helper connects with `SECURITY_SQOS_PRESENT \| SECURITY_IDENTIFICATION`. The app calls `ImpersonateNamedPipeClient`, which needs no privilege at identification level, and accepts the client only if its token's user is LocalSystem (`S-1-5-18`). This is the check that keeps a viewer's lock-screen password from reaching any process that isn't SYSTEM. Any SYSTEM process passes it, and a SYSTEM process can read keystrokes anyway |
 | The helper's pipe, seen from the helper | The pipe's server | The helper compares `GetNamedPipeServerProcessId` with the process ID of the client handle the service passed it. The service and the helper hold that handle open, so the ID can't be reused by another process in the meantime |
 | A squatter on `\\.\pipe\dari-service` | Any local process, while the service is stopped | It can only refuse or ignore `StartHelper`. No real helper connects to the app's pipe, so the app sees no SYSTEM client and falls back to PR 36's notice. The service fails to start loudly because of `FILE_FLAG_FIRST_PIPE_INSTANCE`. The worst case is denial of service |
 | `SecureAttention` | A remote peer | Accepted only in a session that allows control. The service also refuses `SendSas` from a client without a live helper |
@@ -319,10 +331,13 @@ screen nor send input. This design adds two SYSTEM processes, so it must also an
 - The service and the helper have no network code, and the import-table check in CI keeps it that way.
 - The helper needs the SYSTEM SID to open `Winlogon` and duplicate it. It doesn't need
   SYSTEM's privileges. The service builds its token with `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)` from the
-  duplicated `winlogon.exe` token, which removes every privilege except `SeChangeNotifyPrivilege`. Phase 0 must show
-  that this token can still open `Winlogon`, duplicate outputs, and inject. If it can't, the helper keeps only the
-  privileges that the spike proves necessary, and this document records which.
-- The helper creates no windows and runs no message loop, so other processes can't send it window messages. It
+  duplicated `winlogon.exe` token, which removes every privilege except `SeChangeNotifyPrivilege`. Phase 0 showed that
+  this token is enough, as x64 under emulation and as native Arm64. With only that privilege, the helper attached to
+  `Winlogon`, duplicated both of the VM's outputs, answered a UAC prompt with Alt+Y, and unlocked the lock screen.
+  The restricted token still has the SYSTEM SID and System integrity. The helper keeps no other privilege.
+- The helper creates no windows and runs no message loop, so other processes can't send it window messages.
+  `dari-service.exe` is built with `windows_subsystem = "windows"`. In Phase 0 a console build of the helper,
+  started with `CreateProcessAsUser`, opened a console window owned by SYSTEM on the user's desktop. The helper
   calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` before loading anything.
 - The helper lives only while a session is live, and the job object ends it with the service.
 - The service needs LocalSystem to open `winlogon.exe`'s token and to start a process with it, which needs
@@ -415,9 +430,11 @@ Two installer cases run outside `dari-check`. An upgrade from a 0.0.x per-user i
 the service, starting a process that creates `\\.\pipe\dari-service`, and starting the service again checks that
 the service fails loudly and the app falls back to PR 36's notice.
 
-The VM runs Windows 11 on Arm with x64 Dari under emulation, on UTM's display adapter. Phase 0 must confirm that
-Desktop Duplication works there. If it doesn't, the end-to-end cases need a Windows PC set up as described under
-"A second Mac or Windows PC" in development.md.
+The VM runs Windows 11 on Arm with x64 Dari under emulation. Its two displays come from the
+`Red Hat VirtIO GPU DOD controller` and from the IddCx `Virtual Display Driver` that `add-second-display.sh`
+installs, which keeps the VM in test-signing mode. DXGI reports each one's adapter as `Microsoft Basic Render
+Driver`. Phase 0 duplicated both outputs on `Default` and on `Winlogon`, as x64 and as native Arm64, so the
+end-to-end cases run in the VM.
 
 ## Phases
 
@@ -445,8 +462,7 @@ no slice of its own, because each slice updates the documents it affects, as `do
 | --- | --- | --- |
 | Same-user malware uses the helper to approve its own consent prompts | A local elevation for malware already running as an administrator | The `SecureDesktopControl` policy and checkbox, event log entries, and a plain statement in security.md. The default is on, as decided below |
 | A bug in the helper or service code | A local process gets SYSTEM | No network code, a fixed message set behind `Validate`, the restricted token, the helper alive only during sessions, and the Win32 `unsafe` kept in one module that review can read whole |
-| DXGI Desktop Duplication fails on some adapters (hybrid laptop GPUs, some VMs, remote display drivers) | The viewer sees PR 36's notice instead of the prompt | The helper reports the screen unavailable, and the app falls back to PR 36's behavior. Phase 0 tests the VM's adapter |
-| The restricted token can't do the job | The helper keeps more SYSTEM privileges than planned | Phase 0 measures which privileges are needed, and this document records the result before Phase 2 |
+| DXGI Desktop Duplication fails on some adapters (hybrid laptop GPUs, some VMs, remote display drivers) | The viewer sees PR 36's notice instead of the prompt | The helper reports the screen unavailable, and the app falls back to PR 36's behavior. Phase 0 showed that the VM's VirtIO and IddCx displays work |
 | Antivirus flags an unsigned service that starts SYSTEM processes with a `winlogon.exe` token | Quarantined installs, or a refused helper | Signing the installer and binaries, a separate decision. Until then, the user guide says what to expect |
 | The per-machine migration breaks an existing install | A user loses the app or its identity | The migration keeps `%LOCALAPPDATA%\dari`, and Phase 1's VM test upgrades a real 0.0.x install |
 | Installing now needs administrator rights | Users on managed PCs can't install | Accepted. Those users can't install a service anyway |
