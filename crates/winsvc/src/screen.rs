@@ -163,7 +163,6 @@ impl<W: DesktopWorld> ScreenMachine<W> {
             return Vec::new();
         }
         self.display = Some(display);
-        self.pointer = Pointer::default();
         self.restart(Ended::DisplaySelected, now)
             .into_iter()
             .collect()
@@ -232,6 +231,7 @@ impl<W: DesktopWorld> ScreenMachine<W> {
     }
 
     fn restart(&mut self, why: Ended, now: Instant) -> Option<ScreenEvent> {
+        self.pointer = Pointer::default();
         let next = if self.wants_capture() {
             Capture::Starting(Starting::new(now))
         } else {
@@ -1043,6 +1043,25 @@ mod tests {
         assert_eq!(harness.offer(), Some(with_pointer_at(solid(7), 3, 0)));
         harness.step();
         assert_eq!(harness.offer(), None, "a still screen offers nothing new");
+    }
+
+    #[test]
+    fn a_desktop_change_forgets_the_pointer() {
+        let world = World::on("Winlogon").duplicates(vec![
+            Ok(vec![pointer_only(1, 1), image(5)]),
+            Ok(vec![image(6)]),
+        ]);
+        let mut harness = Harness::new(world, 1);
+        harness.run(3, Duration::from_millis(1));
+        assert_eq!(harness.offer(), Some(with_pointer_at(solid(5), 1, 1)));
+
+        harness.machine.world.switch_to("Screen-saver");
+        harness.run(3, POLL_INTERVAL);
+        assert_eq!(
+            harness.offer(),
+            Some(solid(6)),
+            "the last desktop's pointer isn't drawn"
+        );
     }
 
     #[test]
