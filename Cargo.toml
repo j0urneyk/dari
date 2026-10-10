@@ -37,6 +37,7 @@ hmac = "0.12"
 if-addrs = "0.15"
 mdns-sd = { version = "0.21", features = ["async"] }
 image = { version = "0.25", default-features = false }
+object = { version = "0.37", default-features = false, features = ["pe", "read_core", "std", "unaligned"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSAppearance", "NSResponder", "NSTextInputContext"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }

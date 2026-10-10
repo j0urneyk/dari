@@ -37,5 +37,8 @@ windows = { workspace = true, features = [
 ] }
 windows-service.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+object.workspace = true
+
 [lints]
 workspace = true
