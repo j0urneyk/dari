@@ -4,6 +4,9 @@
 
 use std::process::ExitCode;
 
+// Wired into the helper once its screen thread lands.
+#[allow(dead_code)]
+mod channel;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod command;
 // Wired into the helper once its screen thread lands.
