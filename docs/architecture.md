@@ -360,8 +360,9 @@ page, then two page-aligned slots of tightly packed RGBA) and duplicates a handl
 pipe. `AppChannel` (`channel.rs`) publishes a frame as `Frame { display, slot, sequence }`. The app owns that slot
 until it answers with `RequestFrame`, which it sends for every `Frame`, kept or not. The helper writes only the other
 slot, keeps the newest frame there as a draft, and publishes the draft when the credit comes back. A desktop change,
-a display change, or `ScreenUnavailable` discards the draft. A size change waits until the app owns no slot and has
-answered the previous section with `SectionReleased`.
+a display change, or `ScreenUnavailable` discards the draft. A size change waits until the app owns no slot, then
+sends a new `FrameSection` and closes the helper's handle to the old one. The app's view keeps the old section alive
+until the app maps the new one.
 
 In the app, the link's task maps each section read-only, copies a published slot into an `RgbaFrame` on a blocking
 thread, and checks the slot's sequence word before and after the copy. It copies only frames of the selected display

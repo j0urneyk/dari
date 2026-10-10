@@ -69,9 +69,8 @@ impl<M: SectionMapper> Handover<M> {
                     .mapper
                     .map(handle, layout)
                     .map_err(|error| HandoverError::BadSection(error.to_string()))?;
-                // The old view is unmapped here, before the helper hears it may close it.
-                let replaced = self.section.replace(Arc::new(section)).is_some();
-                Ok(replaced.then_some(AppToHelper::SectionReleased))
+                self.section = Some(Arc::new(section));
+                Ok(None)
             }
             HelperToApp::Frame {
                 display,
@@ -282,7 +281,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_replaced_section_is_unmapped_then_released_once() {
+    async fn each_replaced_section_is_unmapped_when_the_next_one_is_mapped() {
         let Setup {
             mut handover,
             log,
@@ -294,14 +293,7 @@ mod tests {
             replies.push(handover.handle(section(handle), &driver).await.unwrap());
         }
         handover.handle(frame(DISPLAY, 9), &driver).await.unwrap();
-        assert_eq!(
-            replies,
-            [
-                None,
-                Some(AppToHelper::SectionReleased),
-                Some(AppToHelper::SectionReleased)
-            ]
-        );
+        assert_eq!(replies, [None, None, None]);
         assert_eq!(
             log.entries(),
             [

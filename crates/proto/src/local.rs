@@ -159,18 +159,14 @@ pub enum AppToHelper {
     /// the helper starts each section with one credit and publishes one frame per credit, so it
     /// never writes the slot the app is reading. The app can't write the section, so this is
     /// its only way to say which slot it reads.
-    /// never writes the slot the app is reading.
     RequestFrame,
-    /// The app closed its view of the section that a later [`HelperToApp::FrameSection`]
-    /// replaced, so the helper may close it.
-    SectionReleased,
 }
 
 impl Validate for AppToHelper {
     fn validate(&self) -> Result<(), ValidationError> {
         match self {
             Self::Input(event) => event.validate(),
-            Self::SelectDisplay(_) | Self::RequestFrame | Self::SectionReleased => Ok(()),
+            Self::SelectDisplay(_) | Self::RequestFrame => Ok(()),
         }
     }
 }
@@ -181,7 +177,10 @@ impl Validate for AppToHelper {
 pub enum HelperToApp {
     DesktopChanged(InputDesktop),
     /// A read-only handle, valid in the app's process, to a shared frame section laid out per
-    /// `FrameLayout::new(width, height)`. Every later `Frame` refers to this section.
+    /// `FrameLayout::new(width, height)`. Every later `Frame` refers to this section. The helper
+    /// sends a new one only while the app owns no slot, so the app may unmap the previous section
+    /// as soon as it maps this one. The app's own view keeps the section alive after the helper
+    /// closes its handle.
     FrameSection {
         handle: u64,
         width: u32,
@@ -388,7 +387,6 @@ mod tests {
         }));
         round_trip(&AppToHelper::SelectDisplay(65_537));
         round_trip(&AppToHelper::RequestFrame);
-        round_trip(&AppToHelper::SectionReleased);
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Default));
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Winlogon));
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Other(

@@ -90,7 +90,6 @@ fn converse<W: DesktopWorld>(
 enum ScreenCommand {
     SelectDisplay(u32),
     RequestFrame,
-    SectionReleased,
 }
 
 fn read_app(
@@ -106,7 +105,6 @@ fn read_app(
                 Some(ScreenCommand::SelectDisplay(display))
             }
             Ok(Some(AppToHelper::RequestFrame)) => Some(ScreenCommand::RequestFrame),
-            Ok(Some(AppToHelper::SectionReleased)) => Some(ScreenCommand::SectionReleased),
             Ok(Some(AppToHelper::Input(_))) => None,
             Ok(None) => return "the app closed its pipe",
             Err(error) if error.kind() == io::ErrorKind::TimedOut => None,
@@ -172,10 +170,6 @@ fn run_screen<W: DesktopWorld, F: SectionFactory>(
                     )
                 }
                 ScreenCommand::RequestFrame => channel.request_frame(),
-                ScreenCommand::SectionReleased => {
-                    channel.section_released();
-                    Ok(())
-                }
             };
             if handled.is_err() {
                 return WRITE_FAILED;

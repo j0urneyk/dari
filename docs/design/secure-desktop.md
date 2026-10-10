@@ -223,8 +223,9 @@ the section, so it tells the helper which buffer it reads over the pipe. The hel
 writes only the other buffer, so the app never reads a half-written frame. Frames and `DesktopChanged` travel on the
 same pipe, written by one helper thread, so a frame can't pass the desktop change it follows. An earlier draft used a
 sequence number and an event instead. That would have put frames and desktop changes on two channels with no order
-between them. When the output's size changes, the helper creates a new section, sends a new `FrameSection`, and
-closes the old one only after the app replies `SectionReleased`. On the app side, a new `SecureDesktopCapturer`
+between them. When the output's size changes, the helper waits until the app owns no buffer, creates a new section,
+sends a new `FrameSection`, and closes its handle to the old one. The app's own view keeps the old section alive until
+the app maps the new one, so the helper needs no reply. On the app side, a new `SecureDesktopCapturer`
 implements `ScreenCapturer`, reads the newest frame as `CapturedFrame::Rgba`, and returns `paces_itself() == true`. The app's existing scaler and
 encoder handle the rest. A 4K frame is 33 MB, but the secure desktop changes only when the user acts on it, so the
 copy cost doesn't matter.
@@ -279,7 +280,7 @@ that holds them.
 | Pipe and server | From app | To app |
 | --- | --- | --- |
 | `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
-| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame`, `SectionReleased` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
+| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
 doesn't stop another process from creating the name first. It makes the server's own creation fail loudly when that

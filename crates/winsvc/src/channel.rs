@@ -4,8 +4,7 @@
 //!
 //! The credit: the app owns the slot of the last `Frame` it hasn't answered with `RequestFrame`.
 //! The helper writes only the other slot and publishes at most one frame per credit. A section is
-//! replaced only while the app owns nothing, and at most one replaced section waits for
-//! `SectionReleased`.
+//! replaced only while the app owns nothing.
 use std::io;
 
 use dari_proto::{FrameLayout, FrameSlot, HelperToApp, InputDesktop};
@@ -35,7 +34,7 @@ pub(crate) enum Offered {
     /// Written into the slot the app doesn't own; published when the app returns its credit.
     Drafted,
     /// Not written: the size changed and the section can't be replaced yet, because the app owns
-    /// a slot or an older section still waits for `SectionReleased`. Offer it again later.
+    /// a slot. Offer it again later.
     Deferred,
 }
 
@@ -66,7 +65,6 @@ pub(crate) struct AppChannel<O, F: SectionFactory> {
     outbox: O,
     factory: F,
     current: Option<Current<F::Section>>,
-    retiring: Option<F::Section>,
     credit: Credit,
     next_sequence: u64,
 }
@@ -77,7 +75,6 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
             outbox,
             factory,
             current: None,
-            retiring: None,
             credit: Credit::Free,
             next_sequence: 1,
         }
@@ -139,10 +136,6 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
         }
     }
 
-    pub(crate) fn section_released(&mut self) {
-        self.retiring = None;
-    }
-
     fn section_for(&mut self, layout: FrameLayout) -> io::Result<Option<&mut F::Section>> {
         if self
             .current
@@ -156,16 +149,12 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
             *draft = None;
             return Ok(None);
         }
-        if self.retiring.is_some() {
-            return Ok(None);
-        }
         let (section, handle) = self.factory.create(layout)?;
         self.outbox.send(HelperToApp::FrameSection {
             handle,
             width: layout.width(),
             height: layout.height(),
         })?;
-        self.retiring = self.current.take().map(|current| current.section);
         Ok(Some(
             &mut self.current.insert(Current { layout, section }).section,
         ))
@@ -312,7 +301,6 @@ mod tests {
         mapped: Option<usize>,
         frame: Option<(FrameSlot, u64)>,
         replies: VecDeque<AppToHelper>,
-        unreleased: bool,
         frames_copied: usize,
     }
 
@@ -330,13 +318,7 @@ mod tests {
                     );
                     let id = usize::try_from(handle - 1).unwrap();
                     assert!(world.sections[id].open);
-                    if self.mapped.replace(id).is_some() {
-                        assert!(
-                            !self.unreleased,
-                            "a third section before the second was released"
-                        );
-                        self.unreleased = true;
-                    }
+                    self.mapped = Some(id);
                 }
                 HelperToApp::Frame { slot, sequence, .. } => {
                     assert!(self.mapped.is_some(), "a frame before any section");
@@ -361,12 +343,6 @@ mod tests {
             self.frames_copied += 1;
         }
 
-        fn release(&mut self) {
-            if std::mem::take(&mut self.unreleased) {
-                self.replies.push_back(AppToHelper::SectionReleased);
-            }
-        }
-
         fn give_back(&mut self) {
             if self.frame.take().is_some() {
                 self.replies.push_back(AppToHelper::RequestFrame);
@@ -388,7 +364,6 @@ mod tests {
                 world.borrow_mut().owned = None;
                 channel.request_frame().unwrap();
             }
-            Some(AppToHelper::SectionReleased) => channel.section_released(),
             Some(AppToHelper::SelectDisplay(_) | AppToHelper::Input(_)) => unreachable!(),
             None => return false,
         }
@@ -439,13 +414,7 @@ mod tests {
                         app.copy(&mut world.borrow_mut());
                         app.give_back();
                     }
-                    6 => {
-                        if random.below(2) == 0 {
-                            app.give_back();
-                        } else {
-                            app.release();
-                        }
-                    }
+                    6 => app.give_back(),
                     7 => {
                         deliver(&mut channel, &world, &mut app);
                     }
@@ -467,7 +436,6 @@ mod tests {
                 while app.read_next(&world.borrow()) {}
                 app.copy(&mut world.borrow_mut());
                 app.give_back();
-                app.release();
                 while deliver(&mut channel, &world, &mut app) {}
                 if channel.offer(layouts[1 - size], 7, fill(9)).unwrap() == Offered::Published {
                     published = Some(());
@@ -508,37 +476,9 @@ mod tests {
             Offered::Published
         );
         assert_eq!(world.borrow().sections.len(), 2);
-    }
-
-    #[test]
-    fn a_size_change_waits_for_section_released_and_the_old_section_stays_open_until_then() {
-        let (mut channel, world) = channel();
-        let mut app = App::default();
-        channel.offer(layout(2, 1), 1, fill(1)).unwrap();
-        while app.read_next(&world.borrow()) {}
-        app.give_back();
-        deliver(&mut channel, &world, &mut app);
-
-        assert_eq!(
-            channel.offer(layout(3, 1), 1, fill(2)).unwrap(),
-            Offered::Published
-        );
-        assert!(world.borrow().sections[0].open, "closed before released");
-        while app.read_next(&world.borrow()) {}
-        app.give_back();
-        deliver(&mut channel, &world, &mut app);
-        assert_eq!(
-            channel.offer(layout(4, 1), 1, fill(3)).unwrap(),
-            Offered::Deferred
-        );
-        assert!(world.borrow().sections[0].open);
-
-        app.release();
-        deliver(&mut channel, &world, &mut app);
-        assert!(!world.borrow().sections[0].open);
-        assert_eq!(
-            channel.offer(layout(4, 1), 1, fill(3)).unwrap(),
-            Offered::Published
+        assert!(
+            !world.borrow().sections[0].open,
+            "the replaced section closes at once"
         );
     }
 
