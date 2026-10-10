@@ -8,6 +8,7 @@ mod codec;
 mod control;
 mod handshake;
 mod input;
+mod local;
 mod relay;
 mod stream;
 mod transfer;
@@ -29,6 +30,11 @@ pub use handshake::{
 pub use input::{
     InputEvent, KeyCode, MAX_FUNCTION_KEY, MAX_INPUT_TEXT_CHARS, MAX_SCROLL_LINES, MouseButton,
     NamedKey, PointerPosition,
+};
+pub use local::{
+    AppToHelper, DesktopName, HelperPipeName, HelperToApp, InputDesktop, LOCAL_FRAME_LIMIT,
+    MAX_DESKTOP_NAME_CHARS, PIPE_CLIENT_RIGHTS, PIPE_RANDOM_BYTES, Refusal, SERVICE_PIPE,
+    ServiceReply, ServiceRequest,
 };
 pub use relay::{
     Allocation, DEFAULT_RELAY_PORT, DeviceId, RELAY_ACK_MAGIC, RELAY_ALPN, RELAY_BIND_MAGIC,
