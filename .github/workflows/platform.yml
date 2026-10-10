@@ -1,8 +1,9 @@
 name: Platform checks
 
-# Exercises the real screen, input devices, and the published Windows installer on hosted
-# runners. These steps move the pointer and capture the desktop, so they stay out of the
-# regular CI run. Trigger manually, or by changing this workflow in a pull request.
+# Exercises the real screen, input devices, the published Windows installer, and the installer
+# built from this branch on hosted runners. These steps move the pointer, capture the desktop,
+# and install a system service, so they stay out of the regular CI run. Trigger manually, or by
+# changing this workflow or the installer in a pull request.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +15,9 @@ on:
     paths:
       - .github/workflows/platform.yml
       - crates/session/tests/real_platform.rs
+      - crates/winsvc/**
+      - crates/app/assets/installer.nsi
+      - crates/app/Cargo.toml
 
 permissions:
   contents: read
@@ -27,6 +31,10 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   RELEASE_TAG: ${{ inputs.release || 'v0.0.3' }}
+  # crates/app/tests/installer_template.rs checks that this matches release.yml and the NSIS template.
+  CARGO_PACKAGER_VERSION: 0.11.8
+  # The last release that installed per user; the branch's installer must move it.
+  PER_USER_RELEASE: v0.0.3
 
 jobs:
   real-platform:
@@ -94,3 +102,206 @@ jobs:
           if ($viewerLog -notmatch 'Connected to') { Get-Content connect.err; throw 'the viewer did not connect' }
           if ($viewerLog -notmatch 'host screen: Available, host input: Available') { throw 'the host did not report a working screen and input' }
           if ($viewerLog -notmatch 'frame Some\(\(\d+, \d+\)\)') { throw 'no frames were decoded' }
+
+  windows-installer-branch:
+    name: Windows installer from this branch
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Install cargo-packager
+        run: cargo install --locked cargo-packager --version "$env:CARGO_PACKAGER_VERSION"
+      - name: Package installer
+        working-directory: crates/app
+        run: cargo packager --release --formats nsis
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer-branch
+          path: target/release/*-setup.exe
+          if-no-files-found: error
+      - name: Download the last per-user release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$env:PER_USER_RELEASE" --repo "$env:GITHUB_REPOSITORY" --pattern "*-setup.exe" --dir per-user-installer
+      - name: Refuse a standard user
+        # Windows PowerShell, whose LocalAccounts cmdlets run in process.
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:ProgramFiles 'Dari'
+          $shared = 'C:\dari-standard-user'
+          New-Item -ItemType Directory -Path $shared | Out-Null
+          $perUserSetup = Join-Path $shared 'per-user-setup.exe'
+          $setup = Join-Path $shared 'dari-setup.exe'
+          Copy-Item (Get-ChildItem per-user-installer -Filter *-setup.exe | Select-Object -First 1).FullName $perUserSetup
+          Copy-Item (Get-ChildItem target/release -Filter *-setup.exe | Select-Object -First 1).FullName $setup
+
+          $bytes = New-Object byte[] 24
+          [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $password = ConvertTo-SecureString ([Convert]::ToBase64String($bytes) + 'a1!') -AsPlainText -Force
+          $user = New-LocalUser -Name dari-standard -Password $password -AccountNeverExpires -PasswordNeverExpires
+          try {
+            try { Add-LocalGroupMember -SID S-1-5-32-545 -Member $user } catch [Microsoft.PowerShell.Commands.MemberExistsException] {}
+            $credential = New-Object Management.Automation.PSCredential ('dari-standard', $password)
+
+            function Invoke-AsStandardUser([string]$path) {
+              $process = Start-Process -FilePath $path -ArgumentList '/S' -Credential $credential -LoadUserProfile -WorkingDirectory $shared -Wait -PassThru
+              if ($null -eq $process.ExitCode) { throw "no exit code for $path run as dari-standard" }
+              $process.ExitCode
+            }
+
+            # The user's own per-user install, which a refused installer must leave alone.
+            $code = Invoke-AsStandardUser $perUserSetup
+            if ($code -ne 0) { throw "$env:PER_USER_RELEASE's installer exited with code $code for dari-standard" }
+            $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object SID -eq $user.SID.Value).LocalPath
+            $perUserFiles = 'dari.exe', 'uninstall.exe' | ForEach-Object { Join-Path $profileDir "AppData\Local\Dari\$_" }
+            foreach ($file in $perUserFiles) { if (-not (Test-Path -LiteralPath $file)) { throw "$env:PER_USER_RELEASE did not install $file for dari-standard" } }
+
+            $code = Invoke-AsStandardUser $setup
+            if ($code -eq 0) { throw 'the branch installer succeeded for a standard user' }
+            if (Get-Service DariService -ErrorAction SilentlyContinue) { throw 'DariService exists after a standard user ran the installer' }
+            if (Test-Path -LiteralPath $installDir) { throw "$installDir exists after a standard user ran the installer" }
+            foreach ($file in $perUserFiles) { if (-not (Test-Path -LiteralPath $file)) { throw "the refused installer removed $file" } }
+            Write-Host "the branch installer refused dari-standard with exit code $code and changed nothing"
+          } finally {
+            Get-CimInstance Win32_UserProfile | Where-Object SID -eq $user.SID.Value | Remove-CimInstance -ErrorAction Continue
+            Remove-LocalUser -SID $user.SID
+            Remove-Item -LiteralPath $shared -Recurse -Force
+          }
+      - name: Upgrade a per-user install, repair, and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $perUserDir = Join-Path $env:LOCALAPPDATA 'Dari'
+          $perUserKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dari'
+          $dataDir = Join-Path $env:LOCALAPPDATA 'dari\dari\data'
+          $installDir = Join-Path $env:ProgramFiles 'Dari'
+          $setup = (Get-ChildItem target/release -Filter *-setup.exe | Select-Object -First 1).FullName
+          # The per-user shortcuts and the HKCU key that 0.0.3's installer adds besides its uninstall key.
+          $perUserLinks = (Join-Path ([Environment]::GetFolderPath('Programs')) 'Dari\Dari.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dari.lnk')
+          $perUserProductKey = 'HKCU:\Software\dari\Dari'
+
+          function Invoke-Setup([string]$path, [string]$what) {
+            $process = Start-Process -FilePath $path -ArgumentList '/S' -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "$what exited with code $($process.ExitCode)" }
+          }
+
+          function Get-DataHashes {
+            Get-ChildItem -LiteralPath $dataDir -Recurse -File | Sort-Object FullName |
+              ForEach-Object { "$($_.FullName) $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" }
+          }
+
+          function Assert-DataUnchanged([string]$after) {
+            $now = Get-DataHashes
+            if (($now -join "`n") -ne ($dataHashes -join "`n")) {
+              Write-Host 'before:'; $dataHashes; Write-Host 'now:'; $now
+              throw "the app's data changed after $after"
+            }
+          }
+
+          # Rights that let a holder change or replace what is in the folder, plus the generic write
+          # and all bits an inherit-only ACE can carry. Modify and FullControl include them.
+          $writeRights = [int][Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership' -bor 0x40000000 -bor 0x10000000
+          $unprivileged = @{ 'S-1-5-32-545' = 'BUILTIN\Users'; 'S-1-1-0' = 'Everyone'; 'S-1-5-11' = 'Authenticated Users'; 'S-1-5-4' = 'INTERACTIVE' }
+
+          function Assert-NoUnprivilegedWrite([string]$path) {
+            $rules = (Get-Acl -LiteralPath $path).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+            foreach ($rule in $rules) {
+              $sid = $rule.IdentityReference.Value
+              if ($rule.AccessControlType -eq 'Allow' -and $unprivileged.ContainsKey($sid) -and ([int]$rule.FileSystemRights -band $writeRights)) {
+                throw "$path grants $($unprivileged[$sid]) $($rule.FileSystemRights)"
+              }
+            }
+          }
+
+          $probe = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'acl-probe')
+          icacls $probe.FullName /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
+          $missed = $true
+          try { Assert-NoUnprivilegedWrite $probe.FullName } catch { $missed = $false; Write-Host "the ACL check works: $_" }
+          if ($missed) { throw 'the ACL check missed a Modify grant to BUILTIN\Users' }
+
+          function Assert-Installed([string]$after) {
+            $service = Get-CimInstance Win32_Service -Filter "Name='DariService'"
+            if (-not $service) { throw "DariService is missing after $after" }
+            $expectedPath = '"' + (Join-Path $installDir 'dari-service.exe') + '" service'
+            if ($service.State -ne 'Running') { throw "DariService is $($service.State) after $after" }
+            if ($service.StartName -ne 'LocalSystem') { throw "DariService runs as $($service.StartName)" }
+            if ($service.StartMode -ne 'Auto') { throw "DariService's start mode is $($service.StartMode)" }
+            if ($service.PathName -ne $expectedPath) { throw "DariService's image path is $($service.PathName), not $expectedPath" }
+            $failureActions = sc.exe qfailure DariService | Out-String
+            if ($failureActions -notmatch 'RESTART -- Delay = 5000') { $failureActions; throw 'DariService does not restart on failure' }
+            foreach ($file in 'dari.exe', 'dari-service.exe') {
+              if (-not (Test-Path -LiteralPath (Join-Path $installDir $file))) { throw "$file is not in $installDir after $after" }
+            }
+            if (Test-Path -LiteralPath (Join-Path $perUserDir 'dari.exe')) { throw "a per-user dari.exe remains after $after" }
+            if (Test-Path -LiteralPath (Join-Path $perUserDir 'uninstall.exe')) { throw "the per-user uninstaller remains after $after" }
+            if (Test-Path $perUserKey) { throw "the per-user uninstall key remains after $after" }
+            if (Test-Path $perUserProductKey) { throw "$perUserProductKey remains after $after" }
+            foreach ($link in $perUserLinks) { if (Test-Path -LiteralPath $link) { throw "the per-user shortcut $link remains after $after" } }
+            Assert-NoUnprivilegedWrite $installDir
+            Assert-NoUnprivilegedWrite (Join-Path $installDir 'dari-service.exe')
+            Assert-DataUnchanged $after
+            Write-Host "after ${after}: DariService runs as LocalSystem from $installDir"
+          }
+
+          # A per-user install with the identity and settings a real user would have.
+          Invoke-Setup (Get-ChildItem per-user-installer -Filter *-setup.exe | Select-Object -First 1).FullName "$env:PER_USER_RELEASE's installer"
+          $perUserExe = Join-Path $perUserDir 'dari.exe'
+          if (-not (Test-Path -LiteralPath $perUserExe)) { throw "$env:PER_USER_RELEASE did not install $perUserExe" }
+          if (-not (Test-Path $perUserKey)) { throw "$env:PER_USER_RELEASE wrote no per-user uninstall key" }
+          if (-not (Test-Path $perUserProductKey)) { throw "$env:PER_USER_RELEASE wrote no $perUserProductKey" }
+          foreach ($link in $perUserLinks) {
+            if (-not (Test-Path -LiteralPath $link)) {
+              Get-ChildItem $env:APPDATA, $env:USERPROFILE, $env:PUBLIC -Recurse -Filter Dari.lnk -ErrorAction SilentlyContinue | ForEach-Object FullName
+              throw "$env:PER_USER_RELEASE did not create $link"
+            }
+          }
+          Write-Host "$env:PER_USER_RELEASE created $($perUserLinks -join ' and ')"
+          $hostProcess = Start-Process -FilePath $perUserExe -ArgumentList 'host', '--port', '47821' -RedirectStandardOutput per-user-host.log -RedirectStandardError per-user-host.err -PassThru -NoNewWindow
+          for ($i = 0; $i -lt 60 -and -not (Test-Path -LiteralPath (Join-Path $dataDir 'identity-key.der')); $i++) { Start-Sleep -Milliseconds 500 }
+          Start-Sleep -Seconds 2
+          Stop-Process -Id $hostProcess.Id -Force
+          Wait-Process -Id $hostProcess.Id -ErrorAction SilentlyContinue
+          Set-Content -LiteralPath (Join-Path $dataDir 'settings.toml') -Value "port = 47830`nrecent_addresses = [`"192.0.2.1`"]"
+          $dataHashes = Get-DataHashes
+          foreach ($file in 'identity-cert.der', 'identity-key.der', 'settings.toml') {
+            if (-not ($dataHashes -match [regex]::Escape("\$file "))) { Get-Content per-user-host.log, per-user-host.err; throw "the per-user app did not leave $file in $dataDir" }
+          }
+          $dataHashes
+
+          # Any process of the user can rewrite this key, so the elevated installer must not run what it
+          # names. Started here the way ExecWait starts a program, the canary shows it leaves a marker when run.
+          $canary = Join-Path $env:RUNNER_TEMP 'canary'
+          New-Item -ItemType Directory -Path $canary | Out-Null
+          $canaryMarker = Join-Path $canary 'ran.txt'
+          $canaryScript = Join-Path $canary 'uninstall.cmd'
+          Set-Content -LiteralPath $canaryScript -Value "@echo ran> `"$canaryMarker`""
+          $start = [Diagnostics.ProcessStartInfo]::new($canaryScript, "/S _?=$perUserDir")
+          $start.UseShellExecute = $false
+          [Diagnostics.Process]::Start($start).WaitForExit()
+          if (-not (Test-Path -LiteralPath $canaryMarker)) { throw 'the canary left no marker when started directly' }
+          Remove-Item -LiteralPath $canaryMarker
+          Set-ItemProperty -Path $perUserKey -Name UninstallString -Value "`"$canaryScript`""
+
+          Invoke-Setup $setup 'the branch installer over the per-user install'
+          if (Test-Path -LiteralPath $canaryMarker) { throw 'the installer ran the program named by the per-user UninstallString' }
+          Assert-Installed 'the upgrade from a per-user install'
+
+          Invoke-Setup $setup 'the branch installer run again'
+          Assert-Installed 'a repair'
+
+          Invoke-Setup (Join-Path $installDir 'uninstall.exe') 'the uninstaller'
+          for ($i = 0; $i -lt 30 -and (Get-Service DariService -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+          if (Get-Service DariService -ErrorAction SilentlyContinue) { throw 'DariService remains after uninstalling' }
+          foreach ($file in 'dari.exe', 'dari-service.exe') {
+            if (Test-Path -LiteralPath (Join-Path $installDir $file)) { throw "$file remains in $installDir after uninstalling" }
+          }
+          if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dari') { throw 'the uninstall key remains after uninstalling' }
+          Assert-DataUnchanged 'uninstalling'
+          Write-Host 'uninstalling removed DariService and the files and kept the data'

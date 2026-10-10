@@ -100,7 +100,7 @@ fn template_is_upstream_plus_the_service_steps() {
 #[test]
 fn workflows_install_the_packager_the_template_came_from() {
     let pin = format!("CARGO_PACKAGER_VERSION: {PACKAGER_VERSION}\n");
-    for workflow in ["release.yml"] {
+    for workflow in ["release.yml", "platform.yml"] {
         let text = read(&format!("../../.github/workflows/{workflow}"));
         assert!(
             text.contains(&pin),
