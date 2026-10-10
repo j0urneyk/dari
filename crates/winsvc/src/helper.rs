@@ -109,6 +109,7 @@ fn read_app(
             }
             Ok(Some(AppToHelper::RequestFrame)) => Some(ScreenCommand::RequestFrame),
             Ok(Some(AppToHelper::Input(_))) => None,
+            Ok(Some(AppToHelper::Stop)) => return "the app ended the link",
             Ok(None) => return "the app closed its pipe",
             Err(error) if error.kind() == io::ErrorKind::TimedOut => None,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -290,6 +291,20 @@ mod tests {
             );
             drop(server);
             assert_eq!(helper.join().unwrap(), Ok("the app closed its pipe"));
+        });
+    }
+
+    #[test]
+    fn the_helper_stops_when_the_app_ends_the_link_without_closing_its_pipe() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            write_message(&server, &AppToHelper::Stop, deadline).unwrap();
+            assert_eq!(helper.join().unwrap(), Ok("the app ended the link"));
         });
     }
 

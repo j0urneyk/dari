@@ -179,9 +179,9 @@ in the system directory (`GetSystemDirectoryW`) and that its token's user is Loc
 only shares the name. The helper runs with that token restricted by `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`,
 which keeps the SYSTEM SID and System integrity but removes every privilege except `SeChangeNotifyPrivilege`. Its first
 event log entry lists its user, integrity level, session, and privileges. It inherits only the app's process handle,
-runs in a job that ends it when the service exits, loads DLLs only from System32, creates no windows, and exits when its
-pipe closes or the app exits. `dari-service.exe` has no console, because a console program started as SYSTEM opens a
-console window on the user's desktop.
+runs in a job that ends it when the service exits, loads DLLs only from System32, creates no windows, and exits when the
+app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console program
+started as SYSTEM opens a console window on the user's desktop.
 
 Code running as the signed-in user can do what `dari.exe` can, including talking to the service and the helper as if it
 were the app. The image check stops other programs, not code injected into Dari. Such code can start `dari.exe`, inject

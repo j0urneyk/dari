@@ -325,7 +325,7 @@ dari.exe (user, medium integrity)
    reads it, impersonates the client to check that it is LocalSystem, and only then accepts it.
 5. The session logs each `DesktopChanged` and drops the link when it ends (the service is missing or refused, the
    helper never connected or failed the check, or its pipe closed), without starting another helper that session.
-   At the session's end it drops the link first, which closes the helper's pipe, and the helper exits.
+   At the session's end it drops the link first. The link's task then sends `Stop`, and the helper exits.
 
 #### Capturing the secure desktop
 
@@ -366,7 +366,9 @@ it answers with `RequestFrame`, which it sends for every `Frame`, kept or not. T
 keeps the newest frame there as a draft, and publishes the draft when the credit comes back. A desktop change, a display
 change, the end of the duplication that drew the draft, or `ScreenUnavailable` discards the draft. A size change waits
 until the app owns no slot, then sends a new `FrameSection` and closes the helper's handle to the old one. The app's
-view keeps the old section alive until the app maps the new one.
+view keeps the old section alive until the app maps the new one. However the link ends, the app sends `Stop` and reads
+for up to 5 seconds until the helper closes its pipe, closing the handle of every `FrameSection` it reads meanwhile.
+Otherwise a section the helper made as the link ended would stay allocated in `dari.exe` until the app exits.
 
 In the app, the link's task maps each section read-only, copies a published slot into an `RgbaFrame` on a blocking
 thread, and checks the slot's sequence word before and after the copy. It copies only frames of the selected display

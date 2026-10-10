@@ -160,13 +160,17 @@ pub enum AppToHelper {
     /// never writes the slot the app is reading. The app can't write the section, so this is
     /// its only way to say which slot it reads.
     RequestFrame,
+    /// The app is ending the link: stop and close the pipe. The app reads for up to 5 seconds
+    /// until the pipe closes, so it closes the handle of every [`HelperToApp::FrameSection`] the
+    /// helper sent, even one it sent after this.
+    Stop,
 }
 
 impl Validate for AppToHelper {
     fn validate(&self) -> Result<(), ValidationError> {
         match self {
             Self::Input(event) => event.validate(),
-            Self::SelectDisplay(_) | Self::RequestFrame => Ok(()),
+            Self::SelectDisplay(_) | Self::RequestFrame | Self::Stop => Ok(()),
         }
     }
 }
@@ -387,6 +391,7 @@ mod tests {
         }));
         round_trip(&AppToHelper::SelectDisplay(65_537));
         round_trip(&AppToHelper::RequestFrame);
+        round_trip(&AppToHelper::Stop);
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Default));
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Winlogon));
         round_trip(&HelperToApp::DesktopChanged(InputDesktop::Other(

@@ -364,7 +364,9 @@ mod tests {
                 world.borrow_mut().owned = None;
                 channel.request_frame().unwrap();
             }
-            Some(AppToHelper::SelectDisplay(_) | AppToHelper::Input(_)) => unreachable!(),
+            Some(AppToHelper::SelectDisplay(_) | AppToHelper::Input(_) | AppToHelper::Stop) => {
+                unreachable!()
+            }
             None => return false,
         }
         true
