@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use dari_media::RgbaFrame;
-use dari_proto::InputDesktop;
+use dari_proto::{InputDesktop, OsInput};
 use tokio::sync::mpsc;
 
 pub(crate) use capturer::TwoSourceCapturer;
@@ -30,6 +30,8 @@ pub enum SecureDesktopEvent {
 pub enum LinkCommand {
     /// Capture the display with this ID on the secure desktop.
     SelectDisplay(u32),
+    /// Inject this on the secure desktop.
+    Input(OsInput),
 }
 
 /// A live link to the helper, which lives as long as the session holds it. Dropping it stops
@@ -75,6 +77,34 @@ impl SecureDesktopLink {
 
     pub(crate) fn view(&self) -> SecureDesktopView {
         SecureDesktopView(self.shared.clone())
+    }
+
+    pub(crate) fn input(&self) -> SecureInput {
+        SecureInput {
+            commands: self.commands.downgrade(),
+            view: self.view(),
+        }
+    }
+}
+
+/// The input thread's handle on a link. It doesn't keep the link open, so dropping the link
+/// still stops the helper while the input thread runs.
+#[derive(Debug, Clone)]
+pub(crate) struct SecureInput {
+    commands: mpsc::WeakUnboundedSender<LinkCommand>,
+    view: SecureDesktopView,
+}
+
+impl SecureInput {
+    pub(crate) fn route(&self) -> Route {
+        self.view.route().1
+    }
+
+    /// Hands `input` to the helper; `false` once the session dropped the link.
+    pub(crate) fn send(&self, input: OsInput) -> bool {
+        self.commands
+            .upgrade()
+            .is_some_and(|commands| commands.send(LinkCommand::Input(input)).is_ok())
     }
 }
 

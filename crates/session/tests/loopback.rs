@@ -21,7 +21,8 @@ use dari_media::{
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
 use dari_proto::{
-    Availability, InputDesktop, InputEvent, KeyCode, MouseButton, NamedKey, PointerPosition,
+    Availability, InputDesktop, InputEvent, KeyCode, MouseButton, NamedKey, OsInput,
+    PointerPosition,
 };
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
@@ -1858,4 +1859,171 @@ async fn a_helper_that_dies_on_the_secure_desktop_brings_back_the_notice() {
         Availability::Available
     );
     wait_for_frame(&mut frames, synthetic).await;
+}
+
+async fn next_input(driver: &mut LinkDriver) -> OsInput {
+    loop {
+        match next_command(driver).await {
+            Some(LinkCommand::Input(input)) => return input,
+            Some(LinkCommand::SelectDisplay(_)) => {}
+            None => panic!("the session dropped the link"),
+        }
+    }
+}
+
+/// The input the session has sent the link so far.
+fn sent_input(driver: &mut LinkDriver) -> Vec<OsInput> {
+    let mut sent = Vec::new();
+    while let Some(Some(command)) = driver.command().now_or_never() {
+        if let LinkCommand::Input(input) = command {
+            sent.push(input);
+        }
+    }
+    sent
+}
+
+const ALT: KeyCode = KeyCode::Named(NamedKey::Alt);
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_on_the_users_desktop_stays_local() {
+    let (platform, links) = helper_platform();
+    let actions = platform.actions.clone();
+    let host = start(platform).await;
+    let (viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, mut helper) = only_link(&links).await;
+    helper.desktop_changed(InputDesktop::Default);
+
+    assert!(viewer.send_input(InputEvent::PointerMove(PointerPosition { x: 0, y: 0 })));
+    assert!(viewer.send_input(InputEvent::Text("local".into())));
+    wait_for(&actions, &RecordedAction::Text("local".into())).await;
+    assert_eq!(sent_input(&mut helper), []);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_held_on_the_users_desktop_is_released_there_when_the_secure_desktop_appears() {
+    let (platform, links) = helper_platform();
+    let actions = platform.actions.clone();
+    let host = start(platform).await;
+    let (viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, mut helper) = only_link(&links).await;
+    helper.desktop_changed(InputDesktop::Default);
+    assert!(viewer.send_input(InputEvent::Key {
+        key: ALT,
+        pressed: true
+    }));
+    wait_for(&actions, &RecordedAction::Key(ALT, true)).await;
+
+    helper.desktop_changed(InputDesktop::Winlogon);
+    let y = KeyCode::Character('y');
+    assert!(viewer.send_input(InputEvent::Key {
+        key: y,
+        pressed: true
+    }));
+    assert_eq!(
+        next_input(&mut helper).await,
+        OsInput::Key {
+            key: y,
+            pressed: true
+        }
+    );
+    assert_eq!(
+        *actions.lock().unwrap(),
+        [
+            RecordedAction::Key(ALT, true),
+            RecordedAction::Key(ALT, false)
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_on_the_secure_desktop_reaches_the_helper_in_the_selected_displays_pixels() {
+    let (platform, links) = helper_platform();
+    let actions = platform.actions.clone();
+    let host = start(platform).await;
+    let (viewer, mut viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (input, mut helper) = only_link(&links).await;
+    assert!(input);
+    viewer.select_display(SECOND_DISPLAY.id);
+    wait_for_event(&mut viewer_events, |event| {
+        matches!(event, ViewerEvent::Displays { active, .. } if *active == SECOND_DISPLAY.id)
+    })
+    .await;
+    helper.desktop_changed(InputDesktop::Winlogon);
+
+    assert!(viewer.send_input(InputEvent::PointerMove(PointerPosition {
+        x: u16::MAX,
+        y: u16::MAX
+    })));
+    assert_eq!(
+        next_input(&mut helper).await,
+        OsInput::Move {
+            x: SECOND_DISPLAY.x + 1919,
+            y: 1079
+        }
+    );
+    assert!(viewer.send_input(InputEvent::PointerButton {
+        button: MouseButton::Left,
+        pressed: true
+    }));
+    assert_eq!(
+        next_input(&mut helper).await,
+        OsInput::Button {
+            button: MouseButton::Left,
+            pressed: true
+        }
+    );
+    assert!(actions.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_only_sessions_send_the_helper_no_input() {
+    let (platform, links) = helper_platform();
+    let actions = platform.actions.clone();
+    let mut host = start_with(platform, true).await;
+    let (viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    approve(&mut host, ApprovalDecision::ViewOnly).await;
+    let (input, mut helper) = only_link(&links).await;
+    assert!(!input);
+    helper.desktop_changed(InputDesktop::Winlogon);
+    assert!(viewer.send_input(InputEvent::Key {
+        key: ALT,
+        pressed: true
+    }));
+    assert!(viewer.send_input(InputEvent::Text("ignored".into())));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(sent_input(&mut helper), []);
+    assert!(actions.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_returns_to_the_users_desktop_when_the_helper_link_ends() {
+    let (platform, links) = helper_platform();
+    let actions = platform.actions.clone();
+    let host = start(platform).await;
+    let (viewer, _viewer_events) = connect_viewer(viewer_config(&host), &host.password)
+        .await
+        .unwrap();
+    let (_input, mut helper) = only_link(&links).await;
+    helper.desktop_changed(InputDesktop::Winlogon);
+    assert!(viewer.send_input(InputEvent::Text("secure".into())));
+    assert_eq!(
+        next_input(&mut helper).await,
+        OsInput::Text("secure".into())
+    );
+
+    helper.end("the helper closed its pipe".into());
+    assert!(viewer.send_input(InputEvent::Text("local".into())));
+    wait_for(&actions, &RecordedAction::Text("local".into())).await;
+    assert_eq!(
+        *actions.lock().unwrap(),
+        [RecordedAction::Text("local".into())]
+    );
 }

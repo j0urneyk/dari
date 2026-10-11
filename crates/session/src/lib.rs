@@ -8,6 +8,7 @@
 mod clipboard;
 mod host;
 mod host_session;
+mod input_route;
 mod platform;
 mod secure_desktop;
 mod transfer;
