@@ -593,7 +593,7 @@ async fn view_screen(
     let start = feed.session.screen_history.len();
 
     if screen.expect != Expect::Present {
-        if !see(args, feed, verdict, label, baselines).await {
+        if !see(args, feed, verdict, label, home, others).await {
             return Outcome::Failed;
         }
         if !args.answer_on_other_display {
@@ -700,22 +700,22 @@ async fn desktop_returns(
             args.timeout
         ),
     );
-    if back.is_none() {
-        let last = feed.frames.borrow().clone();
-        if let Some(frame) = last {
-            let picture = Thumbnail::of(frame.width, frame.height, &frame.bgra);
-            let difference = home.picture.difference(&picture);
-            let saved = feed
-                .album
-                .save(&Shot { frame, picture }, &format!("secure-{label}-last"));
-            println!(
-                "{label}: the last frame differs {:.0}% from the baseline, {saved}",
-                difference * 100.0
-            );
-        }
-        return false;
+    if back.is_some() {
+        return true;
     }
-    true
+    let Some(frame) = feed.frames.borrow().clone() else {
+        return false;
+    };
+    let picture = Thumbnail::of(frame.width, frame.height, &frame.bgra);
+    let difference = home.picture.difference(&picture);
+    let saved = feed
+        .album
+        .save(&Shot { frame, picture }, &format!("secure-{label}-last"));
+    println!(
+        "{label}: the last frame differs {:.0}% from the baseline, {saved}",
+        difference * 100.0
+    );
+    false
 }
 
 async fn send_keys(
@@ -796,13 +796,11 @@ async fn see(
     feed: &mut Feed<'_>,
     verdict: &mut Verdict,
     label: &str,
-    baselines: &[Baseline],
+    home: &Baseline,
+    others: &[Baseline],
 ) -> bool {
     let step = Duration::from_secs(args.timeout);
     let quiet = Duration::from_millis(args.settle_ms);
-    let Some((home, others)) = baselines.split_last() else {
-        return false;
-    };
     let Some(first) = feed
         .follow(Instant::now() + step, |_, _, picture| {
             home.picture.difference(picture) >= CLEARLY_DIFFERENT
