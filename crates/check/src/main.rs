@@ -47,13 +47,18 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .init();
+    let cli = Cli::parse();
+    let filter = match &cli.command {
+        // Debug logs could one day print key events, and this run types a password.
+        Command::SecureView(args) if args.types_secret() => {
+            println!("RUST_LOG is ignored: this run types a password");
+            EnvFilter::new("warn")
+        }
+        _ => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     dari_input::prepare_process();
-    let outcome = match Cli::parse().command {
+    let outcome = match cli.command {
         Command::Host(args) if args.wants_probe() => host_with_probe(args),
         Command::Host(args) => block_on(host::run(args, None)),
         Command::View(args) => block_on(viewer::run(args)),
