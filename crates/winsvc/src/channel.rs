@@ -158,8 +158,7 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
             width: layout.width(),
             height: layout.height(),
         }) {
-            // Through a closed pipe the app never read the value. After any other failure, such
-            // as a timed-out write that finished anyway, the app may own it.
+            // Only a closed pipe proves the app can never read the value.
             if error.kind() == io::ErrorKind::BrokenPipe {
                 let _closed = self.factory.close_in_app(handle);
             }
