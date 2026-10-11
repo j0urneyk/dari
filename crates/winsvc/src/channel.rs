@@ -153,11 +153,18 @@ impl<O: Outbox, F: SectionFactory> AppChannel<O, F> {
             return Ok(None);
         }
         let (section, handle) = self.factory.create(layout)?;
-        self.outbox.send(HelperToApp::FrameSection {
+        if let Err(error) = self.outbox.send(HelperToApp::FrameSection {
             handle,
             width: layout.width(),
             height: layout.height(),
-        })?;
+        }) {
+            // Through a closed pipe the app never read the value. After any other failure, such
+            // as a timed-out write that finished anyway, the app may own it.
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                let _closed = self.factory.close_in_app(handle);
+            }
+            return Err(error);
+        }
         Ok(Some(
             &mut self.current.insert(Current { layout, section }).section,
         ))
