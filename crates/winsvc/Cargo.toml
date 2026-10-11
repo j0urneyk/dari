@@ -13,6 +13,7 @@ name = "dari-service"
 path = "src/main.rs"
 
 [dependencies]
+dari-input.workspace = true
 dari-proto.workspace = true
 
 [target.'cfg(windows)'.dependencies]

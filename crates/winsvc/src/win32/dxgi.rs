@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::core::Interface;
 
-use super::desktop::{AttachedDesktop, InputDesktopSource};
+use super::desktop::{AttachedDesktop, DesktopUse, InputDesktopSource};
 use crate::dxgi_result::Hresult;
 use crate::pointer::{PointerPosition, RawPointerShape};
 use crate::screen::{
@@ -40,7 +40,7 @@ impl DesktopWorld for DxgiWorld {
     type Duplication = DxgiDuplication;
 
     fn attach(&mut self) -> Result<Observation, Hresult> {
-        let (desktop, name) = AttachedDesktop::attach().map_err(hresult)?;
+        let (desktop, name) = AttachedDesktop::attach(DesktopUse::Capture).map_err(hresult)?;
         // The thread moved to `desktop`, so the previous one can close now.
         self.attached = Some(desktop);
         Ok(name)

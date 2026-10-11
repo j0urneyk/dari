@@ -1881,6 +1881,7 @@ name = "dari-winsvc"
 version = "0.0.3"
 dependencies = [
  "bytes",
+ "dari-input",
  "dari-proto",
  "object",
  "serde",

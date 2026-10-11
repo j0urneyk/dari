@@ -11,6 +11,8 @@ mod command;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dxgi_result;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod injector;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod limiter;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod pointer;
