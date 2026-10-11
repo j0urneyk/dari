@@ -54,7 +54,7 @@ impl EnigoBackend {
     pub fn new() -> Result<Self, InjectError> {
         let settings = Settings {
             open_prompt_to_get_permissions: true,
-            // `InputSession` releases exactly what the remote side held.
+            // `Injector` releases exactly what the remote side held.
             release_keys_when_dropped: false,
             ..Settings::default()
         };
@@ -294,7 +294,7 @@ fn function_key(number: u8) -> Option<Key> {
     KEYS.get(usize::from(number).checked_sub(1)?).copied()
 }
 
-/// One call an [`InputSession`](crate::InputSession) made, as seen by [`RecordingBackend`].
+/// One call an [`Injector`](crate::Injector) made, as seen by [`RecordingBackend`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedAction {
     Move(i32, i32),
