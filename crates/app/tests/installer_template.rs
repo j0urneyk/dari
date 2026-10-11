@@ -65,27 +65,30 @@ Function DariSecureDesktopPageLeave
 FunctionEnd
 Function DariReadSecureDesktopControl
   ${IfThen} $DariSecureDesktopControl != "" ${|} Return ${|}
-  ; ReadRegDWORD can't tell a missing value from one of a type it can't read, so look for the name.
-  StrCpy $DariSecureDesktopControl "on"
   ClearErrors
   ReadRegDWORD $0 HKLM "SOFTWARE\Policies\Dari" "SecureDesktopControl"
-  ${If} ${Errors}
-  ${OrIf} $0 <> 1
-    StrCpy $1 0
-    ${Do}
-      ClearErrors
-      EnumRegValue $2 HKLM "SOFTWARE\Policies\Dari" $1
-      ${If} ${Errors}
-      ${OrIf} $2 == ""
-        ${ExitDo}
-      ${EndIf}
-      ${If} $2 == "SecureDesktopControl"
-        StrCpy $DariSecureDesktopControl "off"
-        ${ExitDo}
-      ${EndIf}
-      IntOp $1 $1 + 1
-    ${Loop}
+  ${IfNot} ${Errors}
+    ${If} $0 = 1
+      StrCpy $DariSecureDesktopControl "on"
+    ${Else}
+      StrCpy $DariSecureDesktopControl "off"
+    ${EndIf}
+    Return
   ${EndIf}
+  ; ReadRegDWORD can't tell a missing value from one of a type it can't read, so look for the name.
+  ; EnumRegValue sets the error flag past the last value; the unnamed default value has an empty name.
+  StrCpy $DariSecureDesktopControl "on"
+  StrCpy $1 0
+  ${Do}
+    ClearErrors
+    EnumRegValue $2 HKLM "SOFTWARE\Policies\Dari" $1
+    ${IfThen} ${Errors} ${|} ${ExitDo} ${|}
+    ${If} $2 == "SecureDesktopControl"
+      StrCpy $DariSecureDesktopControl "off"
+      ${ExitDo}
+    ${EndIf}
+    IntOp $1 $1 + 1
+  ${Loop}
 FunctionEnd
 "#;
 
