@@ -9,15 +9,12 @@ const EVENT_LOG: &str = r"SYSTEM\CurrentControlSet\Services\EventLog\Application
 /// Its message table renders `%1` for every event ID from 1 to 1000, so the service needs no
 /// message file of its own.
 const MESSAGE_FILE: &str = r"%SystemRoot%\System32\EventCreate.exe";
-/// Error, warning, and information.
 const TYPES_SUPPORTED: u32 = 7;
 
-/// The machine's policy, read fresh.
 pub(crate) fn read() -> SecureDesktopControl {
     read_in(LOCAL_MACHINE, POLICY_KEY)
 }
 
-/// The value's only writer. Only administrators may write under `HKLM`.
 pub(crate) fn write(control: SecureDesktopControl) -> Result<(), Error> {
     write_in(LOCAL_MACHINE, POLICY_KEY, control)
 }
@@ -42,8 +39,6 @@ fn read_in(root: &Key, path: &str) -> SecureDesktopControl {
     SecureDesktopControl::from_stored(stored(root, path))
 }
 
-/// `None` when the value is missing. A value that isn't a DWORD, or a key that can't be read,
-/// reads as 0, so the policy fails closed.
 fn stored(root: &Key, path: &str) -> Option<u32> {
     match root.open(path).and_then(|key| key.get_value(POLICY_VALUE)) {
         Ok(value) if value.ty() == Type::U32 => Some(u32::try_from(value).unwrap_or(0)),
@@ -83,7 +78,6 @@ mod tests {
     use super::*;
     use SecureDesktopControl::{Off, On};
 
-    /// A key under `HKCU` that no other test uses, removed with everything under it on drop.
     struct Scratch(String);
 
     impl Scratch {

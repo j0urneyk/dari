@@ -76,7 +76,6 @@ pub(crate) struct SecureViewArgs {
 }
 
 impl SecureViewArgs {
-    /// Whether a screen types the secret, so nothing may log key events.
     pub(crate) fn types_secret(&self) -> bool {
         self.screens
             .iter()
@@ -94,9 +93,7 @@ pub(crate) struct Screen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expect {
     Captured,
-    /// The script ends the helper while the screen is up.
     Notice,
-    /// The screen is already up when the viewer connects, so the baseline shows it.
     Present,
 }
 
@@ -115,19 +112,15 @@ impl Expect {
     }
 }
 
-/// What the viewer sends once a screen has settled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Keys {
     None,
-    /// The consent prompt's Yes.
     AltY,
     Escape,
-    /// Lifts the lock screen's curtain with a click, types the secret, and presses Enter.
     Password,
-    /// Presses Alt and disconnects without releasing it.
     HoldAltLeave,
-    /// Presses F20 and never releases it. F20 has no Windows binding, so a key left down by a
-    /// bug changes nothing the later cases type.
+    /// F20 has no Windows binding, so a key left down by a bug changes nothing the later cases
+    /// type.
     HoldF20,
 }
 
@@ -185,11 +178,9 @@ impl Screen {
     }
 }
 
-/// The key events that type a secret and then press Enter. Its `Debug` shows only their number.
 pub(crate) struct Keystrokes(Vec<InputEvent>);
 
 impl Keystrokes {
-    /// Errors never quote the secret.
     fn typing(secret: &str) -> Result<Self, &'static str> {
         if secret.is_empty() {
             return Err("the secret is empty");
@@ -223,7 +214,6 @@ impl fmt::Debug for Keystrokes {
     }
 }
 
-/// Checks the screens fit together and reads the secret a `password` screen types.
 fn prepare(args: &SecureViewArgs) -> anyhow::Result<Option<Keystrokes>> {
     for (index, screen) in args.screens.iter().enumerate() {
         if args.screens[..index]
@@ -258,15 +248,12 @@ struct Shot {
     picture: Thumbnail,
 }
 
-/// Saves frames until sealed. A `password` screen seals it before typing, so no frame after
-/// that can show what was typed.
 struct Album {
     out: PathBuf,
     sealed: bool,
 }
 
 impl Album {
-    /// Saves the shot and says where, for the report.
     fn save(&self, shot: &Shot, name: &str) -> String {
         if self.sealed {
             return "not saved: a password was typed".into();
@@ -376,12 +363,10 @@ struct Baseline {
     picture: Thumbnail,
 }
 
-/// How a run of screens ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Done,
     Failed,
-    /// A `hold-alt-leave` screen disconnected.
     Left,
 }
 
@@ -475,7 +460,6 @@ async fn check(
     verdict
 }
 
-/// Keeps the session open, with any held key still down, until the script has checked the host.
 async fn finish_when(
     args: &SecureViewArgs,
     session: &mut Session,
@@ -548,7 +532,6 @@ async fn view_screens(
 
     let step = Duration::from_secs(args.timeout);
     let quiet = Duration::from_millis(args.settle_ms);
-    // A screen that is already up has no desktop to compare the other displays with.
     let present = args.screens.first().map(|screen| screen.expect) == Some(Expect::Present);
     let others: Vec<_> = displays
         .iter()
@@ -679,7 +662,6 @@ async fn view_screen(
     Outcome::Done
 }
 
-/// Waits for the desktop to come back after a screen.
 async fn desktop_returns(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -688,7 +670,6 @@ async fn desktop_returns(
     home: &Baseline,
     expect: Expect,
 ) -> bool {
-    // A present screen is the baseline, so the desktop is back once the picture leaves it.
     let present = expect == Expect::Present;
     let step = Duration::from_secs(args.timeout);
     let back = feed
@@ -733,7 +714,6 @@ async fn desktop_returns(
     true
 }
 
-/// Sends the screen's keys on the selected display.
 async fn send_keys(
     args: &SecureViewArgs,
     keystrokes: Option<&Keystrokes>,
@@ -753,7 +733,6 @@ async fn send_keys(
         Keys::Escape => tap(viewer, KeyCode::Named(NamedKey::Escape)).await,
         Keys::HoldAltLeave => {
             press(viewer, alt, true).await;
-            // Leave once the press has surely reached the host's injector.
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
         Keys::HoldF20 => press(viewer, KeyCode::Named(NamedKey::Function(20)), true).await,
@@ -768,7 +747,6 @@ async fn send_keys(
     true
 }
 
-/// Clicks the lock screen's curtain away, saves the sign-in screen, seals the album, and types.
 async fn type_secret(
     args: &SecureViewArgs,
     keystrokes: &Keystrokes,
@@ -809,8 +787,6 @@ async fn type_secret(
     true
 }
 
-/// Waits for the selected display's picture to leave the baseline and settle, then visits
-/// every other display.
 async fn see(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -866,8 +842,6 @@ async fn see(
     true
 }
 
-/// Selects the first display again after visiting the others, and checks it still shows the
-/// secure screen.
 async fn return_home(
     args: &SecureViewArgs,
     feed: &mut Feed<'_>,
@@ -992,7 +966,6 @@ mod tests {
 
     type Recorded = Arc<Mutex<Vec<RecordedAction>>>;
 
-    /// What the host's input thread did, readable while the session runs.
     struct Recorder(Recorded);
 
     impl InputBackend for Recorder {
@@ -1079,7 +1052,6 @@ mod tests {
             }
         }
 
-        /// The key events the host received, waiting until `count` have arrived.
         async fn keys(&self, count: usize) -> Vec<(KeyCode, bool)> {
             let keys = || {
                 self.recorded
@@ -1447,7 +1419,6 @@ mod tests {
                 .contains(&RecordedAction::Button(MouseButton::Left, true)),
             "a click lifts the curtain first"
         );
-        // The desktop never comes back, which would normally save the last frame.
         let out = run.out.clone();
         let code = run.check.await.unwrap();
         assert_eq!(code, ExitCode::FAILURE);

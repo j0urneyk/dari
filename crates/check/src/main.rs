@@ -49,7 +49,6 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let filter = match &cli.command {
-        // Debug logs could one day print key events, and this run types a password.
         Command::SecureView(args) if args.types_secret() => {
             println!("RUST_LOG is ignored: this run types a password");
             EnvFilter::new("warn")

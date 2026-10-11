@@ -260,8 +260,6 @@ impl Server {
     }
 }
 
-/// Narrows `request` to what the policy allows. The service reads the policy for each request,
-/// so a change applies from the next one.
 fn admit(
     request: ServiceRequest,
     control: SecureDesktopControl,

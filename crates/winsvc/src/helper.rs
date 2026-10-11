@@ -23,7 +23,6 @@ const WRITE_TIME: Duration = Duration::from_secs(5);
 /// The app is untrusted: a full queue stops the reader, so the pipe pushes back on the app
 /// instead of the helper's memory growing.
 const QUEUED_COMMANDS: usize = 8;
-/// A full input queue drops input instead, so input never holds up the screen's commands.
 const QUEUED_INPUTS: usize = 64;
 const SCREEN_STOPPED: &str = "the screen thread stopped";
 
@@ -106,8 +105,7 @@ fn describe(note: &Note) -> String {
 }
 
 /// Talks to the app until either side stops. This thread is the pipe's only reader; a screen
-/// thread is its only writer, so the pipe's order is the order things happened. An input thread
-/// runs `input` only when it is given; it returns how many held inputs it released at the end.
+/// thread is its only writer, so the pipe's order is the order things happened.
 fn converse<W: DesktopWorld>(
     pipe: &Pipe,
     app: &InheritedProcess,

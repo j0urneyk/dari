@@ -165,9 +165,6 @@ async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkErro
     }
 }
 
-/// Returns once the session dropped the link. Displays selected meanwhile are already in the
-/// link's state, which the link reads once the helper connects, and no input comes before then:
-/// it goes to the user's desktop until the helper names another.
 async fn session_gone(driver: &mut LinkDriver) {
     while driver.command().await.is_some() {}
 }

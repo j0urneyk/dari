@@ -225,7 +225,6 @@ mod tests {
         InputEvent::Key { key, pressed }
     }
 
-    /// Records each call with the target it went to, in a log that outlives the backend.
     #[derive(Debug, Default)]
     struct Routed {
         target: u8,

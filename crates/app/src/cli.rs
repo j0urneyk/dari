@@ -36,9 +36,6 @@ pub(crate) async fn host(port: u16, relay: Option<String>, view_only: bool) -> a
             host_name: device_name(),
             stream: StreamSettings::default(),
             policy: HostPolicy {
-                // The headless host has no one to ask, so it answers each request itself:
-                // anyone with the password gets control, or with --view-only only the screen.
-                // Only an approval can grant less than control.
                 require_approval: view_only,
                 clipboard: false,
                 // Files would land on this machine without anyone choosing to accept them.

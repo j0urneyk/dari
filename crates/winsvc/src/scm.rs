@@ -252,8 +252,6 @@ fn restart_on_failure() -> ServiceFailureActions {
     }
 }
 
-/// Leaves the policy value alone: an upgrade runs this too, and an administrator's choice must
-/// survive it.
 pub(crate) fn uninstall() -> Result<(), Failure> {
     remove_service()?;
     policy::unregister_event_source().map_err(|error| Failure::Registry {

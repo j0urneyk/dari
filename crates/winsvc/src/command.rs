@@ -7,7 +7,7 @@ pub(crate) enum Command {
     Service,
     Install,
     Uninstall,
-    /// `policy on|off`: the policy value's only writer. Needs an administrator.
+    /// `policy on|off`. Needs an administrator.
     Policy(SecureDesktopControl),
     /// Started only by the service: `helper <pipe> <input|no-input> <app process handle>`.
     Helper(HelperArgs),

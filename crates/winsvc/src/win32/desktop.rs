@@ -11,8 +11,6 @@ use crate::tracker::{DesktopSource, Observation};
 
 const NO_RIGHTS: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(0);
 
-/// What a thread attaches to the input desktop for. Each thread opens its own handle with only
-/// the rights its use needs, as measured in the test VM.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DesktopUse {
     /// Naming, attaching to, and duplicating `Winlogon` or `Default` need no desktop-specific
@@ -67,8 +65,6 @@ impl AttachedDesktop {
     }
 }
 
-/// The input thread's desktop. That thread creates no window and installs no hook, so it can
-/// always move.
 #[derive(Debug, Default)]
 pub(crate) struct InputThreadDesktop {
     attached: Option<AttachedDesktop>,
@@ -85,7 +81,6 @@ impl InputDesk for InputThreadDesktop {
     fn attach(&mut self, desktop: &InputDesktop) -> Result<(), String> {
         let (attached, seen) =
             AttachedDesktop::attach(DesktopUse::Inject).map_err(|error| error.to_string())?;
-        // The thread moved to `attached`, so the previous one can close now.
         self.attached = Some(attached);
         match seen {
             Observation::Named(name) if InputDesktop::from_name(&name) == *desktop => Ok(()),

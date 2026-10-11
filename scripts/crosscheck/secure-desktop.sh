@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Shows a Windows peer's secure screens (a UAC prompt, the lock screen) while a viewer on this
-# machine answers them through Dari. Each case runs its own `dari-check secure-view`, so each one
-# is a new session with a new helper.
-#
 # Runs on the macOS /bin/bash (3.2).
 set -euo pipefail
 
@@ -114,8 +110,6 @@ script() {
     try { & '$dir\\$name' $*; exit \$LASTEXITCODE } catch { Write-Output \$_.Exception.Message; exit 1 }"
 }
 secure() { script secure-desktop.ps1 "$@"; }
-# Runs a secure-desktop.ps1 action in the signed-in session at medium integrity, as task
-# secure-ACTION logging to logs\secure-ACTION.log.
 start_secure() {
   script interactive.ps1 start -Name "secure-$1" -RunLevel Limited \
     -Exe "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'" \
@@ -123,11 +117,9 @@ start_secure() {
     -Log "'$dir\\logs\\secure-$1.log'"
 }
 stop_task() { script interactive.ps1 stop -Name "$1" >/dev/null 2>&1 || true; }
-# The value of a "key: value" line a peer command printed.
 value_of() { tr -d '\r' | sed -n "s/^$1: //p" | head -n 1; }
 
 host_mode='' host_runs=0 host_log='' passwords_used=0
-# Prints the Nth "KEY: value" line's value from the host's log, waiting up to $3 seconds.
 wait_for_host_line() {
   local key=$1 nth=$2 deadline=$((SECONDS + $3)) value
   while ((SECONDS < deadline)); do
@@ -142,7 +134,6 @@ wait_for_host_line() {
   return 1
 }
 
-# Starts the installed app's headless host unless it already runs in MODE (control or view-only).
 ensure_host() {
   local mode=$1 arguments="'host','--port','$port'"
   [[ $host_mode == "$mode" ]] && return 0
@@ -158,7 +149,6 @@ ensure_host() {
   host_mode=$mode
 }
 
-# The host issues a new password after each session; the next viewer needs the next one.
 next_password() {
   local password
   password=$(wait_for_host_line 'Access password' $((passwords_used + 1)) 60) ||
@@ -167,12 +157,10 @@ next_password() {
   (umask 077 && printf '%s\n' "$password" >"$out/password")
 }
 
-# How many lines the host's log has; a case's own lines come after it.
 log_mark() {
   fetch "$peer_host_log" "$host_log" 2>/dev/null || true
   wc -l <"$host_log" | tr -d ' '
 }
-# Waits up to 30s for the helper to report Winlogon and then Default after line MARK.
 winlogon_then_default() {
   local mark=$1 deadline=$((SECONDS + 30))
   while ((SECONDS < deadline)); do
@@ -188,7 +176,6 @@ winlogon_then_default() {
 }
 
 view_pid='' view_log=''
-# Starts `dari-check secure-view` for a case, with the host's next password.
 start_viewer() {
   local name=$1
   shift
@@ -219,7 +206,6 @@ wait_for_viewer() {
   done
 }
 
-# Waits for the viewer to exit; fails unless all its checks passed.
 finish_viewer() {
   local code=0
   wait "$view_pid" || code=$?
@@ -228,9 +214,7 @@ finish_viewer() {
   ((code == 0)) || { echo "the viewer's checks failed (exit $code)"; return 1; }
 }
 
-# Clears result.txt and asks to elevate from a medium-integrity task, which shows the prompt.
 show_uac() { secure clear-result >/dev/null && start_secure uac; }
-# Waits for the uac task to end (the prompt is gone and cmd.exe is done), then reads result.txt.
 uac_result() {
   script interactive.ps1 wait -Name secure-uac -TimeoutSeconds 60 >/dev/null || true
   secure result | value_of result
@@ -241,7 +225,6 @@ expect_result() {
   [[ $result == "$1" ]] || { echo "result.txt: ${result:-unknown}, expected $1"; return 1; }
 }
 
-# The viewer answers the prompt with KEYS; result.txt must then be EXPECTED.
 answer_case() {
   local name=$1 keys=$2 expected=$3 mark
   shift 3
@@ -257,10 +240,8 @@ answer_case() {
   winlogon_then_default "$mark"
 }
 
-# How long the viewer's keys get to answer a prompt they must not answer.
 answer_grace=5
 
-# The viewer sends Alt+Y, which must not reach the prompt; the script then dismisses it.
 unanswered_case() {
   local name=$1 mode=$2
   shift 2
@@ -288,7 +269,6 @@ policy_off_case() {
   return "$code"
 }
 
-# The helper's release count from DariService's log entries after record MARK, waiting up to 30s.
 helper_release() {
   local mark=$1 events=$2 deadline=$((SECONDS + 30)) released
   while ((SECONDS < deadline)); do
@@ -317,7 +297,6 @@ drop_case() {
     { echo "DariService's log shows no 'helper: released N held inputs'"; return 1; }
   echo "  the helper released $released held inputs"
   ((released >= 1)) || { echo "the helper released $released held inputs, not at least 1"; return 1; }
-  # The prompt is still up; a new session answers it.
   start_viewer "$name-esc" --screen "$name-esc:present=esc" || return 1
   wait_for_viewer "SEEN $name-esc" || return 1
   wait_for_viewer "SENT $name-esc" || return 1
@@ -327,7 +306,6 @@ drop_case() {
   winlogon_then_default "$log"
 }
 
-# Prints the virtual-key codes down on Default, as a medium-integrity program there sees them.
 keys_down() {
   start_secure keys-down >/dev/null || return 1
   script interactive.ps1 wait -Name secure-keys-down -TimeoutSeconds 60 >/dev/null || return 1
@@ -347,7 +325,6 @@ helper_killed_case() {
   wait_for_viewer "NOTICE $name" || return 1
   secure cancel-uac || return 1
   wait_for_viewer "BACK $name" || return 1
-  # The viewer still holds F20 and keeps the session open until the check is done.
   down=$(keys_down) || { echo "could not read the keys down"; return 1; }
   touch "$finish"
   finish_viewer || return 1
@@ -369,7 +346,6 @@ unlock() {
   script interactive.ps1 running -Name secure-host || { echo "the host task stopped"; return 1; }
 }
 
-# Whatever happened, no log may hold the password the viewer typed.
 lock_case() {
   local code=0 leaked
   unlock || code=$?
@@ -392,7 +368,6 @@ run_case() {
   esac
 }
 
-# After a failed case: no viewer, no prompt, and no prompt task left for the next case.
 recover() {
   local task
   if [[ -n $view_pid ]]; then

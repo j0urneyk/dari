@@ -4,33 +4,18 @@ use std::time::Duration;
 use dari_input::{Injector, InputBackend};
 use dari_proto::{InputDesktop, OsInput};
 
-/// How often the input thread checks the input desktop while no input arrives.
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The OS under the helper's input thread.
 pub(crate) trait InputDesk {
-    /// The input desktop now, or `None` while it can't be read.
     fn input_desktop(&mut self) -> Option<InputDesktop>;
-    /// Attaches the calling thread to the input desktop. Fails if it is no longer `desktop`.
     fn attach(&mut self, desktop: &InputDesktop) -> Result<(), String>;
 }
 
-/// What the input thread reports. Counts only: what was held may spell a password.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Note {
-    Released {
-        count: usize,
-        on: InputDesktop,
-    },
-    /// Reported once per desktop until an attach succeeds.
-    AttachFailed {
-        to: InputDesktop,
-        error: String,
-    },
-    /// Reported for the first failure only.
-    ReplayFailed {
-        on: InputDesktop,
-    },
+    Released { count: usize, on: InputDesktop },
+    AttachFailed { to: InputDesktop, error: String },
+    ReplayFailed { on: InputDesktop },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +25,6 @@ enum Attachment {
     Failed(InputDesktop),
 }
 
-/// Replays the app's input on the input desktop, and holds the helper's only record of what it
-/// holds there.
 #[derive(Debug)]
 pub(crate) struct Follower<D: InputDesk, B: InputBackend> {
     desk: D,
@@ -60,8 +43,6 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         }
     }
 
-    /// Follows the input desktop, then replays `input` if this thread is attached to a desktop
-    /// other than `Default`.
     pub(crate) fn step(&mut self, input: Option<&OsInput>) -> Vec<Note> {
         let mut notes = Vec::new();
         if let Some(desktop) = self.desk.input_desktop()
@@ -99,14 +80,11 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         }
     }
 
-    /// Releases what is held, on the desktop this thread attached to last, and returns how many.
     pub(crate) fn finish(mut self) -> usize {
         self.injector.release_all()
     }
 }
 
-/// Replays `inputs` until every sender is gone, following the input desktop meanwhile. Returns
-/// how many held inputs it released at the end.
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
     inputs: &mpsc::Receiver<OsInput>,
@@ -145,7 +123,6 @@ mod tests {
 
     type Timeline = Arc<Mutex<Vec<Happened>>>;
 
-    /// Reports `desktops` in turn, then the last one forever. Fails the next `failing` attaches.
     #[derive(Debug)]
     struct ScriptedDesk {
         desktops: VecDeque<Option<InputDesktop>>,

@@ -111,8 +111,6 @@ impl SecureDesktopLink {
     }
 }
 
-/// The input thread's handle on a link. It doesn't keep the link open, so dropping the link
-/// still stops the helper while the input thread runs.
 #[derive(Debug, Clone)]
 pub(crate) struct SecureInput {
     commands: mpsc::WeakUnboundedSender<LinkCommand>,
@@ -124,7 +122,6 @@ impl SecureInput {
         self.view.route().1
     }
 
-    /// Hands `input` to the helper; `false` once the session dropped the link.
     pub(crate) fn send(&self, input: OsInput) -> bool {
         self.commands
             .upgrade()

@@ -1,6 +1,3 @@
-//! Where the viewer's input goes: the user's desktop, or the secure-desktop helper while it
-//! shows a desktop the app can't reach.
-
 use dari_input::{InjectError, InputBackend, InputSession};
 use dari_proto::{KeyCode, MouseButton, OsInput};
 use tracing::info;
@@ -13,8 +10,6 @@ pub(crate) enum Target {
     Helper,
 }
 
-/// Sends each input call to its target. Only [`follow_route`] changes the target, through
-/// [`InputSession::retarget`], so everything held is released through the old target first.
 pub(crate) struct Router {
     local: Box<dyn InputBackend>,
     secure: Option<SecureInput>,
@@ -89,9 +84,8 @@ impl InputBackend for Router {
     }
 }
 
-/// Points `session` at the target the link's route asks for. Called before each command, which
-/// is soon enough: Windows clears key state when the input desktop switches, so a release that
-/// waits for the next event finds nothing left to undo.
+/// Called before each command, which is soon enough: Windows clears key state when the input
+/// desktop switches, so a release that waits for the next event finds nothing left to undo.
 pub(crate) fn follow_route(session: &mut InputSession<Router>) {
     let wanted = session.backend().wanted();
     if wanted != session.backend().target {
@@ -326,7 +320,6 @@ mod tests {
         assert_eq!(driver.command().now_or_never(), Some(None));
     }
 
-    /// Which keys and buttons a stream of calls leaves down.
     #[derive(Default)]
     struct Held(HashSet<String>);
 
@@ -359,7 +352,6 @@ mod tests {
         }
     }
 
-    /// xorshift64: the sequences only need to be varied and repeatable.
     struct Sequence(u64);
 
     impl Sequence {

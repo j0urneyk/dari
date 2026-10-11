@@ -54,7 +54,6 @@ impl EnigoBackend {
     pub fn new() -> Result<Self, InjectError> {
         let settings = Settings {
             open_prompt_to_get_permissions: true,
-            // `Injector` releases exactly what the remote side held.
             release_keys_when_dropped: false,
             ..Settings::default()
         };

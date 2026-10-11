@@ -510,7 +510,6 @@ for host in a b; do
   if selected "$host-host-audio"; then run_audio_case "$host-host-audio" "$host"; fi
 done
 
-# The installed app on a Windows peer hosts, and this machine answers its secure screens.
 run_secure_case() {
   local side=$1 name="$1-host-secure" secure_args
   echo

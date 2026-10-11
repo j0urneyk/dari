@@ -65,7 +65,6 @@ Function DariSecureDesktopPageLeave
 FunctionEnd
 Function DariReadSecureDesktopControl
   ${IfThen} $DariSecureDesktopControl != "" ${|} Return ${|}
-  ; The service's rule: missing or DWORD 1 is on, and any other value of any type is off.
   ; ReadRegDWORD can't tell a missing value from one of a type it can't read, so look for the name.
   StrCpy $DariSecureDesktopControl "on"
   ClearErrors

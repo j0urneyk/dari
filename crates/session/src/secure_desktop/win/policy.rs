@@ -1,6 +1,3 @@
-//! The host settings' view of the `SecureDesktopControl` policy. Only `dari-service.exe policy
-//! on|off`, run elevated, writes it.
-
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
@@ -35,8 +32,6 @@ pub fn change_secure_desktop_control(to: SecureDesktopControl) -> PolicyChange {
     match run_elevated(&service, arguments) {
         Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => PolicyChange::Declined,
         Err(error) => PolicyChange::Failed(error.message()),
-        // The exit code alone can't say what the value is now; another writer, such as Group
-        // Policy, may have set it meanwhile.
         Ok(_) if read_control(LOCAL_MACHINE, POLICY_KEY) == to => PolicyChange::Changed(to),
         Ok(code) => {
             PolicyChange::Failed(format!("dari-service.exe {arguments} exited with {code}"))
@@ -51,8 +46,6 @@ fn service_exe() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Reads the policy under `root` the way the service does: a missing key or value is on, and a
-/// value that isn't a DWORD or can't be read is off.
 fn read_control(root: &Key, path: &str) -> SecureDesktopControl {
     let missing = |error: &windows::core::Error| error.code() == ERROR_FILE_NOT_FOUND.to_hresult();
     let key = match root.open(path) {
@@ -71,7 +64,6 @@ fn read_control(root: &Key, path: &str) -> SecureDesktopControl {
     }
 }
 
-/// Runs `file` with `arguments` through the `runas` verb and returns its exit code.
 fn run_elevated(file: &Path, arguments: &str) -> windows::core::Result<u32> {
     let file = wide(&file.to_string_lossy());
     let arguments = wide(arguments);

@@ -1871,7 +1871,6 @@ async fn next_input(driver: &mut LinkDriver) -> OsInput {
     }
 }
 
-/// The input the session has sent the link so far.
 fn sent_input(driver: &mut LinkDriver) -> Vec<OsInput> {
     let mut sent = Vec::new();
     while let Some(Some(command)) = driver.command().now_or_never() {

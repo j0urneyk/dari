@@ -701,7 +701,6 @@ enum Hosting {
     Failed(String),
 }
 
-/// A change to the secure-desktop policy, which waits on a UAC prompt.
 enum PolicyEdit {
     Idle,
     Changing,
@@ -720,7 +719,6 @@ pub(crate) struct HostPanel {
     /// A viewer waiting for the host user's decision.
     approval: Option<(PeerInfo, ApprovalRequest)>,
     relay: Option<RelayStatus>,
-    /// `None` where there is no secure-desktop helper, which hides the setting.
     secure_desktop_control: Option<SecureDesktopControl>,
     policy_edit: PolicyEdit,
     transfers: TransferList,
@@ -787,7 +785,6 @@ impl HostPanel {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let addresses = local_addresses();
         let permissions = LocalPermissions::check();
-        // Group Policy or an administrator may change it outside Dari.
         let control = secure_desktop_control();
         if addresses != self.addresses
             || permissions != self.permissions
@@ -1485,7 +1482,6 @@ impl HostPanel {
         style::section(text.sharing_settings, style::row_list(rows, cx), cx)
     }
 
-    /// The machine-wide secure-desktop policy, where this device has the helper.
     fn render_secure_desktop_control(&self, cx: &mut Context<Self>) -> Option<Div> {
         let control = self.secure_desktop_control?;
         let text = text();

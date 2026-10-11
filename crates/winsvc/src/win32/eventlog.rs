@@ -29,7 +29,6 @@ impl EventLog {
         self.report(EVENTLOG_ERROR_TYPE, 2, message);
     }
 
-    /// The service started a helper that may answer the secure desktop.
     pub(crate) fn input_helper_started(&self, message: &str) {
         self.report(EVENTLOG_WARNING_TYPE, 3, message);
     }
