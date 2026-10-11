@@ -18,6 +18,9 @@ pub(crate) trait SectionFactory {
     /// A section laid out for `layout` with its header written, and the value of a handle to it,
     /// valid in the app's process, that can only map it for reading.
     fn create(&mut self, layout: FrameLayout) -> io::Result<(Self::Section, u64)>;
+    /// Closes the app's handle with value `handle`, which `create` returned. Only for a handle the
+    /// app can never have read, or the value may name another of the app's handles by now.
+    fn close_in_app(&mut self, handle: u64) -> io::Result<()>;
 }
 
 /// The helper's writable view of one section. Dropping it closes the helper's view and handle.
@@ -194,6 +197,7 @@ mod tests {
         sent: Vec<HelperToApp>,
         sections: Vec<TestSection>,
         last_section: Option<usize>,
+        closed_in_app: Vec<u64>,
         owned: Option<(usize, FrameSlot)>,
         fills: HashMap<u64, u8>,
     }
@@ -267,6 +271,11 @@ mod tests {
                 world: self.0.clone(),
             };
             Ok((section, u64::try_from(id).unwrap() + 1))
+        }
+
+        fn close_in_app(&mut self, handle: u64) -> io::Result<()> {
+            self.0.borrow_mut().closed_in_app.push(handle);
+            Ok(())
         }
     }
 
@@ -510,6 +519,31 @@ mod tests {
                     .any(|message| matches!(message, HelperToApp::Frame { sequence: 2, .. })),
                 "{sent:?}"
             );
+        }
+    }
+
+    #[derive(Debug)]
+    struct Failing(io::ErrorKind);
+
+    impl Outbox for Failing {
+        fn send(&mut self, _message: HelperToApp) -> io::Result<()> {
+            Err(self.0.into())
+        }
+    }
+
+    #[test]
+    fn a_section_sent_into_a_closed_pipe_is_closed_in_the_app_but_one_that_timed_out_is_not() {
+        for (failure, closed) in [
+            (io::ErrorKind::BrokenPipe, vec![1]),
+            (io::ErrorKind::TimedOut, vec![]),
+        ] {
+            let world = Shared::default();
+            let mut channel = AppChannel::new(Failing(failure), Factory(world.clone()));
+            let error = channel.offer(layout(2, 1), 1, fill(1)).unwrap_err();
+            assert_eq!(error.kind(), failure);
+            let world = world.borrow();
+            assert_eq!(world.closed_in_app, closed, "{failure:?}");
+            assert!(!world.sections[0].open, "{failure:?}");
         }
     }
 
