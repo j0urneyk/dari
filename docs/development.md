@@ -353,25 +353,46 @@ meanwhile.
 C:\dari-check\src\scripts\crosscheck\windows\squat-service-pipe.ps1 -HoldSeconds 120
 ```
 
-`secure-desktop.sh` checks that a viewer on this Mac sees the VM's secure screens. It needs UAC on and a per-machine
-install of the build under test. The script starts the installed `dari.exe host` at medium integrity, so
-`DariService` and its helper are real, and runs `dari-check secure-view` here. For each case it shows a secure screen
-in the VM, waits for the viewer to see it settle, saves the frame, and waits for the desktop to come back:
+`secure-desktop.sh` checks that a viewer on this Mac can see and answer the VM's secure screens. It needs UAC on and
+a per-machine install of the build under test. The script starts the installed `dari.exe host` at medium integrity,
+so `DariService` and its helper are real. Each case connects its own `dari-check secure-view` from this Mac, so each
+case is a new session with a new helper. The script shows a secure screen in the VM. The viewer waits for it to
+settle, saves its frame, and sends the case's keys. The cases run in this order:
 
-- `uac`: a UAC prompt from a medium-integrity task, cancelled over SSH by ending `consent.exe`, because the viewer
-  can't answer it before #47.
-- `--lock`: the lock screen. Unlock the VM by hand in the UTM window when the script asks.
-- `--second-display`: while each screen is up, the viewer also selects the second display (`vm/add-second-display.sh`)
-  and checks that it shows the secure desktop too.
-- `--helper-killed`: during a UAC prompt the script ends the helper. The viewer must get the secure-desktop notice,
-  then the desktop after the prompt closes, and the session must go on. It runs last.
+- `uac-allow`: a medium-integrity task asks to elevate `cmd.exe /c whoami /groups > result.txt`, and the viewer
+  answers the UAC prompt with Alt+Y. The case passes when `result.txt` holds the High Mandatory Level SID
+  (`S-1-16-12288`) and the host log shows the helper's `DesktopChanged(Winlogon)` and then `DesktopChanged(Default)`.
+  Windows names that label in the display language, so the script matches the SID.
+- `uac-deny`: the same prompt, answered with Esc. The case passes when no `result.txt` exists and the helper reports
+  `Winlogon` and then `Default`.
+- `secure-second-display`: `uac-allow`, with Alt+Y sent while the viewer has the second display selected. It runs
+  only with `--second-display`.
+- `drop-mid-prompt`: the viewer holds Alt on the prompt and disconnects. The case passes when DariService's
+  Application log shows `helper: released N held inputs` with N of 1 or more, and Esc from a new viewer still cancels
+  the prompt. The new viewer uses the next password the host prints.
+- `helper-killed`: the viewer holds F20, and the script ends the helper. The viewer must get the secure-desktop
+  notice. After the script cancels the prompt, a medium-integrity task on `Default` must find no key down with
+  `GetAsyncKeyState` while the viewer still holds F20. F20 has no Windows binding, so a key that a bug leaves down
+  doesn't change what later cases type.
+- `secure-policy-off`: the script runs `dari-service.exe policy off` over SSH, and the viewer sends Alt+Y. The case
+  passes when the viewer saw the prompt and no `result.txt` exists. The script cancels the prompt itself. It runs
+  `policy on` after the case and again when it exits.
+- `secure-view-only`: the same steps against `dari.exe host --view-only`.
+- `lock-unlock`: the script locks the VM. The viewer clicks the lock screen, types the VM user's password from
+  `~/.dari-check-vm/password` (`--vm-password` names another file), and presses Enter. The case passes when the
+  helper reports `Winlogon` and then `Default` and the host's task still runs. The viewer saves no frame once it
+  starts typing and ignores `RUST_LOG`. The case fails if any log in the output directory holds the password.
 
-The viewer's frames and both logs go to `target/crosscheck/secure-<time>/`. The script also checks the host log for
-the helper's `DesktopChanged(Winlogon)` and `DesktopChanged(Default)`.
+`--cases` picks a subset. `--second-display` says that the VM has a second display (`vm/add-second-display.sh`).
+Every viewer then expects two displays and checks that both show each screen. After a failed case, the script
+cancels any open prompt and goes on with the next case. The frames and logs go to `target/crosscheck/secure-<time>/`.
 
 ```bash
-scripts/crosscheck/secure-desktop.sh --b windows:dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --second-display --helper-killed
+scripts/crosscheck/secure-desktop.sh --b windows:dari@192.168.64.5 --identity ~/.dari-check-vm/id_ed25519 --known-hosts ~/.dari-check-vm/known_hosts --second-display
 ```
+
+`crosscheck.sh` runs the same script when `--cases` names `b-host-secure` (or `a-host-secure`). It passes that peer's
+address and the SSH options. `--b-displays 2` adds `--second-display`, and `--secure-cases` picks the subset.
 
 Don't remove the VM's CD drives: that moves the system disk to another PCI address and Windows stops booting.
 
