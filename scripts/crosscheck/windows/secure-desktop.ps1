@@ -120,8 +120,10 @@ public static extern short GetAsyncKeyState(int key);
     }
     'policy' {
         if (-not $State) { throw 'policy needs -State on or -State off' }
-        & $service policy $State
-        if ($LASTEXITCODE) { throw "dari-service.exe policy $State exited with $LASTEXITCODE" }
+        # dari-service.exe is a GUI program, so the call operator neither waits for it nor sets
+        # $LASTEXITCODE.
+        $change = Start-Process -FilePath $service -ArgumentList 'policy', $State -Wait -PassThru -NoNewWindow
+        if ($change.ExitCode) { throw "dari-service.exe policy $State exited with $($change.ExitCode)" }
         $stored = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Dari' -Name SecureDesktopControl -ErrorAction SilentlyContinue
         Write-Output "SecureDesktopControl: $($stored.SecureDesktopControl)"
     }
