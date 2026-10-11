@@ -149,8 +149,9 @@ that, so the rule holds without anyone remembering it.
 5. The helper reports every input desktop change. While `Default` is the input desktop, the app captures and injects
    as it does today. While `Winlogon` is, the app's capture stream reads frames from the helper, and its input goes
    to the helper.
-6. When the session ends, the app closes both pipes. The helper releases every key and button it holds and exits
-   when its pipe closes, so no SYSTEM process stays in the user's session between sessions.
+6. When the session ends, the app sends `Stop` and closes both pipes once the helper has closed its own. The helper
+   releases every key and button it holds and exits on `Stop` or when its pipe closes, so no SYSTEM process stays in
+   the user's session between sessions.
 
 The connection to the helper belongs to the host session, not to the capturer. `host_session.rs` stops and
 respawns the capture thread on `SelectDisplay`, `SetQuality`, and `SetFrameRate`, and `open_capturer` runs inside
@@ -281,7 +282,7 @@ that holds them.
 | Pipe and server | From app | To app |
 | --- | --- | --- |
 | `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
-| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
+| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame`, `Stop` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
 doesn't stop another process from creating the name first. It makes the server's own creation fail loudly when that

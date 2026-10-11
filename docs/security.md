@@ -182,8 +182,8 @@ the input desktop with no desktop-specific access rights, which is enough to nam
 and `Default`. Injecting input there (#47) will need `DESKTOP_JOURNALPLAYBACK` on the input thread's own handle. Its
 first event log entry lists its user, integrity level, session, and privileges. It inherits only the app's process
 handle, runs in a job that ends it when the service exits, loads DLLs only from System32, creates no windows, and exits
-when its pipe closes or the app exits. `dari-service.exe` has no console, because a console program started as SYSTEM
-opens a console window on the user's desktop.
+when the app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console
+program started as SYSTEM opens a console window on the user's desktop.
 
 Code running as the signed-in user can do what `dari.exe` can, including talking to the service and the helper as if it
 were the app. The image check stops other programs, not code injected into Dari. Such code can start `dari.exe`, inject

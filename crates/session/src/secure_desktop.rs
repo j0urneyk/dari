@@ -32,8 +32,8 @@ pub enum LinkCommand {
     SelectDisplay(u32),
 }
 
-/// A live link to the helper, which lives as long as the session holds it. Dropping it closes
-/// the helper's pipe, and the helper exits.
+/// A live link to the helper, which lives as long as the session holds it. Dropping it stops
+/// the helper.
 #[derive(Debug)]
 pub struct SecureDesktopLink {
     events: mpsc::UnboundedReceiver<SecureDesktopEvent>,
