@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::frame_section::{FrameLayout, FrameSlot};
-use crate::input::InputEvent;
+use crate::input::{KeyCode, MouseButton, validate_key, validate_scroll, validate_text};
 use crate::validate::{Validate, ValidationError, sanitize_display_text, validate_display_text};
 
 /// Largest frame on either local pipe.
@@ -18,6 +18,8 @@ pub const SERVICE_PIPE: &str = r"\\.\pipe\dari-service";
 /// on a pipe is `FILE_CREATE_PIPE_INSTANCE` and would let a client create instances of the
 /// server's pipe.
 pub const PIPE_CLIENT_RIGHTS: u32 = 0x0012_008b;
+/// Largest pointer coordinate, of either sign, in an [`OsInput::Move`].
+pub const MAX_OS_COORDINATE: i32 = 131_072;
 /// Longest desktop name the helper reports.
 pub const MAX_DESKTOP_NAME_CHARS: usize = 64;
 
@@ -146,12 +148,117 @@ pub enum Refusal {
     NoHelper,
     /// The service accepted the client but couldn't do what it asked.
     Failed,
+    /// The machine's [`SecureDesktopControl`] policy is off.
+    PolicyOff,
+}
+
+/// Under `HKLM`, the key that holds [`POLICY_VALUE`].
+pub const POLICY_KEY: &str = r"SOFTWARE\Policies\Dari";
+/// The DWORD that stores [`SecureDesktopControl`].
+pub const POLICY_VALUE: &str = "SecureDesktopControl";
+
+/// Whether this machine lets a viewer answer UAC prompts and the lock screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureDesktopControl {
+    On,
+    Off,
+}
+
+impl SecureDesktopControl {
+    /// `None` is a missing value. Missing or 1 is `On`; anything else is `Off`, so a garbled
+    /// value fails closed. The caller reads a value of another type, or an unreadable key, as a
+    /// value other than 1.
+    pub fn from_stored(value: Option<u32>) -> Self {
+        match value {
+            None | Some(1) => Self::On,
+            Some(_) => Self::Off,
+        }
+    }
+
+    /// Whether a helper gets input: only when the app asked for it and the policy is on.
+    pub fn helper_input(self, requested: bool) -> bool {
+        requested && self == Self::On
+    }
+
+    pub fn as_stored(self) -> u32 {
+        match self {
+            Self::On => 1,
+            Self::Off => 0,
+        }
+    }
+}
+
+/// One `InputBackend` call, as the app's input thread made it, for the helper to replay. `Move`
+/// is in physical virtual-desktop pixels, so the helper needs no display geometry.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OsInput {
+    Move {
+        x: i32,
+        y: i32,
+    },
+    Button {
+        button: MouseButton,
+        pressed: bool,
+    },
+    /// Wheel lines; positive scrolls down/right.
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
+    Key {
+        key: KeyCode,
+        pressed: bool,
+    },
+    Text(String),
+}
+
+/// Leaves out keys and text: the lock screen's password goes through here.
+impl fmt::Debug for OsInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Move { x, y } => f.debug_struct("Move").field("x", x).field("y", y).finish(),
+            Self::Button { button, pressed } => f
+                .debug_struct("Button")
+                .field("button", button)
+                .field("pressed", pressed)
+                .finish(),
+            Self::Scroll { dx, dy } => f
+                .debug_struct("Scroll")
+                .field("dx", dx)
+                .field("dy", dy)
+                .finish(),
+            Self::Key { pressed, .. } => f
+                .debug_struct("Key")
+                .field("pressed", pressed)
+                .finish_non_exhaustive(),
+            Self::Text(_) => f.write_str("Text(..)"),
+        }
+    }
+}
+
+impl Validate for OsInput {
+    fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Move { x, y } => {
+                let max = MAX_OS_COORDINATE.unsigned_abs();
+                if x.unsigned_abs() > max || y.unsigned_abs() > max {
+                    Err(ValidationError::InvalidValue { field: "move" })
+                } else {
+                    Ok(())
+                }
+            }
+            Self::Button { .. } => Ok(()),
+            Self::Scroll { dx, dy } => validate_scroll(*dx, *dy),
+            Self::Key { key, .. } => validate_key(*key),
+            Self::Text(text) => validate_text(text),
+        }
+    }
 }
 
 /// From the app to the helper, on the app's `dari-helper-...` pipe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AppToHelper {
-    Input(InputEvent),
+    Input(OsInput),
     /// Capture the display with this ID, as the viewer names displays.
     SelectDisplay(u32),
     /// The credit: "I copied or discarded the frame of your last [`HelperToApp::Frame`]; that
@@ -169,7 +276,7 @@ pub enum AppToHelper {
 impl Validate for AppToHelper {
     fn validate(&self) -> Result<(), ValidationError> {
         match self {
-            Self::Input(event) => event.validate(),
+            Self::Input(input) => input.validate(),
             Self::SelectDisplay(_) | Self::RequestFrame | Self::Stop => Ok(()),
         }
     }
@@ -323,7 +430,7 @@ mod tests {
     use tokio_util::codec::{Decoder, Encoder};
 
     use super::*;
-    use crate::input::{KeyCode, MAX_INPUT_TEXT_CHARS, NamedKey};
+    use crate::input::{MAX_FUNCTION_KEY, MAX_INPUT_TEXT_CHARS, MAX_SCROLL_LINES, NamedKey};
     use crate::{CodecError, MessageCodec};
 
     fn pipe() -> HelperPipeName {
@@ -382,13 +489,32 @@ mod tests {
             Refusal::HelperRunning,
             Refusal::NoHelper,
             Refusal::Failed,
+            Refusal::PolicyOff,
         ] {
             round_trip(&ServiceReply::Refused(refusal));
         }
-        round_trip(&AppToHelper::Input(InputEvent::Key {
-            key: KeyCode::Named(NamedKey::Alt),
-            pressed: true,
-        }));
+        for input in [
+            OsInput::Move {
+                x: -MAX_OS_COORDINATE,
+                y: MAX_OS_COORDINATE,
+            },
+            OsInput::Button {
+                button: MouseButton::Forward,
+                pressed: true,
+            },
+            OsInput::Scroll { dx: -100, dy: 100 },
+            OsInput::Key {
+                key: KeyCode::Named(NamedKey::Alt),
+                pressed: true,
+            },
+            OsInput::Key {
+                key: KeyCode::Character('ㅎ'),
+                pressed: false,
+            },
+            OsInput::Text("암호 123".into()),
+        ] {
+            round_trip(&AppToHelper::Input(input));
+        }
         round_trip(&AppToHelper::SelectDisplay(65_537));
         round_trip(&AppToHelper::RequestFrame);
         round_trip(&AppToHelper::Stop);
@@ -501,13 +627,40 @@ mod tests {
     }
 
     #[test]
-    fn invalid_input_events_fail_on_the_helper_pipe() {
-        let too_long = AppToHelper::Input(InputEvent::Text("x".repeat(MAX_INPUT_TEXT_CHARS + 1)));
-        let no_such_key = AppToHelper::Input(InputEvent::Key {
-            key: KeyCode::Named(NamedKey::Function(0)),
-            pressed: true,
-        });
-        for message in [too_long, no_such_key] {
+    fn invalid_input_fails_on_the_helper_pipe() {
+        let invalid = [
+            OsInput::Move {
+                x: MAX_OS_COORDINATE + 1,
+                y: 0,
+            },
+            OsInput::Move {
+                x: 0,
+                y: -MAX_OS_COORDINATE - 1,
+            },
+            OsInput::Move { x: i32::MIN, y: 0 },
+            OsInput::Scroll { dx: 0, dy: 101 },
+            OsInput::Scroll {
+                dx: i32::MIN,
+                dy: 0,
+            },
+            OsInput::Key {
+                key: KeyCode::Named(NamedKey::Function(0)),
+                pressed: true,
+            },
+            OsInput::Key {
+                key: KeyCode::Named(NamedKey::Function(MAX_FUNCTION_KEY + 1)),
+                pressed: false,
+            },
+            OsInput::Key {
+                key: KeyCode::Character('\u{7}'),
+                pressed: true,
+            },
+            OsInput::Text(String::new()),
+            OsInput::Text("x".repeat(MAX_INPUT_TEXT_CHARS + 1)),
+            OsInput::Text("line\nbreak".into()),
+        ];
+        for input in invalid {
+            let message = AppToHelper::Input(input);
             assert!(
                 matches!(
                     decode::<AppToHelper>(encode(&message)),
@@ -516,6 +669,91 @@ mod tests {
                 "{message:?}"
             );
         }
+        let valid = [
+            OsInput::Move {
+                x: MAX_OS_COORDINATE,
+                y: -MAX_OS_COORDINATE,
+            },
+            OsInput::Scroll {
+                dx: -i32::from(MAX_SCROLL_LINES),
+                dy: i32::from(MAX_SCROLL_LINES),
+            },
+            OsInput::Key {
+                key: KeyCode::Named(NamedKey::Function(MAX_FUNCTION_KEY)),
+                pressed: true,
+            },
+            OsInput::Text("x".repeat(MAX_INPUT_TEXT_CHARS)),
+        ];
+        for input in valid {
+            assert!(input.validate().is_ok(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn debug_output_leaves_out_keys_and_text() {
+        let printed = format!(
+            "{:?}",
+            [
+                AppToHelper::Input(OsInput::Key {
+                    key: KeyCode::Character('q'),
+                    pressed: true,
+                }),
+                AppToHelper::Input(OsInput::Key {
+                    key: KeyCode::Named(NamedKey::Backspace),
+                    pressed: false,
+                }),
+                AppToHelper::Input(OsInput::Text("hunter2".into())),
+            ]
+        );
+        for secret in ["'q'", "Character", "Backspace", "Named", "hunter2"] {
+            assert!(!printed.contains(secret), "{printed}");
+        }
+        assert!(printed.contains("Key { pressed: true, .. }"), "{printed}");
+        assert!(printed.contains("Text(..)"), "{printed}");
+        assert_eq!(
+            format!("{:?}", OsInput::Move { x: -5, y: 7 }),
+            "Move { x: -5, y: 7 }"
+        );
+    }
+
+    #[test]
+    fn refusals_keep_their_wire_indexes() {
+        assert_eq!(postcard::to_allocvec(&Refusal::Failed).unwrap(), [4]);
+        assert_eq!(
+            postcard::to_allocvec(&ServiceReply::Refused(Refusal::Failed)).unwrap(),
+            [1, 4]
+        );
+        assert_eq!(postcard::to_allocvec(&Refusal::PolicyOff).unwrap(), [5]);
+    }
+
+    #[test]
+    fn a_missing_or_1_policy_is_on_and_anything_else_is_off() {
+        use SecureDesktopControl::{Off, On};
+        for (stored, control) in [
+            (None, On),
+            (Some(1), On),
+            (Some(0), Off),
+            (Some(2), Off),
+            (Some(u32::MAX), Off),
+        ] {
+            assert_eq!(
+                SecureDesktopControl::from_stored(stored),
+                control,
+                "{stored:?}"
+            );
+        }
+        for control in [On, Off] {
+            assert_eq!(
+                SecureDesktopControl::from_stored(Some(control.as_stored())),
+                control
+            );
+        }
+        assert_eq!(On.as_stored(), 1);
+        assert_eq!(Off.as_stored(), 0);
+        assert!(On.helper_input(true));
+        assert!(!On.helper_input(false));
+        assert!(!Off.helper_input(true));
+        assert!(!Off.helper_input(false));
     }
 
     #[test]
