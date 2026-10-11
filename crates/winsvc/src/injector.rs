@@ -13,7 +13,7 @@ pub(crate) trait InputDesk {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Note {
-    Released { count: usize, on: InputDesktop },
+    Forgot { count: usize, on: InputDesktop },
     AttachFailed { to: InputDesktop, error: String },
     ReplayFailed { on: InputDesktop },
 }
@@ -63,24 +63,41 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         notes
     }
 
-    fn attach(&mut self, desktop: InputDesktop) -> Option<Note> {
+    fn attach(&mut self, desktop: InputDesktop) -> Vec<Note> {
+        let mut notes = Vec::new();
+        // Windows cleared key state at the switch, so nothing is left to release.
+        let count = self.injector.forget();
+        if count > 0 {
+            notes.push(Note::Forgot {
+                count,
+                on: desktop.clone(),
+            });
+        }
         match self.desk.attach(&desktop) {
-            Ok(()) => {
-                self.attachment = Attachment::To(desktop.clone());
-                // Windows already switched, so the key state the new desktop sees is what matters.
-                let count = self.injector.release_all();
-                (count > 0).then_some(Note::Released { count, on: desktop })
-            }
+            Ok(()) => self.attachment = Attachment::To(desktop),
             Err(error) => {
-                let repeated = self.attachment == Attachment::Failed(desktop.clone());
-                self.attachment = Attachment::Failed(desktop.clone());
-                (!repeated).then_some(Note::AttachFailed { to: desktop, error })
+                if self.attachment != Attachment::Failed(desktop.clone()) {
+                    notes.push(Note::AttachFailed {
+                        to: desktop.clone(),
+                        error,
+                    });
+                }
+                self.attachment = Attachment::Failed(desktop);
             }
         }
+        notes
     }
 
+    /// Releases what it holds when attached to a desktop that takes helper input, and forgets
+    /// it anywhere else. Returns how many inputs it released.
     pub(crate) fn finish(mut self) -> usize {
-        self.injector.release_all()
+        match &self.attachment {
+            Attachment::To(desktop) if desktop.takes_helper_input() => self.injector.release_all(),
+            Attachment::To(_) | Attachment::Failed(_) | Attachment::None => {
+                self.injector.forget();
+                0
+            }
+        }
     }
 }
 
@@ -110,7 +127,7 @@ mod tests {
     use std::time::Instant;
 
     use dari_input::{InjectError, RecordedAction, RecordingBackend};
-    use dari_proto::{DesktopName, KeyCode, MouseButton, NamedKey};
+    use dari_proto::{KeyCode, MouseButton, NamedKey};
 
     use super::*;
 
@@ -257,12 +274,8 @@ mod tests {
     }
 
     #[test]
-    fn held_input_is_released_after_attaching_to_the_next_desktop() {
-        let screen_saver = InputDesktop::Other(DesktopName::parse("Screen-saver").unwrap());
-        let (mut follower, timeline) = follower(
-            vec![WINLOGON, WINLOGON, Some(screen_saver.clone()), DEFAULT],
-            0,
-        );
+    fn held_input_is_forgotten_at_a_switch_without_injecting_anything() {
+        let (mut follower, timeline) = follower(vec![WINLOGON, WINLOGON, DEFAULT, WINLOGON], 0);
         follower.step(Some(&alt(true)));
         follower.step(Some(&OsInput::Button {
             button: MouseButton::Left,
@@ -271,25 +284,22 @@ mod tests {
         taken(&timeline);
 
         assert_eq!(
-            follower.step(Some(&alt(true))),
-            [Note::Released {
+            follower.step(Some(&alt(false))),
+            [Note::Forgot {
                 count: 2,
-                on: screen_saver.clone()
+                on: InputDesktop::Default
             }]
         );
         assert_eq!(
             taken(&timeline),
-            [
-                Happened::Attached(screen_saver),
-                Happened::Did(RecordedAction::Key(ALT, false)),
-                Happened::Did(RecordedAction::Button(MouseButton::Left, false)),
-            ]
+            [Happened::Attached(InputDesktop::Default)]
         );
 
-        assert_eq!(follower.step(Some(&alt(false))), []);
+        assert_eq!(follower.step(None), []);
+        assert_eq!(follower.finish(), 0);
         assert_eq!(
             taken(&timeline),
-            [Happened::Attached(InputDesktop::Default)]
+            [Happened::Attached(InputDesktop::Winlogon)]
         );
     }
 
@@ -329,19 +339,31 @@ mod tests {
     }
 
     #[test]
-    fn what_was_held_before_a_failed_attach_is_released_after_the_next_one() {
+    fn what_was_held_is_forgotten_even_when_the_attach_fails() {
         let (mut follower, timeline) = follower(vec![WINLOGON, DEFAULT, DEFAULT], 0);
         follower.step(Some(&alt(true)));
         follower.desk.failing = 1;
+        assert_eq!(
+            follower.step(None),
+            [
+                Note::Forgot {
+                    count: 1,
+                    on: InputDesktop::Default
+                },
+                Note::AttachFailed {
+                    to: InputDesktop::Default,
+                    error: "access denied".into()
+                },
+            ]
+        );
         follower.step(None);
-        follower.step(None);
+        assert_eq!(follower.finish(), 0);
         assert_eq!(
             taken(&timeline),
             [
                 Happened::Attached(InputDesktop::Winlogon),
                 Happened::Did(RecordedAction::Key(ALT, true)),
                 Happened::Attached(InputDesktop::Default),
-                Happened::Did(RecordedAction::Key(ALT, false)),
             ]
         );
     }

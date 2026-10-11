@@ -404,10 +404,11 @@ The helper makes itself Per-Monitor V2 DPI aware before it starts any thread, as
 thread hands each `Input` to the input thread over a queue of 64 and drops input when the queue is full. The input
 thread (`injector.rs`, which has no `unsafe` and is tested on every platform) checks the input desktop every 100 ms
 while idle and before each event. When the desktop changes, it opens a new handle with only
-`DESKTOP_JOURNALPLAYBACK`, attaches to it with `SetThreadDesktop`, and releases what its `Injector` holds. It replays
+`DESKTOP_JOURNALPLAYBACK`, attaches to it with `SetThreadDesktop`, and forgets what its `Injector` holds without injecting anything, because
+Windows cleared key state at the switch. It replays
 input through the `Injector` and `EnigoBackend` only while it is attached to `Winlogon`, and
-drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits, the thread releases what it
-holds and the helper logs how many inputs it released and why. A helper started without input has no input thread
+drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits while the thread is attached to
+`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. A helper started without input has no input thread
 and drops every `Input`.
 
 The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request

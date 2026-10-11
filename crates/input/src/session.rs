@@ -78,6 +78,15 @@ impl<B: InputBackend> Injector<B> {
         released
     }
 
+    /// Clears the held set without calling the backend, and returns how many there were. For when
+    /// the OS already let go of them, as Windows does when the input desktop switches.
+    pub fn forget(&mut self) -> usize {
+        let forgotten = self.held();
+        self.held_keys.clear();
+        self.held_buttons.clear();
+        forgotten
+    }
+
     /// Makes the one backend call `input` describes.
     pub fn replay(&mut self, input: &OsInput) -> Result<(), InjectError> {
         match input {
@@ -409,6 +418,21 @@ mod tests {
                 (0, RecordedAction::Button(MouseButton::Right, false)),
             ]
         );
+    }
+
+    #[test]
+    fn a_forgotten_injector_sends_nothing_then_or_when_dropped() {
+        let backend = Routed::default();
+        let log = Rc::clone(&backend.log);
+        let mut injector = Injector::new(backend);
+        injector.key(KeyCode::Named(NamedKey::Shift), true).unwrap();
+        injector.button(MouseButton::Left, true).unwrap();
+        log.borrow_mut().clear();
+        assert_eq!(injector.forget(), 2);
+        assert_eq!(injector.held(), 0);
+        assert_eq!(injector.release_all(), 0);
+        drop(injector);
+        assert_eq!(*log.borrow(), []);
     }
 
     #[test]

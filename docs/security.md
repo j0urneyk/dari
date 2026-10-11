@@ -191,9 +191,10 @@ System32, creates no windows, and exits when the app sends `Stop`, its pipe clos
 program started as SYSTEM opens a console window on the user's desktop.
 
 Keys held on the secure desktop don't stay down. Before the app moves input between the user's desktop and the
-helper, it releases every held key and button through the old route. The helper tracks what it injected itself. It
-releases it after it attaches to a new desktop, and when its input thread ends: on `Stop`, when its pipe closes, and
-when it exits. Its log names how many inputs it released and why, never which keys. Text and keys never appear in
+helper, it releases every held key and button through the old route. The helper tracks what it injected itself. At a
+desktop switch it forgets that without injecting anything, because Windows clears key state at the switch. When its
+input thread ends while it is attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it
+releases what it holds there. It never injects on `Default`, not even a release. Its log names how many inputs it released and why, never which keys. Text and keys never appear in
 the `Debug` output of the pipe's messages, because the lock screen's password goes through them.
 
 ### Same-user malware can answer its own consent prompts

@@ -179,8 +179,9 @@ Neither thread creates a window or installs a hook, because `SetThreadDesktop` f
   itself and calls `SetThreadDesktop` on the new desktop before its next capture or injection, the same idea as
   RustDesk's `try_change_desktop`. The input thread checks every 100 ms while idle and before each event.
 - Held keys need care on both sides. Before the app routes input to the new target, it releases every held key and
-  button through the old route. The helper also tracks what it holds itself. It releases it after it attaches to a
-  new desktop, and when its input thread ends: on `Stop`, when its pipe closes, and when it exits.
+  button through the old route. The helper also tracks what it holds itself. At a desktop switch it forgets what it
+  holds without sending anything, because Windows already cleared key state. When its input thread ends while it is
+  attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it releases what it holds there.
   `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
   for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt.
 - Windows clears key state at a desktop switch. In the test VM, with UAC on, a medium-integrity process pressed a
@@ -271,8 +272,9 @@ own input desktop handle with only `DESKTOP_JOURNALPLAYBACK`, attaches to it, an
 `Injector` over its own `EnigoBackend`, which moves the pointer with `SetCursorPos`. The `Injector`, in
 `dari-input`, is the held-key tracking that `InputSession` uses too. The thread injects only while it is attached to
 `Winlogon`. On `Default` the app injects as the user, and a SYSTEM injector on any desktop but the secure one would
-bypass User Interface Privilege Isolation there. If an attach fails, the thread drops input until the next attach succeeds. When
-the thread ends, it logs `helper: released N held inputs because <reason>`. It never logs key codes or text.
+bypass User Interface Privilege Isolation there. If an attach fails, the thread drops input until the next attach succeeds. At a switch it forgets what it holds and logs
+`helper: forgot N held inputs at the switch to <desktop>`. When the thread ends, it releases what it holds only if it
+is attached to `Winlogon`, and logs `helper: released N held inputs because <reason>`. It never logs key codes or text.
 
 A helper started with `input: false` has no input thread, no `Injector`, and no `DESKTOP_JOURNALPLAYBACK` handle,
 and drops every input message. That check is for app bugs. The security model explains why it doesn't stop

@@ -94,9 +94,9 @@ fn inject(inputs: &mpsc::Receiver<OsInput>) -> usize {
 
 fn describe(note: &Note) -> String {
     match note {
-        Note::Released { count, on } => {
-            format!("helper: released {count} held inputs after the switch to {on}")
-        }
+        Note::Forgot { count, on } => format!(
+            "helper: forgot {count} held inputs at the switch to {on}: Windows cleared key state"
+        ),
         Note::AttachFailed { to, error } => {
             format!("helper: dropping input: cannot attach the input thread to {to}: {error}")
         }
