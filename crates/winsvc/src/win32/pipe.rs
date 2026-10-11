@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use dari_proto::PIPE_CLIENT_RIGHTS;
 use windows::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL, LocalFree,
+    ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, HANDLE, HLOCAL, LocalFree,
+    WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -159,13 +160,8 @@ impl Pipe {
         match outcome {
             Ok(Outcome::Done(read)) => Ok(read as usize),
             Ok(Outcome::TimedOut | Outcome::Stopped) => Err(io::ErrorKind::TimedOut.into()),
-            // The other end closed its handle, or a server disconnected this client. Errors from
-            // the `windows` crate carry the HRESULT as their OS error.
-            Err(error)
-                if [ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED]
-                    .iter()
-                    .any(|closed| error.raw_os_error() == Some(closed.to_hresult().0)) =>
-            {
+            // The other end closed its handle, or a server disconnected this client.
+            Err(error) if is_os_error(&error, &[ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED]) => {
                 Ok(0)
             }
             Err(error) => Err(error),
@@ -184,7 +180,15 @@ impl Pipe {
                 },
                 timeout,
                 None,
-            )?;
+            )
+            .map_err(|error| {
+                // The other end closed its handle, so it never reads these bytes.
+                if is_os_error(&error, &[ERROR_BROKEN_PIPE, ERROR_NO_DATA]) {
+                    io::Error::new(io::ErrorKind::BrokenPipe, error)
+                } else {
+                    error
+                }
+            })?;
             match outcome {
                 Outcome::Done(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Outcome::Done(written) => bytes = &bytes[(written as usize).min(bytes.len())..],
@@ -203,6 +207,13 @@ impl AsRawHandle for Pipe {
     fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
         self.0.as_raw_handle()
     }
+}
+
+/// Errors from the `windows` crate carry the HRESULT as their OS error.
+fn is_os_error(error: &io::Error, codes: &[WIN32_ERROR]) -> bool {
+    codes
+        .iter()
+        .any(|code| error.raw_os_error() == Some(code.to_hresult().0))
 }
 
 struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
@@ -268,6 +279,17 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn a_write_after_the_server_closes_is_a_broken_pipe() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        drop(server);
+        let error = client
+            .write_all(b"late", Some(Duration::from_secs(5)))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error}");
     }
 
     #[test]

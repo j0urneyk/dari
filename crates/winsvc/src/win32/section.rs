@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use dari_proto::{FRAME_SECTION_MAGIC, FRAME_SECTION_VERSION, FrameLayout, FrameSlot};
 use windows::Win32::Foundation::{
-    DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
+    DUPLICATE_CLOSE_SOURCE, DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
@@ -34,6 +34,25 @@ impl<P: AsRawHandle> SectionFactory for AppSections<'_, P> {
         let section = Section::create(layout)?;
         let handle = section.duplicate_read_only(self.app)?;
         Ok((section, handle))
+    }
+
+    fn close_in_app(&mut self, handle: u64) -> io::Result<()> {
+        let value = usize::try_from(handle)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        // SAFETY: closes a handle in the app's process, which the service opened with
+        // PROCESS_DUP_HANDLE; nothing in this process is duplicated or closed.
+        unsafe {
+            DuplicateHandle(
+                raw(self.app),
+                HANDLE(std::ptr::with_exposed_provenance_mut(value)),
+                HANDLE::default(),
+                std::ptr::null_mut(),
+                0,
+                false,
+                DUPLICATE_CLOSE_SOURCE,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -164,7 +183,7 @@ impl Drop for Section {
 
 #[cfg(test)]
 mod tests {
-    use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows::Win32::Foundation::{CompareObjectHandles, ERROR_ACCESS_DENIED};
 
     use super::*;
     use crate::win32::open_client_process;
@@ -217,5 +236,24 @@ mod tests {
         );
         // SAFETY: the view came from `MapViewOfFile` above and `bytes` isn't used after this.
         unsafe { UnmapViewOfFile(readable).unwrap() };
+    }
+
+    #[test]
+    fn a_handle_closed_in_the_app_no_longer_names_the_section() {
+        let this = open_client_process(std::process::id()).unwrap();
+        let mut sections = AppSections::new(&this);
+        let (section, handle) = sections.create(FrameLayout::new(1, 1).unwrap()).unwrap();
+        let sent = HANDLE(std::ptr::with_exposed_provenance_mut(
+            usize::try_from(handle).unwrap(),
+        ));
+        // SAFETY: only compares the objects two handle values name; an invalid one names none.
+        let names_section = || unsafe { CompareObjectHandles(sent, raw(&section.mapping)) };
+        assert!(names_section().as_bool());
+
+        sections.close_in_app(handle).unwrap();
+        assert!(
+            !names_section().as_bool(),
+            "the app still holds the section"
+        );
     }
 }
