@@ -14,7 +14,6 @@ use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE}
 use crate::command::HelperArgs;
 use crate::frames::{MessageReader, write_message};
 use crate::limiter::RefusalLimiter;
-use crate::policy;
 use crate::slot::{self, Start};
 use crate::win32::{
     Event, EventLog, Job, Pipe, end_process, has_exited, image_path, launch_helper,
@@ -103,7 +102,7 @@ impl Server {
             exe,
             helpers: Mutex::default(),
             limiter: Mutex::new(RefusalLimiter::new(REFUSALS_PER_WINDOW, REFUSAL_WINDOW)),
-            policy: policy::read,
+            policy: SecureDesktopControl::read,
         })
     }
 

@@ -1,7 +1,8 @@
 //! Wire protocol shared by Dari hosts and viewers.
 //!
 //! This crate defines every message exchanged over a session, the protocol version rules,
-//! and a length-bounded framing codec. It performs no I/O of its own.
+//! and a length-bounded framing codec. Its only I/O is reading the secure-desktop policy from the
+//! Windows registry.
 
 mod audio;
 mod codec;
@@ -10,6 +11,8 @@ mod frame_section;
 mod handshake;
 mod input;
 mod local;
+#[cfg(windows)]
+mod registry;
 mod relay;
 mod stream;
 mod transfer;

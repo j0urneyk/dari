@@ -35,7 +35,6 @@ windows = { workspace = true, features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-windows-registry.workspace = true
 
 [dev-dependencies]
 dari-relay.workspace = true

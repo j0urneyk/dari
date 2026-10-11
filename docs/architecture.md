@@ -16,7 +16,7 @@ dari-winsvc (Windows only) ──► dari-input, dari-proto
 
 | Crate | Path | Responsibility | Key dependencies |
 | --- | --- | --- | --- |
-| `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
+| `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O but reading the secure-desktop policy from the Windows registry | serde, postcard, tokio-util, windows-registry (Windows) |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
 | `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), windows (Windows.Graphics.Capture, Direct3D 11, Media Foundation), fast_image_resize, openh264, yuv, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
@@ -413,10 +413,12 @@ drops input while an attach fails. When the app sends `Stop`, closes its pipe, o
 and drops every `Input`.
 
 The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request
-(`policy.rs`, through the safe `windows-registry` API). A missing value or 1 is on, and anything else is off. At
+through `SecureDesktopControl::read` (`crates/proto/src/registry.rs`, Windows only, through the safe
+`windows-registry` API). A missing value or a DWORD of 1 is on, and anything else is off. At
 off, `admit` turns `StartHelper { input: true }` into `input: false` and refuses `SendSas` with `PolicyOff`.
 `dari-service.exe policy on|off` writes the value and needs an administrator. The host settings' switch
-(`secure_desktop/win/policy.rs`, re-exported from `dari-session`) reads the value the same way and appears only when
+(`secure_desktop/win/policy.rs`, re-exported from `dari-session`) reads the value through the same function and
+appears only when
 `dari-service.exe` sits beside `dari.exe`. A change runs `dari-service.exe policy on|off` with `ShellExecuteExW` and
 the `runas` verb on a background thread, waits for the UAC prompt and the command, and reads the value again.
 

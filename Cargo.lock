@@ -1828,6 +1828,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio-util",
  "unicode-normalization",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
@@ -1874,7 +1875,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "windows 0.62.2",
- "windows-registry 0.6.1",
 ]
 
 [[package]]

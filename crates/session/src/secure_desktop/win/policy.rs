@@ -1,13 +1,12 @@
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
-use dari_proto::{POLICY_KEY, POLICY_VALUE, SecureDesktopControl};
-use windows::Win32::Foundation::{E_UNEXPECTED, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, HANDLE};
+use dari_proto::SecureDesktopControl;
+use windows::Win32::Foundation::{E_UNEXPECTED, ERROR_CANCELLED, HANDLE};
 use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 use windows::core::PCWSTR;
-use windows_registry::{Key, LOCAL_MACHINE, Type};
 
 use super::wide;
 use crate::secure_desktop::PolicyChange;
@@ -16,7 +15,7 @@ use crate::secure_desktop::PolicyChange;
 /// there is no helper for it to govern.
 pub fn secure_desktop_control() -> Option<SecureDesktopControl> {
     service_exe()?;
-    Some(read_control(LOCAL_MACHINE, POLICY_KEY))
+    Some(SecureDesktopControl::read())
 }
 
 /// Runs `dari-service.exe policy on|off` elevated, which shows a UAC prompt, and waits for it.
@@ -32,7 +31,7 @@ pub fn change_secure_desktop_control(to: SecureDesktopControl) -> PolicyChange {
     match run_elevated(&service, arguments) {
         Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => PolicyChange::Declined,
         Err(error) => PolicyChange::Failed(error.message()),
-        Ok(_) if read_control(LOCAL_MACHINE, POLICY_KEY) == to => PolicyChange::Changed(to),
+        Ok(_) if SecureDesktopControl::read() == to => PolicyChange::Changed(to),
         Ok(code) => {
             PolicyChange::Failed(format!("dari-service.exe {arguments} exited with {code}"))
         }
@@ -44,24 +43,6 @@ fn service_exe() -> Option<PathBuf> {
         .ok()?
         .with_file_name("dari-service.exe");
     path.is_file().then_some(path)
-}
-
-fn read_control(root: &Key, path: &str) -> SecureDesktopControl {
-    let missing = |error: &windows::core::Error| error.code() == ERROR_FILE_NOT_FOUND.to_hresult();
-    let key = match root.open(path) {
-        Ok(key) => key,
-        Err(error) if missing(&error) => return SecureDesktopControl::from_stored(None),
-        Err(_) => return SecureDesktopControl::Off,
-    };
-    match key.get_type(POLICY_VALUE) {
-        Ok(Type::U32) => key
-            .get_u32(POLICY_VALUE)
-            .map_or(SecureDesktopControl::Off, |value| {
-                SecureDesktopControl::from_stored(Some(value))
-            }),
-        Err(error) if missing(&error) => SecureDesktopControl::from_stored(None),
-        Ok(_) | Err(_) => SecureDesktopControl::Off,
-    }
 }
 
 fn run_elevated(file: &Path, arguments: &str) -> windows::core::Result<u32> {
@@ -103,32 +84,7 @@ fn run_elevated(file: &Path, arguments: &str) -> windows::core::Result<u32> {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests may panic")]
 
-    use windows_registry::CURRENT_USER;
-
     use super::*;
-
-    #[test]
-    fn the_policy_reads_like_the_service_reads_it() {
-        let path = format!(r"Software\dari-test-policy-{}", std::process::id());
-        let _cleared = CURRENT_USER.remove_tree(&path);
-        assert_eq!(read_control(CURRENT_USER, &path), SecureDesktopControl::On);
-
-        let key = CURRENT_USER.create(&path).unwrap();
-        assert_eq!(read_control(CURRENT_USER, &path), SecureDesktopControl::On);
-        for (stored, expected) in [
-            (1, SecureDesktopControl::On),
-            (0, SecureDesktopControl::Off),
-            (2, SecureDesktopControl::Off),
-        ] {
-            key.set_u32(POLICY_VALUE, stored).unwrap();
-            assert_eq!(read_control(CURRENT_USER, &path), expected, "{stored}");
-        }
-        key.set_string(POLICY_VALUE, "1").unwrap();
-        assert_eq!(read_control(CURRENT_USER, &path), SecureDesktopControl::Off);
-        key.set_u64(POLICY_VALUE, 1).unwrap();
-        assert_eq!(read_control(CURRENT_USER, &path), SecureDesktopControl::Off);
-        CURRENT_USER.remove_tree(&path).unwrap();
-    }
 
     #[test]
     fn without_dari_service_beside_the_app_there_is_no_policy_to_show() {
