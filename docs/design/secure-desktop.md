@@ -266,8 +266,10 @@ coordinate must be within 131,072 of zero. Its `Debug` output leaves out keys an
 password goes through it.
 
 The helper enables Per-Monitor V2 DPI awareness before it starts any thread, as the app does, so the coordinates
-mean the same thing in both processes. Its main thread hands each `Input` to the input thread over a queue of 64
-and drops input when the queue is full, so input never holds up the screen's messages. The input thread opens its
+mean the same thing in both processes. Its main thread hands each `Input` to the input thread over a queue of 64.
+When the queue is full, the main thread waits, as it does for the screen thread's queue, so the pipe pushes back on
+the app and no input is lost. A dropped key-up would leave a key down on `Winlogon`, such as Shift while the viewer
+types the lock screen's password. The input thread opens its
 own input desktop handle with only `DESKTOP_JOURNALPLAYBACK`, attaches to it, and replays each call through an
 `Injector` over its own `EnigoBackend`, which moves the pointer with `SetCursorPos`. The `Injector`, in
 `dari-input`, is the held-key tracking that `InputSession` uses too. The thread injects only while it is attached to

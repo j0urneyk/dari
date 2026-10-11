@@ -20,8 +20,8 @@ use crate::win32::{
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WRITE_TIME: Duration = Duration::from_secs(5);
-/// The app is untrusted: a full queue stops the reader, so the pipe pushes back on the app
-/// instead of the helper's memory growing.
+/// The app is untrusted: a full queue of either kind stops the reader, so the pipe pushes back
+/// on the app instead of the helper's memory growing or input being lost.
 const QUEUED_COMMANDS: usize = 8;
 const QUEUED_INPUTS: usize = 64;
 const SCREEN_STOPPED: &str = "the screen thread stopped";
@@ -179,12 +179,10 @@ fn read_app(
             }
             Ok(Some(AppToHelper::RequestFrame)) => Some(ScreenCommand::RequestFrame),
             Ok(Some(AppToHelper::Input(input))) => {
-                match inputs.map(|inputs| inputs.try_send(input)) {
+                match inputs.map(|inputs| inputs.send(input)) {
                     None => note_drop("the helper started without input"),
-                    Some(Err(mpsc::TrySendError::Disconnected(_))) => {
-                        note_drop("the input thread stopped");
-                    }
-                    Some(Ok(()) | Err(mpsc::TrySendError::Full(_))) => {}
+                    Some(Err(mpsc::SendError(_))) => note_drop("the input thread stopped"),
+                    Some(Ok(())) => {}
                 }
                 None
             }
@@ -447,6 +445,31 @@ mod tests {
             unreachable!()
         };
         assert_eq!(*replayed.lock().unwrap(), [alt]);
+    }
+
+    #[test]
+    fn a_slow_input_thread_holds_the_reader_back_instead_of_losing_input() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        let replayed = Mutex::new(0);
+        let input = |inputs: &mpsc::Receiver<OsInput>| {
+            thread::sleep(Duration::from_secs(1));
+            *replayed.lock().unwrap() += inputs.iter().count();
+            0
+        };
+        let sent = 4 * QUEUED_INPUTS;
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            for _ in 0..sent {
+                write_message(&server, &alt_down(), deadline).unwrap();
+            }
+            write_message(&server, &AppToHelper::Stop, deadline).unwrap();
+            assert_eq!(helper.join().unwrap(), Ok("the app ended the link"));
+        });
+        assert_eq!(*replayed.lock().unwrap(), sent);
     }
 
     #[test]

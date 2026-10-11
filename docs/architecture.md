@@ -401,7 +401,8 @@ the helper, the router sends each `InputBackend` call as `OsInput` (`Move` in ph
 session has no input thread, so it routes nothing.
 
 The helper makes itself Per-Monitor V2 DPI aware before it starts any thread, as the app does. With input, its main
-thread hands each `Input` to the input thread over a queue of 64 and drops input when the queue is full. The input
+thread hands each `Input` to the input thread over a queue of 64. When the queue is full, the main thread waits, so
+the pipe pushes back on the app and no input is lost. The input
 thread (`injector.rs`, which has no `unsafe` and is tested on every platform) checks the input desktop every 100 ms
 while idle and before each event. When the desktop changes, it opens a new handle with only
 `DESKTOP_JOURNALPLAYBACK`, attaches to it with `SetThreadDesktop`, and forgets what its `Injector` holds without injecting anything, because
