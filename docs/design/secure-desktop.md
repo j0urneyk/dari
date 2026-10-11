@@ -446,7 +446,9 @@ Two controls limit it further:
   for each `StartHelper` and `SendSas`, so a change applies from the next session. At off it starts the helper with
   input off and refuses `SendSas` with `Refused(PolicyOff)`, so viewers can still see the secure desktop but not
   answer it. `dari-service.exe policy on` and `policy off` are Dari's only writers of the value. Without
-  administrator rights the command exits with an error that names administrators. The installer offers the value
+  administrator rights the command exits with code 1 and writes an error that names administrators to the
+  Application log. `dari-service.exe` is a GUI-subsystem program, so a console doesn't wait for it or show that
+  error: run it with `start /wait` or `Start-Process -Wait` and read the exit code. The installer offers the value
   as a checkbox, **Let viewers answer UAC prompts and the lock screen**. The host's settings change it through the
   same command, started with `runas`, so every change shows a UAC prompt. While the value is 0, the helper sends no
   input, so malware can't answer the prompt that would turn it on.
