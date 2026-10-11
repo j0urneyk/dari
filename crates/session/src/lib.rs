@@ -20,7 +20,10 @@ pub use host::{
     RelayStatus, start_host,
 };
 pub use platform::{HostPlatform, SystemPlatform};
-pub use secure_desktop::{LinkCommand, LinkDriver, SecureDesktopEvent, SecureDesktopLink};
+pub use secure_desktop::{
+    LinkCommand, LinkDriver, PolicyChange, SecureDesktopEvent, SecureDesktopLink,
+    change_secure_desktop_control, secure_desktop_control,
+};
 pub use transfer::{Transfer, TransferDirection, TransferState};
 pub use viewer::{
     ViewerConfig, ViewerEvent, ViewerHandle, ViewerStats, ViewerTarget, connect_viewer,

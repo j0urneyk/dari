@@ -9,12 +9,36 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use dari_media::RgbaFrame;
-use dari_proto::{InputDesktop, OsInput};
+use dari_proto::{InputDesktop, OsInput, SecureDesktopControl};
 use tokio::sync::mpsc;
 
 pub(crate) use capturer::TwoSourceCapturer;
 #[cfg(windows)]
 pub(crate) use win::open;
+#[cfg(windows)]
+pub use win::policy::{change_secure_desktop_control, secure_desktop_control};
+
+/// How a request to change the [`SecureDesktopControl`] policy ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyChange {
+    /// The policy now reads as the value asked for.
+    Changed(SecureDesktopControl),
+    /// The user declined the administrator prompt.
+    Declined,
+    Failed(String),
+}
+
+/// The machine's [`SecureDesktopControl`] policy, or `None` where Dari has no secure-desktop
+/// helper.
+#[cfg(not(windows))]
+pub fn secure_desktop_control() -> Option<SecureDesktopControl> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn change_secure_desktop_control(_to: SecureDesktopControl) -> PolicyChange {
+    PolicyChange::Failed("only Windows has the secure desktop".into())
+}
 
 /// What the helper reports to the session.
 #[derive(Debug, Clone, PartialEq, Eq)]

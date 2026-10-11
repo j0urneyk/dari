@@ -32,7 +32,10 @@ windows = { workspace = true, features = [
     "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+windows-registry.workspace = true
 
 [dev-dependencies]
 dari-relay.workspace = true

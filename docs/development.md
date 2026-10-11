@@ -74,9 +74,11 @@ cargo deny check
   frame sections and the read-only handle duplicated into the app (`section.rs`). It returns safe types, and the
   policy built on them (`service.rs`, `helper.rs`, `injector.rs`, `screen.rs`, `channel.rs`, `pointer.rs`) has no
   `unsafe`, so review can read the crate's `unsafe` in one directory.
-- `crates/session/src/secure_desktop/win.rs`, the app's end of the helper's pipe: its security descriptor, the
-  wait for a free instance of the service pipe and the handle handed to tokio, the impersonation that checks the
-  helper is LocalSystem, and the read-only mapping of the helper's frame sections and the copy out of them.
+- `crates/session/src/secure_desktop/win.rs` and its child `win/policy.rs`, the app's end of the helper's pipe:
+  its security descriptor, the wait for a free instance of the service pipe and the handle handed to tokio, the
+  impersonation that checks the helper is LocalSystem, and the read-only mapping of the helper's frame sections and
+  the copy out of them; and the host setting's `ShellExecuteExW` with the `runas` verb, which runs
+  `dari-service.exe policy on|off` elevated and waits for its exit code.
 
 `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
 capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's

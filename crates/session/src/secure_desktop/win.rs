@@ -1,3 +1,5 @@
+pub(crate) mod policy;
+
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io;

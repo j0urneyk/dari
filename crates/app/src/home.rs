@@ -9,10 +9,11 @@ use dari_net::{
     AccessPassword, Advertisement, Browser, ConnectError, DiscoveryEvent, HandshakeError,
     NearbyDevice, PeerInfo, fingerprint_hint,
 };
-use dari_proto::{Availability, HostStatus};
+use dari_proto::{Availability, HostStatus, SecureDesktopControl};
 use dari_session::{
-    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, RelayStatus,
-    SystemClipboard, SystemPlatform, ViewerConfig, connect_viewer, start_host,
+    ApprovalDecision, ApprovalRequest, HostConfig, HostEvent, HostHandle, PolicyChange,
+    RelayStatus, SystemClipboard, SystemPlatform, ViewerConfig, change_secure_desktop_control,
+    connect_viewer, secure_desktop_control, start_host,
 };
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName as AssetIcon;
@@ -700,6 +701,13 @@ enum Hosting {
     Failed(String),
 }
 
+/// A change to the secure-desktop policy, which waits on a UAC prompt.
+enum PolicyEdit {
+    Idle,
+    Changing,
+    Failed(String),
+}
+
 /// Shares this device: address, one-time password, the connected viewer, and permissions.
 pub(crate) struct HostPanel {
     hosting: Hosting,
@@ -712,6 +720,9 @@ pub(crate) struct HostPanel {
     /// A viewer waiting for the host user's decision.
     approval: Option<(PeerInfo, ApprovalRequest)>,
     relay: Option<RelayStatus>,
+    /// `None` where there is no secure-desktop helper, which hides the setting.
+    secure_desktop_control: Option<SecureDesktopControl>,
+    policy_edit: PolicyEdit,
     transfers: TransferList,
     relay_input: Entity<InputState>,
     advertisement: Option<Advertisement>,
@@ -758,6 +769,8 @@ impl HostPanel {
             permissions: LocalPermissions::check(),
             approval: None,
             relay: None,
+            secure_desktop_control: secure_desktop_control(),
+            policy_edit: PolicyEdit::Idle,
             transfers: TransferList::default(),
             relay_input,
             _relay_subscription: relay_subscription,
@@ -774,11 +787,46 @@ impl HostPanel {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let addresses = local_addresses();
         let permissions = LocalPermissions::check();
-        if addresses != self.addresses || permissions != self.permissions {
+        // Group Policy or an administrator may change it outside Dari.
+        let control = secure_desktop_control();
+        if addresses != self.addresses
+            || permissions != self.permissions
+            || control != self.secure_desktop_control
+        {
             self.addresses = addresses;
             self.permissions = permissions;
+            self.secure_desktop_control = control;
             cx.notify();
         }
+    }
+
+    fn change_secure_desktop_control(&mut self, on: bool, cx: &mut Context<Self>) {
+        if matches!(self.policy_edit, PolicyEdit::Changing) {
+            return;
+        }
+        self.policy_edit = PolicyEdit::Changing;
+        cx.notify();
+        let to = if on {
+            SecureDesktopControl::On
+        } else {
+            SecureDesktopControl::Off
+        };
+        let change = cx.background_spawn(async move { change_secure_desktop_control(to) });
+        cx.spawn(async move |this, cx| {
+            let change = change.await;
+            let _updated = this.update(cx, |this, cx| {
+                this.policy_edit = match change {
+                    PolicyChange::Changed(_) | PolicyChange::Declined => PolicyEdit::Idle,
+                    PolicyChange::Failed(error) => {
+                        tracing::warn!(%error, "cannot change the secure-desktop policy");
+                        PolicyEdit::Failed(error)
+                    }
+                };
+                this.secure_desktop_control = secure_desktop_control();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn port(&self, cx: &App) -> u16 {
@@ -1429,9 +1477,48 @@ impl HostPanel {
                 |settings, on| settings.lan_discovery = on,
                 cx,
             ),
-            self.render_relay(cx),
         ];
+        let rows = rows
+            .into_iter()
+            .chain(self.render_secure_desktop_control(cx))
+            .chain([self.render_relay(cx)]);
         style::section(text.sharing_settings, style::row_list(rows, cx), cx)
+    }
+
+    /// The machine-wide secure-desktop policy, where this device has the helper.
+    fn render_secure_desktop_control(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let control = self.secure_desktop_control?;
+        let text = text();
+        let row = div()
+            .v_flex()
+            .gap_1()
+            .child(style::setting_row(
+                AssetIcon::KeyRound,
+                text.secure_desktop_control,
+                Switch::new("policy-secure-desktop")
+                    .accessibility_label(text.secure_desktop_control)
+                    .checked(control == SecureDesktopControl::On)
+                    .disabled(matches!(self.policy_edit, PolicyEdit::Changing))
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        this.change_secure_desktop_control(*checked, cx);
+                    })),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.secure_desktop_control_hint),
+            );
+        Some(match &self.policy_edit {
+            PolicyEdit::Failed(error) => row.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(text.secure_desktop_control_failed(error)),
+            ),
+            PolicyEdit::Idle | PolicyEdit::Changing => row,
+        })
     }
 }
 
