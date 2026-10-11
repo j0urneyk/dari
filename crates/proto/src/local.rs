@@ -359,6 +359,13 @@ impl InputDesktop {
             Self::Other(DesktopName::sanitized(name))
         }
     }
+
+    /// Whether the helper injects the viewer's input on this desktop. Only on `Winlogon`: on
+    /// `Default` the app injects as the user, and a SYSTEM injector on any desktop but the secure
+    /// one would bypass User Interface Privilege Isolation there.
+    pub fn takes_helper_input(&self) -> bool {
+        *self == Self::Winlogon
+    }
 }
 
 impl Validate for InputDesktop {
@@ -624,6 +631,19 @@ mod tests {
             InputDesktop::Other(DesktopName::parse("Screensaver").unwrap())
         );
         assert!(InputDesktop::from_name(&"x".repeat(300)).validate().is_ok());
+    }
+
+    #[test]
+    fn only_winlogon_takes_helper_input() {
+        for (desktop, takes) in [
+            (InputDesktop::Default, false),
+            (InputDesktop::Winlogon, true),
+            (InputDesktop::from_name("WINLOGON"), true),
+            (InputDesktop::from_name("Screen-saver"), false),
+            (InputDesktop::from_name(""), false),
+        ] {
+            assert_eq!(desktop.takes_helper_input(), takes, "{desktop}");
+        }
     }
 
     #[test]

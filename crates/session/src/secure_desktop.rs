@@ -118,8 +118,10 @@ pub(crate) struct SecureInput {
 }
 
 impl SecureInput {
-    pub(crate) fn route(&self) -> Route {
-        self.view.route().1
+    /// Whether input goes to the helper now: it is connected and reports a desktop that takes
+    /// helper input.
+    pub(crate) fn takes_input(&self) -> bool {
+        self.view.0.lock().takes_input()
     }
 
     pub(crate) fn send(&self, input: OsInput) -> bool {
@@ -380,6 +382,10 @@ impl LinkState {
         }
         self.phase = Phase::Ended;
         self.picture = Picture::Waiting;
+    }
+
+    fn takes_input(&self) -> bool {
+        self.phase == Phase::Live && self.desktop.takes_helper_input()
     }
 
     fn route(&self) -> Route {

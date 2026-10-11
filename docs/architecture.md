@@ -295,7 +295,7 @@ Windows.Graphics.Capture and `SendInput` can't reach the Winlogon desktop, which
 and the Ctrl+Alt+Del screen. Two more processes, both `dari-service.exe`, can. The
 [secure desktop design](design/secure-desktop.md) describes the whole plan. The helper reports which desktop receives
 input, captures every desktop other than `Default` with DXGI Desktop Duplication, and injects the viewer's input
-there. Ctrl+Alt+Del comes later (#48).
+on `Winlogon`. Ctrl+Alt+Del comes later (#48).
 
 ```text
 dari.exe (user, medium integrity)
@@ -392,8 +392,8 @@ viewer gets PR 36's notice.
 The host session's input thread runs one `InputSession` over a `Router` backend (`input_route.rs`).
 `HostPlatform::open_input` still returns the platform's backend, and the router holds it next to a `SecureInput`
 handle on the link. The handle doesn't keep the link open, so dropping the link still stops the helper. Before each
-input command, `follow_route` reads the link's route. While the helper is connected and reports a desktop other
-than `Default`, input goes to the helper. Otherwise it goes to the platform's backend. When the target changes,
+input command, `follow_route` reads the link's route. While the helper is connected and reports `Winlogon`, input goes
+to the helper. Otherwise it goes to the platform's backend. When the target changes,
 `InputSession::retarget` releases every held key and button through the old target first. Windows clears key state
 when the input desktop switches, so releasing at the next command instead of at the switch leaves nothing down. To
 the helper, the router sends each `InputBackend` call as `OsInput` (`Move` in physical virtual-desktop pixels,
@@ -405,7 +405,7 @@ thread hands each `Input` to the input thread over a queue of 64 and drops input
 thread (`injector.rs`, which has no `unsafe` and is tested on every platform) checks the input desktop every 100 ms
 while idle and before each event. When the desktop changes, it opens a new handle with only
 `DESKTOP_JOURNALPLAYBACK`, attaches to it with `SetThreadDesktop`, and releases what its `Injector` holds. It replays
-input through the `Injector` and `EnigoBackend` only while it is attached to a desktop other than `Default`, and
+input through the `Injector` and `EnigoBackend` only while it is attached to `Winlogon`, and
 drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits, the thread releases what it
 holds and the helper logs how many inputs it released and why. A helper started without input has no input thread
 and drops every `Input`.

@@ -2,7 +2,7 @@ use dari_input::{InjectError, InputBackend, InputSession};
 use dari_proto::{KeyCode, MouseButton, OsInput};
 use tracing::info;
 
-use crate::secure_desktop::{Route, SecureInput};
+use crate::secure_desktop::SecureInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Target {
@@ -26,9 +26,10 @@ impl Router {
     }
 
     fn wanted(&self) -> Target {
-        match self.secure.as_ref().map(SecureInput::route) {
-            Some(Route::Secure) => Target::Helper,
-            Some(Route::Default { .. }) | None => Target::Local,
+        if self.secure.as_ref().is_some_and(SecureInput::takes_input) {
+            Target::Helper
+        } else {
+            Target::Local
         }
     }
 
@@ -264,6 +265,32 @@ mod tests {
     }
 
     #[test]
+    fn input_on_a_desktop_other_than_winlogon_stays_local() {
+        let mut rig = Rig::new();
+        rig.driver.desktop_changed(InputDesktop::Winlogon);
+        rig.apply(&key(ALT, true));
+        assert_eq!(
+            rig.helper(),
+            [OsInput::Key {
+                key: ALT,
+                pressed: true
+            }]
+        );
+
+        rig.driver
+            .desktop_changed(InputDesktop::from_name("Screen-saver"));
+        rig.apply(&key(Y, true));
+        assert_eq!(
+            rig.helper(),
+            [OsInput::Key {
+                key: ALT,
+                pressed: false
+            }]
+        );
+        assert_eq!(rig.local(), [RecordedAction::Key(Y, true)]);
+    }
+
+    #[test]
     fn input_stays_local_without_a_live_link() {
         let local = Rc::default();
         let mut session = InputSession::new(
@@ -380,10 +407,10 @@ mod tests {
             for _ in 0..200 {
                 let event = match random.below(6) {
                     0 => {
-                        let desktop = if random.below(2) == 0 {
-                            InputDesktop::Default
-                        } else {
-                            InputDesktop::Winlogon
+                        let desktop = match random.below(3) {
+                            0 => InputDesktop::Default,
+                            1 => InputDesktop::Winlogon,
+                            _ => InputDesktop::from_name("Screen-saver"),
                         };
                         rig.driver.desktop_changed(desktop);
                         continue;

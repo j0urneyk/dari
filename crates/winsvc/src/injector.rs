@@ -50,9 +50,8 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         {
             notes.extend(self.attach(desktop));
         }
-        // The app injects on `Default` itself. A SYSTEM injector there would bypass UIPI.
         if let (Some(input), Attachment::To(desktop)) = (input, &self.attachment)
-            && *desktop != InputDesktop::Default
+            && desktop.takes_helper_input()
             && self.injector.replay(input).is_err()
             && !self.replay_failure_noted
         {
@@ -231,12 +230,18 @@ mod tests {
     }
 
     #[test]
-    fn input_is_replayed_only_off_default() {
-        let (mut follower, timeline) = follower(vec![DEFAULT, WINLOGON], 0);
+    fn input_is_replayed_only_on_winlogon() {
+        let screen_saver = InputDesktop::from_name("Screen-saver");
+        let (mut follower, timeline) =
+            follower(vec![DEFAULT, Some(screen_saver.clone()), WINLOGON], 0);
         assert_eq!(follower.step(Some(&OsInput::Move { x: 5, y: 6 })), []);
+        assert_eq!(follower.step(Some(&alt(true))), []);
         assert_eq!(
             taken(&timeline),
-            [Happened::Attached(InputDesktop::Default)]
+            [
+                Happened::Attached(InputDesktop::Default),
+                Happened::Attached(screen_saver),
+            ]
         );
 
         follower.step(Some(&OsInput::Move { x: 5, y: 6 }));
@@ -278,23 +283,13 @@ mod tests {
                 Happened::Attached(screen_saver),
                 Happened::Did(RecordedAction::Key(ALT, false)),
                 Happened::Did(RecordedAction::Button(MouseButton::Left, false)),
-                Happened::Did(RecordedAction::Key(ALT, true)),
             ]
         );
 
-        assert_eq!(
-            follower.step(Some(&alt(false))),
-            [Note::Released {
-                count: 1,
-                on: InputDesktop::Default
-            }]
-        );
+        assert_eq!(follower.step(Some(&alt(false))), []);
         assert_eq!(
             taken(&timeline),
-            [
-                Happened::Attached(InputDesktop::Default),
-                Happened::Did(RecordedAction::Key(ALT, false)),
-            ]
+            [Happened::Attached(InputDesktop::Default)]
         );
     }
 

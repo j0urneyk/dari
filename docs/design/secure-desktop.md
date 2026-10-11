@@ -250,8 +250,7 @@ next one a keyframe. `HostStatus.screen` stays `Available` throughout.
 The routing lives in `dari-session`, not in the platform. The input thread runs one `InputSession` over a `Router`
 backend (`crates/session/src/input_route.rs`). The router sends each `InputBackend` call either to the platform's
 backend, `EnigoBackend` in-process as before, or to the helper over the link. Before each input command, the thread
-reads the link's route. While the helper is connected and reports a desktop other than `Default`, input goes to the
-helper. Otherwise, and always when there is no link or the link ended, it stays local. When the target changes,
+reads the link's route. While the helper is connected and reports `Winlogon`, input goes to the helper. Otherwise, and always when there is no link or the link ended, it stays local. When the target changes,
 `InputSession::retarget` first releases every held key and button through the old target, and only then switches.
 That is the only way the target changes, so the release through the old route holds by construction.
 `HostPlatform::open_input` is unchanged. An earlier draft returned a routing backend from it, but the platform
@@ -271,8 +270,8 @@ and drops input when the queue is full, so input never holds up the screen's mes
 own input desktop handle with only `DESKTOP_JOURNALPLAYBACK`, attaches to it, and replays each call through an
 `Injector` over its own `EnigoBackend`, which moves the pointer with `SetCursorPos`. The `Injector`, in
 `dari-input`, is the held-key tracking that `InputSession` uses too. The thread injects only while it is attached to
-a desktop other than `Default`. On `Default` the app injects as the user, and a SYSTEM injector there would bypass
-User Interface Privilege Isolation. If an attach fails, the thread drops input until the next attach succeeds. When
+`Winlogon`. On `Default` the app injects as the user, and a SYSTEM injector on any desktop but the secure one would
+bypass User Interface Privilege Isolation there. If an attach fails, the thread drops input until the next attach succeeds. When
 the thread ends, it logs `helper: released N held inputs because <reason>`. It never logs key codes or text.
 
 A helper started with `input: false` has no input thread, no `Injector`, and no `DESKTOP_JOURNALPLAYBACK` handle,
