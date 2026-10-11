@@ -42,6 +42,7 @@ windows = { workspace = true, features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
+windows-registry.workspace = true
 windows-service.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

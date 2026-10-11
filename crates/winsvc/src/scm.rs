@@ -16,6 +16,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use dari_proto::SERVICE_PIPE;
 
+use crate::policy;
 use crate::service::Server;
 use crate::win32::{Event, EventLog};
 
@@ -44,6 +45,10 @@ pub(crate) enum Failure {
         waiting_for: &'static str,
     },
     ExecutablePath(io::Error),
+    Registry {
+        doing: &'static str,
+        error: windows::core::Error,
+    },
 }
 
 impl fmt::Display for Failure {
@@ -61,6 +66,7 @@ impl fmt::Display for Failure {
                 WAIT_LIMIT.as_secs()
             ),
             Self::ExecutablePath(error) => write!(f, "cannot find this executable's path: {error}"),
+            Self::Registry { doing, error } => write!(f, "cannot {doing}: {error}"),
         }
     }
 }
@@ -161,6 +167,11 @@ fn service_status(state: ServiceState) -> ServiceStatus {
 }
 
 pub(crate) fn install() -> Result<(), Failure> {
+    // Before the service starts, so its first entries render.
+    policy::register_event_source().map_err(|error| Failure::Registry {
+        doing: "register DariService's event source",
+        error,
+    })?;
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -241,7 +252,17 @@ fn restart_on_failure() -> ServiceFailureActions {
     }
 }
 
+/// Leaves the policy value alone: an upgrade runs this too, and an administrator's choice must
+/// survive it.
 pub(crate) fn uninstall() -> Result<(), Failure> {
+    remove_service()?;
+    policy::unregister_event_source().map_err(|error| Failure::Registry {
+        doing: "remove DariService's event source",
+        error,
+    })
+}
+
+fn remove_service() -> Result<(), Failure> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(while_doing("connect to the service control manager"))?;
     let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;

@@ -14,7 +14,7 @@ use windows::Win32::Foundation::HANDLE;
 
 pub(crate) use desktop::InputThreadDesktop;
 pub(crate) use dxgi::DxgiWorld;
-pub(crate) use eventlog::EventLog;
+pub(crate) use eventlog::{EVENT_SOURCE, EventLog};
 pub(crate) use io::Event;
 pub(crate) use pipe::Pipe;
 pub(crate) use process::{
