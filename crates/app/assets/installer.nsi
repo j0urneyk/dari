@@ -298,6 +298,64 @@ FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
 
+Var DariSecureDesktopControl
+Var DariSecureDesktopCheckbox
+Page custom DariSecureDesktopPage DariSecureDesktopPageLeave
+Function DariSecureDesktopPage
+  Call SkipIfPassive
+  Call DariReadSecureDesktopControl
+  !insertmacro MUI_HEADER_TEXT "$(dariSecureDesktopTitle)" "$(dariSecureDesktopSubtitle)"
+
+  nsDialogs::Create 1018
+  Pop $0
+  ${IfThen} $(^RTL) == 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+
+  ${NSD_CreateCheckbox} 0 0 100% 12u "$(dariSecureDesktopCheckbox)"
+  Pop $DariSecureDesktopCheckbox
+  ${If} $DariSecureDesktopControl == "on"
+    SendMessage $DariSecureDesktopCheckbox ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${EndIf}
+
+  ${NSD_CreateLabel} 12u 20u -12u 48u "$(dariSecureDesktopExplanation)"
+  Pop $0
+
+  ${NSD_SetFocus} $DariSecureDesktopCheckbox
+  nsDialogs::Show
+FunctionEnd
+Function DariSecureDesktopPageLeave
+  ${NSD_GetState} $DariSecureDesktopCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $DariSecureDesktopControl "on"
+  ${Else}
+    StrCpy $DariSecureDesktopControl "off"
+  ${EndIf}
+FunctionEnd
+Function DariReadSecureDesktopControl
+  ${IfThen} $DariSecureDesktopControl != "" ${|} Return ${|}
+  ; The service's rule: missing or DWORD 1 is on, and any other value of any type is off.
+  ; ReadRegDWORD can't tell a missing value from one of a type it can't read, so look for the name.
+  StrCpy $DariSecureDesktopControl "on"
+  ClearErrors
+  ReadRegDWORD $0 HKLM "SOFTWARE\Policies\Dari" "SecureDesktopControl"
+  ${If} ${Errors}
+  ${OrIf} $0 <> 1
+    StrCpy $1 0
+    ${Do}
+      ClearErrors
+      EnumRegValue $2 HKLM "SOFTWARE\Policies\Dari" $1
+      ${If} ${Errors}
+      ${OrIf} $2 == ""
+        ${ExitDo}
+      ${EndIf}
+      ${If} $2 == "SecureDesktopControl"
+        StrCpy $DariSecureDesktopControl "off"
+        ${ExitDo}
+      ${EndIf}
+      IntOp $1 $1 + 1
+    ${Loop}
+  ${EndIf}
+FunctionEnd
+
 ; 6. Start menu shortcut page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 Var AppStartMenuFolder
@@ -356,6 +414,11 @@ FunctionEnd
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
+
+LangString dariSecureDesktopTitle ${LANG_ENGLISH} "UAC prompts and the lock screen"
+LangString dariSecureDesktopSubtitle ${LANG_ENGLISH} "Choose whether viewers can answer them."
+LangString dariSecureDesktopCheckbox ${LANG_ENGLISH} "Let viewers answer UAC prompts and the lock screen"
+LangString dariSecureDesktopExplanation ${LANG_ENGLISH} "A viewer you let control this PC can then click and type on UAC prompts and the lock screen. Programs running as you could use this too.$\n$\nYou can change this later in Dari's settings."
 
 !macro SetContext
   !if "${INSTALLMODE}" == "currentUser"
@@ -558,6 +621,15 @@ Section Install
   ${ElseIf} $0 <> 0
     Abort "Dari could not set up its Windows service: dari-service.exe install exited with code $0."
   ${EndIf}
+
+  Call DariReadSecureDesktopControl
+  ClearErrors
+  ExecWait '"$INSTDIR\dari-service.exe" policy $DariSecureDesktopControl' $0
+  ${If} ${Errors}
+    Abort "Dari could not run dari-service.exe to set the SecureDesktopControl policy."
+  ${ElseIf} $0 <> 0
+    Abort "Dari could not set the SecureDesktopControl policy: dari-service.exe policy $DariSecureDesktopControl exited with code $0."
+  ${EndIf}
 SectionEnd
 
 Function .onInstSuccess
@@ -662,6 +734,13 @@ Section Uninstall
       {{/each}}
   ${EndIf}
   {{/if}}
+
+  ; An upgrade runs the old uninstaller with /P, and an administrator's policy must survive it.
+  ${GetOptions} $CMDLINE "/P" $R0
+  ${If} ${Errors}
+    DeleteRegValue HKLM "SOFTWARE\Policies\Dari" "SecureDesktopControl"
+    DeleteRegKey /ifempty HKLM "SOFTWARE\Policies\Dari"
+  ${EndIf}
 
   ${GetOptions} $CMDLINE "/P" $R0
   IfErrors +2 0
