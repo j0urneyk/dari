@@ -45,7 +45,9 @@ screen. With the setting off, viewers still see these screens, but only someone 
 view-only viewer can never answer them.
 
 The setting belongs to the computer, not to your user account, so only an administrator can change it. Turning the
-switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. The installer asks
+switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. A change applies
+from the next session. When you turn the setting off, a viewer who is already connected can still answer these
+screens until that session ends. The installer asks
 the same question on its own page, and a silent install turns it on unless a value is already stored. An
 administrator can also manage it with Group Policy. It is the DWORD `SecureDesktopControl` under
 `HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch reads the value again every

@@ -217,7 +217,9 @@ Two controls limit it further:
 - The DWORD `SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`, which only administrators can write and
   Group Policy can manage. A missing value or 1 means on, 0 means off, and any other value or type means off. The
   service reads it for each `StartHelper` and `SendSas`. At off it starts the helper without input and refuses
-  `SendSas` with `Refused(PolicyOff)`, so viewers still see the secure desktop but can't answer it. Every way to
+  `SendSas` with `Refused(PolicyOff)`, so viewers still see the secure desktop but can't answer it. Turning it off
+  applies from the next session: the service decides input only when it starts a helper, so a helper that already
+  runs with input keeps it until its session ends. Every way to
   change it needs an administrator: the installer's checkbox, and the host setting **Let viewers answer UAC prompts
   and the lock screen**, which runs `dari-service.exe policy on` or `policy off` through a UAC prompt. While the
   value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
@@ -235,6 +237,8 @@ Two controls limit it further:
 - While `SecureDesktopControl` is on, malware running as the signed-in administrator can answer its own UAC consent
   prompts through Dari. See
   [Same-user malware can answer its own consent prompts](#same-user-malware-can-answer-its-own-consent-prompts).
+- Turning `SecureDesktopControl` off applies from the next session. A helper that already runs with input keeps it
+  until its session ends.
 - The private key and settings are stored in plain files in the user data directory (no OS keychain).
 
 ## Hardening found in review
