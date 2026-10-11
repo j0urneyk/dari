@@ -48,8 +48,8 @@ The setting belongs to the computer, not to your user account, so only an admini
 switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. The installer asks
 the same question on its own page, and a silent install turns it on unless a value is already stored. An
 administrator can also manage it with Group Policy. It is the DWORD `SecureDesktopControl` under
-`HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch shows the value Dari read
-when it started, so restart Dari to see a change made there.
+`HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch reads the value again every
+few seconds, so it shows a change made there too.
 
 The setting is on by default because the person who installs Dari is usually the person who connects to it. While
 it is on, malware already running as you with administrator rights could use Dari to click **Yes** on its own UAC
