@@ -1,4 +1,6 @@
-use dari_proto::{InputEvent, KeyCode, MouseButton, PointerPosition};
+use std::fmt;
+
+use dari_proto::{InputEvent, KeyCode, MouseButton, OsInput, PointerPosition};
 use tracing::debug;
 
 use crate::InjectError;
@@ -33,22 +35,144 @@ impl DisplayGeometry {
     }
 }
 
+/// Forwards input to a backend and remembers which keys and buttons it holds, so none stays
+/// held when the injector goes away. It is an [`InputBackend`] itself.
+pub struct Injector<B: InputBackend> {
+    backend: B,
+    held_keys: Vec<KeyCode>,
+    held_buttons: Vec<MouseButton>,
+}
+
+impl<B: InputBackend> Injector<B> {
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            held_keys: Vec::new(),
+            held_buttons: Vec::new(),
+        }
+    }
+
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// How many keys and buttons are held.
+    pub fn held(&self) -> usize {
+        self.held_keys.len() + self.held_buttons.len()
+    }
+
+    /// Releases every held key and button, newest first, and returns how many there were. A
+    /// release the backend fails still counts: nothing is held afterwards.
+    pub fn release_all(&mut self) -> usize {
+        let released = self.held();
+        for key in std::mem::take(&mut self.held_keys).into_iter().rev() {
+            if let Err(error) = self.backend.key(key, false) {
+                debug!(%error, "failed to release a key");
+            }
+        }
+        for button in std::mem::take(&mut self.held_buttons).into_iter().rev() {
+            if let Err(error) = self.backend.button(button, false) {
+                debug!(%error, ?button, "failed to release a button");
+            }
+        }
+        released
+    }
+
+    /// Clears the held set without calling the backend, and returns how many there were. For when
+    /// the OS already let go of them, as Windows does when the input desktop switches.
+    pub fn forget(&mut self) -> usize {
+        let forgotten = self.held();
+        self.held_keys.clear();
+        self.held_buttons.clear();
+        forgotten
+    }
+
+    /// Makes the one backend call `input` describes.
+    pub fn replay(&mut self, input: &OsInput) -> Result<(), InjectError> {
+        match input {
+            OsInput::Move { x, y } => self.move_pointer(*x, *y),
+            OsInput::Button { button, pressed } => self.button(*button, *pressed),
+            OsInput::Scroll { dx, dy } => self.scroll(*dx, *dy),
+            OsInput::Key { key, pressed } => self.key(*key, *pressed),
+            OsInput::Text(text) => self.text(text),
+        }
+    }
+
+    fn ensure_capacity(&self) -> Result<(), InjectError> {
+        if self.held() >= MAX_HELD_INPUTS {
+            Err(InjectError::Backend("too many keys held at once".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<B: InputBackend> InputBackend for Injector<B> {
+    fn move_pointer(&mut self, x: i32, y: i32) -> Result<(), InjectError> {
+        self.backend.move_pointer(x, y)
+    }
+
+    fn button(&mut self, button: MouseButton, pressed: bool) -> Result<(), InjectError> {
+        if pressed {
+            if !self.held_buttons.contains(&button) {
+                self.ensure_capacity()?;
+                self.held_buttons.push(button);
+            }
+        } else {
+            self.held_buttons.retain(|held| *held != button);
+        }
+        self.backend.button(button, pressed)
+    }
+
+    fn scroll(&mut self, dx: i32, dy: i32) -> Result<(), InjectError> {
+        self.backend.scroll(dx, dy)
+    }
+
+    fn key(&mut self, key: KeyCode, pressed: bool) -> Result<(), InjectError> {
+        if pressed {
+            if !self.held_keys.contains(&key) {
+                self.ensure_capacity()?;
+                self.held_keys.push(key);
+            }
+        } else {
+            self.held_keys.retain(|held| *held != key);
+        }
+        self.backend.key(key, pressed)
+    }
+
+    fn text(&mut self, text: &str) -> Result<(), InjectError> {
+        self.backend.text(text)
+    }
+}
+
+impl<B: InputBackend> Drop for Injector<B> {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+/// Counts held keys instead of naming them: they may spell a password.
+impl<B: InputBackend + fmt::Debug> fmt::Debug for Injector<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Injector")
+            .field("backend", &self.backend)
+            .field("held", &self.held())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Applies one remote session's input and guarantees held keys are released at the end.
 #[derive(Debug)]
 pub struct InputSession<B: InputBackend> {
-    backend: B,
+    injector: Injector<B>,
     geometry: DisplayGeometry,
-    held_keys: Vec<KeyCode>,
-    held_buttons: Vec<MouseButton>,
 }
 
 impl<B: InputBackend> InputSession<B> {
     pub fn new(backend: B, geometry: DisplayGeometry) -> Self {
         Self {
-            backend,
+            injector: Injector::new(backend),
             geometry,
-            held_keys: Vec::new(),
-            held_buttons: Vec::new(),
         }
     }
 
@@ -58,73 +182,42 @@ impl<B: InputBackend> InputSession<B> {
     }
 
     pub fn backend(&self) -> &B {
-        &self.backend
+        self.injector.backend()
     }
 
     pub fn apply(&mut self, event: &InputEvent) -> Result<(), InjectError> {
         match event {
             InputEvent::PointerMove(position) => {
                 let (x, y) = self.geometry.to_os(*position);
-                self.backend.move_pointer(x, y)
+                self.injector.move_pointer(x, y)
             }
             InputEvent::PointerButton { button, pressed } => {
-                if *pressed {
-                    if !self.held_buttons.contains(button) {
-                        self.ensure_capacity()?;
-                        self.held_buttons.push(*button);
-                    }
-                } else {
-                    self.held_buttons.retain(|held| held != button);
-                }
-                self.backend.button(*button, *pressed)
+                self.injector.button(*button, *pressed)
             }
-            InputEvent::Scroll { dx, dy } => self.backend.scroll(i32::from(*dx), i32::from(*dy)),
-            InputEvent::Key { key, pressed } => {
-                if *pressed {
-                    if !self.held_keys.contains(key) {
-                        self.ensure_capacity()?;
-                        self.held_keys.push(*key);
-                    }
-                } else {
-                    self.held_keys.retain(|held| held != key);
-                }
-                self.backend.key(*key, *pressed)
-            }
-            InputEvent::Text(text) => self.backend.text(text),
+            InputEvent::Scroll { dx, dy } => self.injector.scroll(i32::from(*dx), i32::from(*dy)),
+            InputEvent::Key { key, pressed } => self.injector.key(*key, *pressed),
+            InputEvent::Text(text) => self.injector.text(text),
         }
     }
 
     /// Releases every key and button the remote side still holds, newest first.
     pub fn release_all(&mut self) {
-        for key in std::mem::take(&mut self.held_keys).into_iter().rev() {
-            if let Err(error) = self.backend.key(key, false) {
-                debug!(%error, ?key, "failed to release key");
-            }
-        }
-        for button in std::mem::take(&mut self.held_buttons).into_iter().rev() {
-            if let Err(error) = self.backend.button(button, false) {
-                debug!(%error, ?button, "failed to release button");
-            }
-        }
+        self.injector.release_all();
     }
 
-    fn ensure_capacity(&self) -> Result<(), InjectError> {
-        if self.held_keys.len() + self.held_buttons.len() >= MAX_HELD_INPUTS {
-            Err(InjectError::Backend("too many keys held at once".into()))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl<B: InputBackend> Drop for InputSession<B> {
-    fn drop(&mut self) {
-        self.release_all();
+    /// Lets `change` point the backend somewhere else, after releasing everything held through
+    /// the backend as it is, so nothing stays held where input no longer goes.
+    pub fn retarget(&mut self, change: impl FnOnce(&mut B)) {
+        self.injector.release_all();
+        change(&mut self.injector.backend);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use dari_proto::NamedKey;
 
     use super::*;
@@ -139,6 +232,45 @@ mod tests {
 
     fn key(key: KeyCode, pressed: bool) -> InputEvent {
         InputEvent::Key { key, pressed }
+    }
+
+    #[derive(Debug, Default)]
+    struct Routed {
+        target: u8,
+        log: Rc<RefCell<Vec<(u8, RecordedAction)>>>,
+    }
+
+    impl Routed {
+        fn record(&mut self, action: RecordedAction) {
+            self.log.borrow_mut().push((self.target, action));
+        }
+    }
+
+    impl InputBackend for Routed {
+        fn move_pointer(&mut self, x: i32, y: i32) -> Result<(), InjectError> {
+            self.record(RecordedAction::Move(x, y));
+            Ok(())
+        }
+
+        fn button(&mut self, button: MouseButton, pressed: bool) -> Result<(), InjectError> {
+            self.record(RecordedAction::Button(button, pressed));
+            Ok(())
+        }
+
+        fn scroll(&mut self, dx: i32, dy: i32) -> Result<(), InjectError> {
+            self.record(RecordedAction::Scroll(dx, dy));
+            Ok(())
+        }
+
+        fn key(&mut self, key: KeyCode, pressed: bool) -> Result<(), InjectError> {
+            self.record(RecordedAction::Key(key, pressed));
+            Ok(())
+        }
+
+        fn text(&mut self, text: &str) -> Result<(), InjectError> {
+            self.record(RecordedAction::Text(text.to_owned()));
+            Ok(())
+        }
     }
 
     #[test]
@@ -233,5 +365,139 @@ mod tests {
         }
         let overflow = key(KeyCode::Character(letters.next().unwrap()), true);
         assert!(session.apply(&overflow).is_err());
+    }
+
+    #[test]
+    fn retarget_releases_through_the_old_target_before_changing_it() {
+        let ctrl = KeyCode::Named(NamedKey::Control);
+        let backend = Routed::default();
+        let log = Rc::clone(&backend.log);
+        let mut session = InputSession::new(backend, GEOMETRY);
+        session.apply(&key(ctrl, true)).unwrap();
+        session
+            .apply(&InputEvent::PointerButton {
+                button: MouseButton::Left,
+                pressed: true,
+            })
+            .unwrap();
+        session.retarget(|backend| backend.target = 1);
+        session
+            .apply(&InputEvent::PointerMove(PointerPosition { x: 0, y: 0 }))
+            .unwrap();
+        drop(session);
+        assert_eq!(
+            *log.borrow(),
+            [
+                (0, RecordedAction::Key(ctrl, true)),
+                (0, RecordedAction::Button(MouseButton::Left, true)),
+                (0, RecordedAction::Key(ctrl, false)),
+                (0, RecordedAction::Button(MouseButton::Left, false)),
+                (1, RecordedAction::Move(-1920, 0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn dropping_an_injector_releases_what_it_holds_newest_first() {
+        let shift = KeyCode::Named(NamedKey::Shift);
+        let a = KeyCode::Character('a');
+        let backend = Routed::default();
+        let log = Rc::clone(&backend.log);
+        let mut injector = Injector::new(backend);
+        injector.key(shift, true).unwrap();
+        injector.key(a, true).unwrap();
+        injector.button(MouseButton::Right, true).unwrap();
+        assert_eq!(injector.held(), 3);
+        log.borrow_mut().clear();
+        drop(injector);
+        assert_eq!(
+            *log.borrow(),
+            [
+                (0, RecordedAction::Key(a, false)),
+                (0, RecordedAction::Key(shift, false)),
+                (0, RecordedAction::Button(MouseButton::Right, false)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_forgotten_injector_sends_nothing_then_or_when_dropped() {
+        let backend = Routed::default();
+        let log = Rc::clone(&backend.log);
+        let mut injector = Injector::new(backend);
+        injector.key(KeyCode::Named(NamedKey::Shift), true).unwrap();
+        injector.button(MouseButton::Left, true).unwrap();
+        log.borrow_mut().clear();
+        assert_eq!(injector.forget(), 2);
+        assert_eq!(injector.held(), 0);
+        assert_eq!(injector.release_all(), 0);
+        drop(injector);
+        assert_eq!(*log.borrow(), []);
+    }
+
+    #[test]
+    fn an_injector_refuses_a_press_past_the_cap_without_injecting_it() {
+        let mut injector = Injector::new(RecordingBackend::default());
+        let buttons = [
+            MouseButton::Left,
+            MouseButton::Right,
+            MouseButton::Middle,
+            MouseButton::Back,
+            MouseButton::Forward,
+        ];
+        for button in buttons {
+            injector.button(button, true).unwrap();
+        }
+        let mut letters = ('a'..='z').chain('0'..='9');
+        for _ in buttons.len()..MAX_HELD_INPUTS {
+            injector
+                .key(KeyCode::Character(letters.next().unwrap()), true)
+                .unwrap();
+        }
+        let injected = injector.backend().actions.len();
+        let overflow = KeyCode::Character(letters.next().unwrap());
+        assert!(injector.key(overflow, true).is_err());
+        assert_eq!(injector.backend().actions.len(), injected);
+        assert_eq!(injector.held(), MAX_HELD_INPUTS);
+
+        injector.button(MouseButton::Left, false).unwrap();
+        injector.key(overflow, true).unwrap();
+        assert_eq!(injector.release_all(), MAX_HELD_INPUTS);
+        assert_eq!(injector.held(), 0);
+    }
+
+    #[test]
+    fn replayed_input_reaches_the_backend_and_is_released() {
+        let alt = KeyCode::Named(NamedKey::Alt);
+        let mut injector = Injector::new(RecordingBackend::default());
+        for input in [
+            OsInput::Move { x: -3840, y: 2159 },
+            OsInput::Button {
+                button: MouseButton::Middle,
+                pressed: true,
+            },
+            OsInput::Scroll { dx: 2, dy: -1 },
+            OsInput::Key {
+                key: alt,
+                pressed: true,
+            },
+            OsInput::Text("암호".into()),
+        ] {
+            injector.replay(&input).unwrap();
+        }
+        assert_eq!(injector.held(), 2);
+        assert_eq!(injector.release_all(), 2);
+        assert_eq!(
+            injector.backend().actions,
+            [
+                RecordedAction::Move(-3840, 2159),
+                RecordedAction::Button(MouseButton::Middle, true),
+                RecordedAction::Scroll(2, -1),
+                RecordedAction::Key(alt, true),
+                RecordedAction::Text("암호".into()),
+                RecordedAction::Key(alt, false),
+                RecordedAction::Button(MouseButton::Middle, false),
+            ]
+        );
     }
 }

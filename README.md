@@ -52,10 +52,12 @@ next to the message about Dari. On Windows, choose **More info → Run anyway** 
 
 Installing Dari on Windows needs administrator rights, and the installer asks for them. On a standard account it
 can't ask, so it stops before changing anything; right-click the installer and choose **Run as administrator**
-instead. It installs Dari for all users in `C:\Program Files\Dari` and adds the `DariService` Windows service. If
-Dari 0.0.3 or earlier is installed for your user, the installer deletes that copy, its shortcuts, and its uninstall
-entry, and keeps your settings and device identity. Uninstalling removes the service and the program files, and
-keeps your settings.
+instead. It installs Dari for all users in `C:\Program Files\Dari` and adds the `DariService` Windows service. One
+page asks whether viewers may answer UAC prompts and the lock screen. Its checkbox starts checked on a first install
+(see the [user guide](docs/user-guide.md#answering-uac-prompts-and-the-lock-screen)). If Dari 0.0.3 or earlier is
+installed for your user, the installer deletes that copy, its shortcuts, and its uninstall entry, and keeps your
+settings and device identity. Uninstalling removes the service, the program files, and the UAC prompt setting, and keeps your
+settings.
 
 ### macOS permissions
 
@@ -112,8 +114,8 @@ dari host --port 47821 --relay relay.example.com
 ```
 
 `host` prints its addresses, the current password, and its relay ID. There's nobody to approve requests, so a
-headless host gives control to any viewer that knows the password, and it doesn't share the clipboard. Only run
-it where that's acceptable.
+headless host gives control to any viewer that knows the password, and it doesn't share the clipboard. With
+`--view-only` it lets viewers only see the screen. Only run it where that's acceptable.
 
 To connect by address, or by ID when `--relay` is given:
 
@@ -146,8 +148,9 @@ input, wherever it sits on the network.
 
 ## Known limitations
 
-- The viewer sees a Windows host's secure desktop (UAC prompts, the lock screen, Ctrl+Alt+Del) but can't answer it
-  yet. Someone at the host has to.
+- The viewer sees a Windows host's UAC prompts and lock screen, and in a session that allows control it can answer
+  them, unless the host's **Let viewers answer UAC prompts and the lock screen** setting is off. The viewer can't
+  send Ctrl+Alt+Del yet, so a host that requires it to sign in still needs someone there.
 - A Windows PC without a hardware H.264 encoder encodes on the CPU, at a much lower frame rate. There's no
   unattended access, and a Mac shares its sound only on macOS 14.6 or later.
 - Builds exist only for Apple silicon Macs and x64 Windows.

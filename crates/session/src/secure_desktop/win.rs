@@ -1,3 +1,5 @@
+pub(crate) mod policy;
+
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -107,6 +109,9 @@ async fn relay(
                     Some(LinkCommand::SelectDisplay(display)) => {
                         replies.send(&AppToHelper::SelectDisplay(display)).await?;
                     }
+                    Some(LinkCommand::Input(input)) => {
+                        replies.send(&AppToHelper::Input(input)).await?;
+                    }
                     None => return Ok(()),
                 },
                 message = messages.next() => {
@@ -160,8 +165,6 @@ async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkErro
     }
 }
 
-/// Returns once the session dropped the link. Commands that arrive meanwhile are already in the
-/// link's state, which the link reads once the helper connects.
 async fn session_gone(driver: &mut LinkDriver) {
     while driver.command().await.is_some() {}
 }
@@ -551,6 +554,9 @@ mod tests {
     };
     use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, PAGE_READWRITE};
 
+    use dari_proto::{KeyCode, NamedKey, OsInput};
+    use tokio_util::codec::Decoder;
+
     use super::*;
     use crate::secure_desktop::SecureDesktopEvent;
 
@@ -784,6 +790,40 @@ mod tests {
             !leaked.as_bool(),
             "the app kept the helper's section handle"
         );
+    }
+
+    #[tokio::test]
+    async fn input_from_the_session_reaches_the_helper_pipe() {
+        let pipe = random_pipe_name().unwrap();
+        let server = create_helper_pipe(&pipe).unwrap();
+        let mut client = client_of(&pipe);
+        server.connect().await.unwrap();
+        let (link, mut driver) = SecureDesktopLink::pair();
+        let input = OsInput::Key {
+            key: KeyCode::Named(NamedKey::Alt),
+            pressed: true,
+        };
+        assert!(link.input().send(input.clone()));
+        let helper = tokio::task::spawn_blocking(move || {
+            let mut codec = MessageCodec::<AppToHelper>::new(LOCAL_FRAME_LIMIT);
+            let mut received = BytesMut::new();
+            loop {
+                if let Some(message) = codec.decode(&mut received).unwrap() {
+                    return message;
+                }
+                let mut chunk = [0u8; 256];
+                let read = client.read(&mut chunk).unwrap();
+                assert_ne!(read, 0, "the app closed the pipe");
+                received.extend_from_slice(&chunk[..read]);
+            }
+        });
+
+        let messages = FramedRead::new(server, MessageCodec::<HelperToApp>::new(LOCAL_FRAME_LIMIT));
+        let relaying =
+            tokio::spawn(async move { relay(messages, InputDesktop::Winlogon, &mut driver).await });
+        assert_eq!(helper.await.unwrap(), AppToHelper::Input(input));
+        drop(link);
+        let _relayed = relaying.await.unwrap();
     }
 
     fn own_user() -> String {

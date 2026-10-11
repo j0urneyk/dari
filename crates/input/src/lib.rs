@@ -1,9 +1,9 @@
 //! Applies remote keyboard and pointer input to the local machine.
 //!
-//! [`InputSession`] validates and tracks input from one remote session: it maps normalized
-//! pointer positions onto the captured display and remembers which keys and buttons are held,
-//! so ending the session never leaves a key stuck down. The OS work happens in an
-//! [`InputBackend`]; [`EnigoBackend`] is the real one.
+//! [`InputSession`] applies input from one remote session: it maps normalized pointer positions
+//! onto the captured display and hands each call to an [`Injector`], which remembers which keys
+//! and buttons are held, so ending the session never leaves a key stuck down. The OS work
+//! happens in an [`InputBackend`]; [`EnigoBackend`] is the real one.
 
 mod backend;
 mod keymap;
@@ -11,7 +11,7 @@ mod session;
 
 pub use backend::{EnigoBackend, InputBackend, RecordedAction, RecordingBackend};
 pub use keymap::ModifierMapping;
-pub use session::{DisplayGeometry, InputSession, MAX_HELD_INPUTS};
+pub use session::{DisplayGeometry, Injector, InputSession, MAX_HELD_INPUTS};
 
 use thiserror::Error;
 

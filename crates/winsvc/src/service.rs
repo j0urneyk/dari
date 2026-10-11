@@ -6,7 +6,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dari_proto::{PIPE_CLIENT_RIGHTS, Refusal, SERVICE_PIPE, ServiceReply, ServiceRequest};
+use dari_proto::{
+    PIPE_CLIENT_RIGHTS, Refusal, SERVICE_PIPE, SecureDesktopControl, ServiceReply, ServiceRequest,
+};
 use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
 
 use crate::command::HelperArgs;
@@ -49,6 +51,7 @@ pub(crate) struct Server {
     expected_app: PathBuf,
     helpers: Mutex<HashMap<u32, Helper>>,
     limiter: Mutex<RefusalLimiter>,
+    policy: fn() -> SecureDesktopControl,
 }
 
 /// A helper and the handle to the app it serves, which keeps the app's process ID from being
@@ -99,6 +102,7 @@ impl Server {
             exe,
             helpers: Mutex::default(),
             limiter: Mutex::new(RefusalLimiter::new(REFUSALS_PER_WINDOW, REFUSAL_WINDOW)),
+            policy: SecureDesktopControl::read,
         })
     }
 
@@ -183,6 +187,10 @@ impl Server {
         request: ServiceRequest,
         log: Option<&EventLog>,
     ) -> ServiceReply {
+        let request = match admit(request, (self.policy)()) {
+            Ok(request) => request,
+            Err(refusal) => return ServiceReply::Refused(refusal),
+        };
         let session = client.session;
         let mut helpers = self.helpers();
         match request {
@@ -210,10 +218,15 @@ impl Server {
                 match launch_helper(session, &self.exe, &client.process, arguments, &self.job) {
                     Ok(launched) => {
                         if let Some(log) = log {
-                            log.info(&format!(
+                            let message = format!(
                                 "started a helper in session {session}: pid {}, input {input}, for {}",
                                 launched.pid, client.detail
-                            ));
+                            );
+                            if input {
+                                log.input_helper_started(&message);
+                            } else {
+                                log.info(&message);
+                            }
                         }
                         helpers.insert(
                             session,
@@ -243,6 +256,20 @@ impl Server {
 
     fn helpers(&self) -> MutexGuard<'_, HashMap<u32, Helper>> {
         lock(&self.helpers)
+    }
+}
+
+fn admit(
+    request: ServiceRequest,
+    control: SecureDesktopControl,
+) -> Result<ServiceRequest, Refusal> {
+    match request {
+        ServiceRequest::StartHelper { pipe, input } => Ok(ServiceRequest::StartHelper {
+            pipe,
+            input: control.helper_input(input),
+        }),
+        ServiceRequest::SendSas if control == SecureDesktopControl::Off => Err(Refusal::PolicyOff),
+        ServiceRequest::SendSas => Ok(ServiceRequest::SendSas),
     }
 }
 
@@ -284,10 +311,66 @@ pub(crate) fn vet(pipe: &Pipe, expected_app: &Path) -> Result<Client, Refused> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dari_proto::{HelperPipeName, PIPE_RANDOM_BYTES};
     use windows::Win32::Foundation::ERROR_PIPE_BUSY;
 
     use super::*;
     use crate::test_support::{test_pipe, test_pipe_path};
+
+    #[test]
+    fn the_policy_off_takes_input_from_a_helper_and_refuses_the_secure_attention_sequence() {
+        use SecureDesktopControl::{Off, On};
+
+        let pipe = HelperPipeName::from_random([7; PIPE_RANDOM_BYTES]);
+        let start = |input| ServiceRequest::StartHelper {
+            pipe: pipe.clone(),
+            input,
+        };
+        for (control, requested, granted) in [
+            (On, true, true),
+            (On, false, false),
+            (Off, true, false),
+            (Off, false, false),
+        ] {
+            assert_eq!(admit(start(requested), control), Ok(start(granted)));
+        }
+        assert_eq!(
+            admit(ServiceRequest::SendSas, On),
+            Ok(ServiceRequest::SendSas)
+        );
+        assert_eq!(admit(ServiceRequest::SendSas, Off), Err(Refusal::PolicyOff));
+    }
+
+    static POLICY_ON: AtomicBool = AtomicBool::new(false);
+
+    fn test_policy() -> SecureDesktopControl {
+        if POLICY_ON.load(Ordering::Relaxed) {
+            SecureDesktopControl::On
+        } else {
+            SecureDesktopControl::Off
+        }
+    }
+
+    #[test]
+    fn the_service_reads_the_policy_for_each_request() {
+        let mut server = Server::start(&test_pipe_path()).unwrap();
+        server.policy = test_policy;
+        let client = || Client {
+            session: u32::MAX,
+            process: open_client_process(std::process::id()).unwrap(),
+            detail: "this test".into(),
+        };
+        let reply = |server: &Server| server.handle(client(), ServiceRequest::SendSas, None);
+
+        POLICY_ON.store(false, Ordering::Relaxed);
+        assert_eq!(reply(&server), ServiceReply::Refused(Refusal::PolicyOff));
+        POLICY_ON.store(true, Ordering::Relaxed);
+        assert_eq!(reply(&server), ServiceReply::Refused(Refusal::NoHelper));
+        POLICY_ON.store(false, Ordering::Relaxed);
+        assert_eq!(reply(&server), ServiceReply::Refused(Refusal::PolicyOff));
+    }
 
     fn connected_pipe() -> (Pipe, Pipe) {
         let (server, path) = test_pipe();

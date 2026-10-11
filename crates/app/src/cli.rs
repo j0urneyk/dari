@@ -15,15 +15,20 @@ use anyhow::Context as _;
 use dari_media::StreamSettings;
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_session::{
-    HostConfig, HostEvent, HostPolicy, RelayStatus, SystemPlatform, ViewerConfig, ViewerEvent,
-    connect_viewer, start_host,
+    ApprovalDecision, HostConfig, HostEvent, HostPolicy, RelayStatus, SystemPlatform, ViewerConfig,
+    ViewerEvent, connect_viewer, start_host,
 };
 
 use crate::config::{
     auto_frame_rate, data_directory, device_name, local_addresses, resolve_target,
 };
 
-pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()> {
+pub(crate) async fn host(port: u16, relay: Option<String>, view_only: bool) -> anyhow::Result<()> {
+    let decision = if view_only {
+        ApprovalDecision::ViewOnly
+    } else {
+        ApprovalDecision::AllowControl
+    };
     let identity = Arc::new(DeviceIdentity::load_or_generate(&data_directory()?)?);
     let (handle, mut events) = start_host(
         HostConfig {
@@ -31,8 +36,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
             host_name: device_name(),
             stream: StreamSettings::default(),
             policy: HostPolicy {
-                // The headless host has no one to ask; anyone with the password gets control.
-                require_approval: false,
+                require_approval: view_only,
                 clipboard: false,
                 // Files would land on this machine without anyone choosing to accept them.
                 file_transfer: false,
@@ -57,6 +61,9 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
             std::net::IpAddr::V6(v6) => println!("  address: [{v6}]:{port}"),
         }
     }
+    if view_only {
+        println!("Viewers can only see the screen.");
+    }
     println!("Press Ctrl+C to stop.");
     loop {
         tokio::select! {
@@ -75,9 +82,7 @@ pub(crate) async fn host(port: u16, relay: Option<String>) -> anyhow::Result<()>
                     RelayStatus::Connecting => println!("Connecting to the relay…"),
                     RelayStatus::Unavailable(error) => println!("Relay unavailable: {error}"),
                 },
-                Some(HostEvent::ApprovalRequested { request, .. }) => {
-                    request.respond(dari_session::ApprovalDecision::AllowControl);
-                }
+                Some(HostEvent::ApprovalRequested { request, .. }) => request.respond(decision),
                 Some(HostEvent::SessionStatus(status)) => {
                     println!("screen: {:?}, input: {:?}", status.screen, status.input);
                 }
