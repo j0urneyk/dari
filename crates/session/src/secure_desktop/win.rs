@@ -43,6 +43,7 @@ use super::{LinkCommand, LinkDriver, SecureDesktopLink};
 const LOCAL_SYSTEM: &str = "S-1-5-18";
 const SERVICE_TIME: Duration = Duration::from_secs(5);
 const HELPER_TIME: Duration = Duration::from_secs(10);
+const STOP_TIME: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LinkError {
@@ -83,38 +84,65 @@ async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
         connected = connect(input) => connected?,
         () = session_gone(driver) => return Ok(()),
     };
+    relay(messages, first, driver).await
+}
+
+/// Plays what a connected helper says into `driver` until the session drops the link or the
+/// helper's pipe ends, then stops the helper.
+async fn relay(
+    messages: HelperMessages,
+    first: InputDesktop,
+    driver: &mut LinkDriver,
+) -> Result<(), LinkError> {
     driver.desktop_changed(first);
     let (mut messages, mut replies) = split(messages);
-    if let Some(display) = driver.selected_display() {
-        replies.send(&AppToHelper::SelectDisplay(display)).await?;
-    }
-    let mut handover = Handover::new(ReadOnlySections);
-    loop {
-        tokio::select! {
-            command = driver.command() => match command {
-                Some(LinkCommand::SelectDisplay(display)) => {
-                    replies.send(&AppToHelper::SelectDisplay(display)).await?;
-                }
-                None => return Ok(()),
-            },
-            message = messages.next() => {
-                let message = message.ok_or(LinkError::HelperClosed)??;
-                if let Some(reply) = handover.handle(message, driver).await? {
-                    replies.send(&reply).await?;
+    let relayed: Result<(), LinkError> = async {
+        if let Some(display) = driver.selected_display() {
+            replies.send(&AppToHelper::SelectDisplay(display)).await?;
+        }
+        let mut handover = Handover::new(ReadOnlySections);
+        loop {
+            tokio::select! {
+                command = driver.command() => match command {
+                    Some(LinkCommand::SelectDisplay(display)) => {
+                        replies.send(&AppToHelper::SelectDisplay(display)).await?;
+                    }
+                    None => return Ok(()),
+                },
+                message = messages.next() => {
+                    let message = message.ok_or(LinkError::HelperClosed)??;
+                    if let Some(reply) = handover.handle(message, driver).await? {
+                        replies.send(&reply).await?;
+                    }
                 }
             }
         }
     }
+    .await;
+    stop_helper(&mut messages, &mut replies).await;
+    relayed
 }
 
+/// Stops the helper and reads until it closes its pipe, for up to `STOP_TIME`. Until then the
+/// helper may duplicate a section handle into this process that no message read so far names;
+/// each `FrameSection` read here is closed unmapped. A message that doesn't decode ends the read,
+/// since nothing after it can be found.
+async fn stop_helper(messages: &mut HelperReader, replies: &mut HelperReplies) {
+    let drained = async {
+        let _sent = replies.send(&AppToHelper::Stop).await;
+        while let Some(Ok(message)) = messages.next().await {
+            if let HelperToApp::FrameSection { handle, .. } = message {
+                drop(section_handle(handle));
+            }
+        }
+    };
+    let _drained = tokio::time::timeout(STOP_TIME, drained).await;
+}
+
+type HelperReader = FramedRead<ReadHalf<NamedPipeServer>, MessageCodec<HelperToApp>>;
 type HelperReplies = FramedWrite<WriteHalf<NamedPipeServer>, MessageCodec<AppToHelper>>;
 
-fn split(
-    messages: HelperMessages,
-) -> (
-    FramedRead<ReadHalf<NamedPipeServer>, MessageCodec<HelperToApp>>,
-    HelperReplies,
-) {
+fn split(messages: HelperMessages) -> (HelperReader, HelperReplies) {
     let parts = messages.into_parts();
     let (reader, writer) = tokio::io::split(parts.io);
     let mut messages = FramedRead::new(reader, parts.codec);
@@ -148,6 +176,13 @@ impl SectionMapper for ReadOnlySections {
     }
 }
 
+fn section_handle(handle: u64) -> io::Result<OwnedHandle> {
+    let raw = usize::try_from(handle).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    // SAFETY: the helper, which passed the LocalSystem check, duplicated this handle into this
+    // process for the app alone, so nothing else owns it; it is closed when the result drops.
+    Ok(unsafe { OwnedHandle::from_raw_handle(std::ptr::with_exposed_provenance_mut(raw)) })
+}
+
 struct ReadOnlySection {
     view: MEMORY_MAPPED_VIEW_ADDRESS,
     layout: FrameLayout,
@@ -169,12 +204,7 @@ const _: () = assert!(
 
 impl ReadOnlySection {
     fn map(handle: u64, layout: FrameLayout) -> io::Result<Self> {
-        let raw =
-            usize::try_from(handle).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-        // SAFETY: the helper, which passed the LocalSystem check, duplicated this handle into this
-        // process for the app alone, so nothing else owns it; it is closed when `handle` drops.
-        let handle =
-            unsafe { OwnedHandle::from_raw_handle(std::ptr::with_exposed_provenance_mut(raw)) };
+        let handle = section_handle(handle)?;
         // SAFETY: mapping a section read-only creates a new view and touches no memory Rust owns.
         let view = unsafe {
             MapViewOfFile(
@@ -514,10 +544,10 @@ impl Drop for SecurityDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     use windows::Win32::Foundation::{
-        DUPLICATE_SAME_ACCESS, DuplicateHandle, INVALID_HANDLE_VALUE,
+        CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, INVALID_HANDLE_VALUE,
     };
     use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_WRITE, PAGE_READWRITE};
 
@@ -717,6 +747,43 @@ mod tests {
         section.header(1024, 1024);
         let claimed = FrameLayout::new(1024, 1024).unwrap();
         assert!(ReadOnlySection::map(section.handle(), claimed).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_section_the_helper_sends_as_the_session_ends_is_closed() {
+        let pipe = random_pipe_name().unwrap();
+        let server = create_helper_pipe(&pipe).unwrap();
+        let mut client = client_of(&pipe);
+        server.connect().await.unwrap();
+        let section = HelperSection::new(FrameLayout::new(1, 1).unwrap().total_len());
+        section.header(1, 1);
+        let handle = section.handle();
+        let helper = tokio::task::spawn_blocking(move || {
+            let _read = client.read(&mut [0u8; 64]);
+            let _sent = client.write_all(&frame(&HelperToApp::FrameSection {
+                handle,
+                width: 1,
+                height: 1,
+            }));
+        });
+
+        let (link, mut driver) = SecureDesktopLink::pair();
+        drop(link);
+        let messages = FramedRead::new(server, MessageCodec::<HelperToApp>::new(LOCAL_FRAME_LIMIT));
+        relay(messages, InputDesktop::Winlogon, &mut driver)
+            .await
+            .unwrap();
+        helper.await.unwrap();
+
+        let sent = HANDLE(std::ptr::with_exposed_provenance_mut(
+            usize::try_from(handle).unwrap(),
+        ));
+        // SAFETY: only compares the objects two handle values name; an invalid one names none.
+        let leaked = unsafe { CompareObjectHandles(sent, HANDLE(section.mapping.as_raw_handle())) };
+        assert!(
+            !leaked.as_bool(),
+            "the app kept the helper's section handle"
+        );
     }
 
     fn own_user() -> String {
