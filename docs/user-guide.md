@@ -31,9 +31,31 @@ transparent title bar.
 | **Share sound** | On by default. Viewers that turn sound on hear what this computer plays, in view-only sessions too. Windows, or macOS 14.6 and later; macOS asks for permission to record system audio the first time |
 | **Exchange files** | On by default. In sessions that allow control, the viewer's files and folders are saved to this computer's Downloads folder, and **Send file…** next to **Disconnect** sends files or folders to the viewer |
 | **Show this device on the local network** | On by default. Advertises the name over mDNS so it appears in the other side's "Nearby devices" |
+| **Let viewers answer UAC prompts and the lock screen** | Windows only, and shown only when Dari is installed with its `DariService` service. On by default. See [Answering UAC prompts and the lock screen](#answering-uac-prompts-and-the-lock-screen) |
 
-Changes to the approval, clipboard, sound, and file settings apply from the next session. Transfers in the running session
+Changes to the approval, clipboard, sound, file, and UAC prompt settings apply from the next session. Transfers in the running session
 appear under the connected viewer, with progress, **Cancel**, and **Show in folder** for received files.
+
+### Answering UAC prompts and the lock screen
+
+When this computer runs Windows and shows a User Account Control (UAC) prompt or the lock screen, a viewer sees it.
+With **Let viewers answer UAC prompts and the lock screen** on, a viewer that you allowed to control this computer
+can also click and type on it, for example to choose **Yes** on a UAC prompt or to enter your password on the lock
+screen. With the setting off, viewers still see these screens, but only someone at this computer can answer them. A
+view-only viewer can never answer them.
+
+The setting belongs to the computer, not to your user account, so only an administrator can change it. Turning the
+switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. The installer asks
+the same question on its own page, and a silent install turns it on unless a value is already stored. An
+administrator can also manage it with Group Policy. It is the DWORD `SecureDesktopControl` under
+`HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch shows the value Dari read
+when it started, so restart Dari to see a change made there.
+
+The setting is on by default because the person who installs Dari is usually the person who connects to it. While
+it is on, malware already running as you with administrator rights could use Dari to click **Yes** on its own UAC
+prompts. Dari writes an entry to the Windows Application log, under the source `DariService`, each time a session
+that allows control starts with this setting on.
+[The security model](security.md#same-user-malware-can-answer-its-own-consent-prompts) explains the limits.
 
 ### Control a remote device
 
@@ -72,9 +94,11 @@ and offers **Display** (choose among monitors), quality (**Speed / Balanced / Qu
 **Disconnect**. The dot before the device name is
 green while the session runs, amber while the host is still deciding, and gray once the session is over; a finished
 session explains why and offers **Close**. Limits such as a view-only session appear as a notice at the top of the
-screen. Closing the window also ends the
-session. When the window loses focus, every held key and button is released, so nothing stays pressed on the
-remote device.
+screen. When a Windows host shows a UAC prompt or the lock screen, the window shows it too. In a session that allows
+control you can answer it, if the host has
+[Let viewers answer UAC prompts and the lock screen](#answering-uac-prompts-and-the-lock-screen) on. Closing the
+window also ends the session. When the window loses focus, every held key and button is released, so nothing stays
+pressed on the remote device.
 
 The frame rate menu caps how many frames per second the host sends: **Auto**, 30, 60, 90, 120, or 144. Auto follows
 the fastest display on your computer, so a 120 Hz screen asks for 120. The host never streams faster than its own
@@ -154,7 +178,7 @@ dari connect 192.168.0.10 --relay relay.example.com
 
 `host` prints its addresses, device fingerprint, password (it changes every session), and relay ID, and waits
 until Ctrl+C. There's nobody to approve requests, so it gives control to any viewer that knows the password and
-turns off the clipboard and file transfer. `connect` asks for the password (it can also be piped in), connects, and
+turns off the clipboard and file transfer. `dari host --view-only` lets viewers only see the screen. `connect` asks for the password (it can also be piped in), connects, and
 prints received frames and bitrate every second. `dari connect --fps 60` asks for at most 60 fps; without it,
 `connect` asks for this machine's display refresh rate (up to 144).
 
@@ -173,7 +197,7 @@ Set the log level with the `RUST_LOG` environment variable (default `info`), for
 | The screen is black or shows only the wallpaper | The remote Mac needs Screen Recording permission, and the app must be restarted after granting it |
 | **No sound permission** instead of the sound button | The remote Mac refused Dari system audio recording. On that Mac, turn Dari on under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only |
 | The screen is visible but control doesn't work | Check the remote Mac's Accessibility permission, or whether the other side chose "View only" |
-| A UAC prompt or the lock screen on Windows can't be clicked | A known limitation: the viewer sees the secure desktop but can't answer it yet. Ask someone at the host. If the viewer shows a notice instead of the prompt, check that `DariService` runs on the host |
+| A UAC prompt or the lock screen on Windows can't be clicked | Check that the host allowed control and that **Let viewers answer UAC prompts and the lock screen** is on there. A change applies from the next session, so reconnect after turning it on. If the viewer shows a notice instead of the prompt, check that `DariService` runs on the host. Ctrl+Alt+Del can't be sent from the viewer yet |
 | The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
 | "Set a relay server to connect by ID" | Enter the same relay address as the other side in your "Relay server" field |
 | "Cannot reach the relay (…). Retrying…" | Check the relay address and firewall. The app keeps retrying every 2 to 60 seconds. See [relay operations](relay.md) |
