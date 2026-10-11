@@ -379,9 +379,9 @@ mod tests {
         }
     }
 
-    struct Sequence(u64);
+    struct Xorshift64(u64);
 
-    impl Sequence {
+    impl Xorshift64 {
         fn below(&mut self, bound: u64) -> u64 {
             self.0 ^= self.0 << 13;
             self.0 ^= self.0 >> 7;
@@ -401,7 +401,7 @@ mod tests {
         let buttons = [MouseButton::Left, MouseButton::Right];
         let mut switches = 0;
         for seed in 1..=64u64 {
-            let mut random = Sequence(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let mut random = Xorshift64(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
             let mut rig = Rig::new();
             let (mut on_local, mut on_helper) = (Held::default(), Held::default());
             for _ in 0..200 {

@@ -112,6 +112,10 @@ impl Expect {
     }
 }
 
+/// How long `hold-alt-leave` holds Alt before the viewer disconnects, so the helper has injected
+/// it by then.
+const HOLD_BEFORE_LEAVING: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Keys {
     None,
@@ -733,7 +737,7 @@ async fn send_keys(
         Keys::Escape => tap(viewer, KeyCode::Named(NamedKey::Escape)).await,
         Keys::HoldAltLeave => {
             press(viewer, alt, true).await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(HOLD_BEFORE_LEAVING).await;
         }
         Keys::HoldF20 => press(viewer, KeyCode::Named(NamedKey::Function(20)), true).await,
         Keys::Password => {

@@ -3,13 +3,12 @@ use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, WIN3
 use windows::core::Error;
 use windows_registry::{Key, LOCAL_MACHINE};
 
-use crate::win32::EVENT_SOURCE;
+use crate::win32::{EVENT_SOURCE, TYPES_SUPPORTED};
 
 const EVENT_LOG: &str = r"SYSTEM\CurrentControlSet\Services\EventLog\Application";
 /// Its message table renders `%1` for every event ID from 1 to 1000, so the service needs no
 /// message file of its own.
 const MESSAGE_FILE: &str = r"%SystemRoot%\System32\EventCreate.exe";
-const TYPES_SUPPORTED: u32 = 7;
 
 pub(crate) fn write(control: SecureDesktopControl) -> Result<(), Error> {
     write_in(LOCAL_MACHINE, POLICY_KEY, control)
@@ -39,7 +38,7 @@ fn write_in(root: &Key, path: &str, control: SecureDesktopControl) -> Result<(),
 fn register_in(root: &Key, path: &str) -> Result<(), Error> {
     let key = root.create(path)?;
     key.set_expand_string("EventMessageFile", MESSAGE_FILE)?;
-    key.set_u32("TypesSupported", TYPES_SUPPORTED)
+    key.set_u32("TypesSupported", u32::from(TYPES_SUPPORTED))
 }
 
 fn unregister_in(root: &Key, path: &str) -> Result<(), Error> {

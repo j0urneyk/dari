@@ -8,6 +8,9 @@ use windows::core::PCWSTR;
 use super::wide;
 
 pub(crate) const EVENT_SOURCE: &str = "DariService";
+/// The event types [`EventLog`] reports, for the source's `TypesSupported` registry value.
+pub(crate) const TYPES_SUPPORTED: u16 =
+    EVENTLOG_ERROR_TYPE.0 | EVENTLOG_WARNING_TYPE.0 | EVENTLOG_INFORMATION_TYPE.0;
 
 #[derive(Debug)]
 pub(crate) struct EventLog(HANDLE);
