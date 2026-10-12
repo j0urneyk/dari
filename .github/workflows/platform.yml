@@ -6,7 +6,7 @@ on:
       release:
         description: Release tag whose Windows installer to smoke-test
         required: false
-        default: v0.0.3
+        default: v0.0.4
   pull_request:
     paths:
       - .github/workflows/platform.yml
@@ -26,7 +26,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
-  RELEASE_TAG: ${{ inputs.release || 'v0.0.3' }}
+  RELEASE_TAG: ${{ inputs.release || 'v0.0.4' }}
   CARGO_PACKAGER_VERSION: 0.11.8
   PER_USER_RELEASE: v0.0.3
 
