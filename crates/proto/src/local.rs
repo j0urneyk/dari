@@ -125,8 +125,15 @@ impl Validate for ServiceRequest {
 /// From the service to the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServiceReply {
-    HelperStarted,
+    /// The helper started. `secure_attention` says whether the app may ask for
+    /// [`ServiceRequest::SendSas`]: only when the helper may inject and the client's session is
+    /// the console session.
+    HelperStarted {
+        secure_attention: bool,
+    },
     Refused(Refusal),
+    /// The service raised the secure attention sequence.
+    SasSent,
 }
 
 impl Validate for ServiceReply {
@@ -144,12 +151,20 @@ pub enum Refusal {
     InactiveSession,
     /// A helper that another app process asked for still runs in the client's session.
     HelperRunning,
-    /// `SendSas` came from a session without a running helper.
+    /// `SendSas` came from an app whose own helper doesn't run in its session.
     NoHelper,
     /// The service accepted the client but couldn't do what it asked.
     Failed,
     /// The machine's [`SecureDesktopControl`] policy is off.
     PolicyOff,
+    /// `SoftwareSASGeneration` keeps services from raising the secure attention sequence, and an
+    /// administrator or a Group Policy set it, so the service leaves it alone.
+    SasDisallowed,
+    /// `SendSas` came from an app whose helper started without input.
+    NoInput,
+    /// `SendSas` came from a session that isn't the console session, where `SendSAS` would raise
+    /// the sequence.
+    NotConsole,
 }
 
 /// Under `HKLM`, the key that holds [`POLICY_VALUE`].
@@ -489,7 +504,13 @@ mod tests {
             input: true,
         });
         round_trip(&ServiceRequest::SendSas);
-        round_trip(&ServiceReply::HelperStarted);
+        round_trip(&ServiceReply::HelperStarted {
+            secure_attention: true,
+        });
+        round_trip(&ServiceReply::HelperStarted {
+            secure_attention: false,
+        });
+        round_trip(&ServiceReply::SasSent);
         for refusal in [
             Refusal::NotDari,
             Refusal::InactiveSession,
@@ -497,6 +518,9 @@ mod tests {
             Refusal::NoHelper,
             Refusal::Failed,
             Refusal::PolicyOff,
+            Refusal::SasDisallowed,
+            Refusal::NoInput,
+            Refusal::NotConsole,
         ] {
             round_trip(&ServiceReply::Refused(refusal));
         }
@@ -744,6 +768,9 @@ mod tests {
             [1, 4]
         );
         assert_eq!(postcard::to_allocvec(&Refusal::PolicyOff).unwrap(), [5]);
+        assert_eq!(postcard::to_allocvec(&Refusal::SasDisallowed).unwrap(), [6]);
+        assert_eq!(postcard::to_allocvec(&Refusal::NoInput).unwrap(), [7]);
+        assert_eq!(postcard::to_allocvec(&Refusal::NotConsole).unwrap(), [8]);
     }
 
     #[test]

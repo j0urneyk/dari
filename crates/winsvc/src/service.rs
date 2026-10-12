@@ -235,7 +235,9 @@ impl Server {
                                 app: client.process,
                             },
                         );
-                        ServiceReply::HelperStarted
+                        ServiceReply::HelperStarted {
+                            secure_attention: false,
+                        }
                     }
                     Err(error) => {
                         if let Some(log) = log {

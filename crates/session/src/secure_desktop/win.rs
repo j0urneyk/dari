@@ -53,6 +53,8 @@ pub(crate) enum LinkError {
     ServiceMissing,
     #[error("DariService refused: {0:?}")]
     Refused(Refusal),
+    #[error("DariService answered {0:?}")]
+    UnexpectedReply(ServiceReply),
     #[error("the helper didn't connect in time")]
     HelperTimedOut,
     #[error("the helper's pipe client is {0}, not LocalSystem")]
@@ -160,8 +162,9 @@ async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkErro
     let pipe = random_pipe_name()?;
     let server = create_helper_pipe(&pipe)?;
     match ask_service(&ServiceRequest::StartHelper { pipe, input }).await? {
-        ServiceReply::HelperStarted => accept_helper(server).await,
+        ServiceReply::HelperStarted { .. } => accept_helper(server).await,
         ServiceReply::Refused(refusal) => Err(LinkError::Refused(refusal)),
+        reply @ ServiceReply::SasSent => Err(LinkError::UnexpectedReply(reply)),
     }
 }
 

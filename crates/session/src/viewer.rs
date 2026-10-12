@@ -582,13 +582,16 @@ impl ViewerSession {
                 self.send_transfer_reply(reply).await;
             }
             ControlMessage::Disconnect => return Err(SessionEndReason::HostEnded),
-            ControlMessage::Pong { .. } | ControlMessage::Ping { .. } => {}
+            ControlMessage::Pong { .. }
+            | ControlMessage::Ping { .. }
+            | ControlMessage::SecureAttentionStatus(_) => {}
             ControlMessage::Input(_)
             | ControlMessage::RequestKeyframe
             | ControlMessage::SelectDisplay(_)
             | ControlMessage::SetQuality(_)
             | ControlMessage::SetFrameRate(_)
-            | ControlMessage::SetAudio(_) => {
+            | ControlMessage::SetAudio(_)
+            | ControlMessage::SecureAttention => {
                 return Err(SessionEndReason::ProtocolError(
                     "host sent a viewer message".into(),
                 ));

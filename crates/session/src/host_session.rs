@@ -728,11 +728,13 @@ impl HostSession {
             ControlMessage::Ping { token } => self.send(&ControlMessage::Pong { token }).await?,
             ControlMessage::Pong { .. } => {}
             ControlMessage::Disconnect => return Err(SessionEndReason::ViewerLeft),
+            ControlMessage::SecureAttention => {}
             ControlMessage::HostStatus(_)
             | ControlMessage::AwaitingApproval
             | ControlMessage::Declined
             | ControlMessage::Displays { .. }
-            | ControlMessage::FrameRate(_) => {
+            | ControlMessage::FrameRate(_)
+            | ControlMessage::SecureAttentionStatus(_) => {
                 return Err(SessionEndReason::ProtocolError(
                     "viewer sent a host message".into(),
                 ));
