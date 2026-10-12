@@ -119,25 +119,25 @@ impl HidEvents {
 /// modifiers go down and up. Forwarded alone, that is a lone modifier tap, and Windows opens Start
 /// on a lone Win tap, which is what the Mac's Control becomes once shortcuts are translated.
 #[cfg(target_os = "macos")]
-pub(crate) struct Chord {
+struct Chord {
     started: Instant,
     key_sent: bool,
 }
 
 #[cfg(target_os = "macos")]
 impl Chord {
-    pub(crate) fn new(started: Instant) -> Self {
+    fn new(started: Instant) -> Self {
         Self {
             started,
             key_sent: false,
         }
     }
 
-    pub(crate) fn key_sent(&mut self) {
+    fn key_sent(&mut self) {
         self.key_sent = true;
     }
 
-    pub(crate) fn consumed(&self, hid: HidEvents) -> bool {
+    fn consumed(&self, hid: HidEvents) -> bool {
         !self.key_sent
             && hid
                 .key_down
@@ -177,6 +177,53 @@ pub fn deliver_command_key_ups() {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyUp, &handler)
     };
     std::mem::forget(monitor);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct ChordTracker {
+    chord: Option<Chord>,
+    read_hid: fn() -> HidEvents,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for ChordTracker {
+    fn default() -> Self {
+        Self {
+            chord: None,
+            read_hid: HidEvents::now,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ChordTracker {
+    pub(crate) fn hid_events(&self) -> HidEvents {
+        (self.read_hid)()
+    }
+
+    pub(crate) fn read_hid_with(&mut self, read: fn() -> HidEvents) {
+        self.read_hid = read;
+    }
+
+    pub(crate) fn key_sent(&mut self) {
+        if let Some(chord) = &mut self.chord {
+            chord.key_sent();
+        }
+    }
+
+    pub(crate) fn consumed_before(&mut self, modifiers: Modifiers, hid: HidEvents) -> bool {
+        let mut chord = self
+            .chord
+            .take()
+            .unwrap_or_else(|| Chord::new(hid.modifier_change));
+        let consumed = chord.consumed(hid);
+        if consumed {
+            chord.key_sent();
+        }
+        let held = !modifier_changes(Modifiers::default(), modifiers).is_empty();
+        self.chord = held.then_some(chord);
+        consumed
+    }
 }
 
 /// F20, which no shortcut binds on the host, so tapping it only turns a modifier tap into a chord.
