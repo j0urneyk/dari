@@ -33,7 +33,8 @@ transparent title bar.
 | **Show this device on the local network** | On by default. Advertises the name over mDNS so it appears in the other side's "Nearby devices" |
 | **Let viewers answer UAC prompts and the lock screen** | Windows only, and shown only when Dari is installed with its `DariService` service. On by default. See [Answering UAC prompts and the lock screen](#answering-uac-prompts-and-the-lock-screen) |
 
-Changes to the approval, clipboard, sound, file, and UAC prompt settings apply from the next session. Transfers in the running session
+Changes to the approval, clipboard, sound, and file settings apply from the next session, and so does turning the UAC
+prompt setting on. Transfers in the running session
 appear under the connected viewer, with progress, **Cancel**, and **Show in folder** for received files.
 
 ### Answering UAC prompts and the lock screen
@@ -45,9 +46,9 @@ screen. With the setting off, viewers still see these screens, but only someone 
 view-only viewer can never answer them.
 
 The setting belongs to the computer, not to your user account, so only an administrator can change it. Turning the
-switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. A change applies
-from the next session. When you turn the setting off, a viewer who is already connected can still answer these
-screens until that session ends. The installer asks
+switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. Turning the setting
+off takes effect within a second: a viewer who is already connected still sees these screens but can no longer answer
+them. Turning it on applies from the next session. The installer asks
 the same question on its own page, and a silent install turns it on unless a value is already stored. An
 administrator can also manage it with Group Policy. It is the DWORD `SecureDesktopControl` under
 `HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch reads the value again every
@@ -201,7 +202,7 @@ Set the log level with the `RUST_LOG` environment variable (default `info`), for
 | The screen is black or shows only the wallpaper | The remote Mac needs Screen Recording permission, and the app must be restarted after granting it |
 | **No sound permission** instead of the sound button | The remote Mac refused Dari system audio recording. On that Mac, turn Dari on under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only |
 | The screen is visible but control doesn't work | Check the remote Mac's Accessibility permission, or whether the other side chose "View only" |
-| A UAC prompt or the lock screen on Windows can't be clicked | Check that the host allowed control and that **Let viewers answer UAC prompts and the lock screen** is on there. A change applies from the next session, so reconnect after turning it on. If the viewer shows a notice instead of the prompt, check that `DariService` runs on the host |
+| A UAC prompt or the lock screen on Windows can't be clicked | Check that the host allowed control and that **Let viewers answer UAC prompts and the lock screen** is on there. Turning it on applies from the next session, so reconnect after turning it on. If the viewer shows a notice instead of the prompt, check that `DariService` runs on the host |
 | **Send Ctrl+Alt+Del** is missing from the toolbar | The host must be a Windows PC with `DariService` running, in a session that allows control, with **Let viewers answer UAC prompts and the lock screen** on. Dari on the host must run in the PC's console session, not in a Remote Desktop session. The button also goes away when an administrator set `SoftwareSASGeneration` under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System` to a value that keeps services from sending Ctrl+Alt+Del |
 | The stream stutters or lags | Lower the quality to "Speed" in the toolbar (1280px, 1.5 Mbps) |
 | "Set a relay server to connect by ID" | Enter the same relay address as the other side in your "Relay server" field |

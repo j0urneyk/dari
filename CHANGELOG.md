@@ -20,8 +20,9 @@ All notable changes to this project are documented here. The format follows
 - The Windows host's **Sharing** settings have **Let viewers answer UAC prompts and the lock screen**, on by default.
   Changing it asks for administrator approval, and an administrator can also set it with Group Policy
   (`SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`). The Windows installer asks the same question on
-  its own page, and an upgrade keeps the answer. Dari records each session that may answer these screens in the
-  Windows Application log.
+  its own page, and an upgrade keeps the answer. Turning it off takes the answer away within a second, also from a
+  viewer who is already connected, who still sees these screens. Dari records each session that may answer these
+  screens, and each one whose answer was taken away, in the Windows Application log.
 - `dari host --view-only` lets viewers of the headless host only see the screen.
 
 ### Changed
