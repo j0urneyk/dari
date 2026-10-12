@@ -55,7 +55,7 @@ cargo deny check
   advisories only to direct dependencies, because we can't replace the crates GPUI pulls in transitively. It also
   checks the license allowlist and bans yanked crates, wildcard versions, and unknown registries or git sources.
 
-`unsafe` appears in seven places, each behind its own `allow(unsafe_code)`:
+`unsafe` appears in eight places, each behind its own `allow(unsafe_code)`:
 
 - Three OS API calls in `crates/input/src/backend.rs`: `AXIsProcessTrusted` on macOS (checks Accessibility
   permission), and on Windows `SetCursorPos` (moves the pointer in virtual-desktop coordinates, including secondary
@@ -81,6 +81,8 @@ cargo deny check
   `dari-service.exe policy on|off` elevated and waits for its exit code.
 - `crates/app` on macOS: AppKit's two appearance names in `style.rs`, the key-release monitor in `keymap.rs`
   (`deliver_command_key_ups`), and in `tests/gui.rs` the view that counts the releases AppKit hands it.
+- The cross-device check's host window in `crates/check/src/probe.rs` on macOS: three HIToolbox calls and
+  `CFRelease`, which select an ASCII keyboard input source while the window is open and restore the user's source.
 
 `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET=13.0`, the oldest macOS with the ScreenCaptureKit features the
 capture uses. Windows-only code without C dependencies can be checked from macOS too (`dari-media` can't: OpenH264's
