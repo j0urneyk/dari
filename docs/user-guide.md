@@ -48,7 +48,8 @@ view-only viewer can never answer them.
 The setting belongs to the computer, not to your user account, so only an administrator can change it. Turning the
 switch on or off shows a UAC prompt for administrator approval. If you decline, nothing changes. Turning the setting
 off takes effect within a second: a viewer who is already connected still sees these screens but can no longer answer
-them. Turning it on applies from the next session. The installer asks
+them. That viewer isn't told: its clicks and keys on these screens just stop having effect. Turning it on applies
+from the next session. The installer asks
 the same question on its own page, and a silent install turns it on unless a value is already stored. An
 administrator can also manage it with Group Policy. It is the DWORD `SecureDesktopControl` under
 `HKLM\SOFTWARE\Policies\Dari`, where 1 or no value means on and 0 means off. The switch reads the value again every

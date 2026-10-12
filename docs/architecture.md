@@ -411,12 +411,15 @@ input through the `Injector` and `EnigoBackend` only while it is attached to `Wi
 drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits while the thread is attached to
 `Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. A helper started without input has no input thread
 and drops every `Input`. The input thread also reads `SecureDesktopControl` after every receive, input or 100 ms
-timeout, before it injects anything. When it reads off, it forgets what it holds without releasing it, writes event
-6, and ends, so the helper goes on like one started without input.
+timeout, before it injects anything. When it reads off while attached to `Winlogon`, it releases held Shift, Ctrl,
+and Alt and forgets everything else it holds without releasing it. It then writes event 6 and ends, so the helper
+goes on like one started without input.
 
 The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request
 through `SecureDesktopControl::read` (`crates/proto/src/registry.rs`, Windows only, through the safe
-`windows-registry` API). A missing value or a DWORD of 1 is on, and anything else is off. At
+`windows-registry` API). It goes through `PolicyReading`, which keeps what the read found: a missing value (also a
+key deleted while open), a DWORD, another type, or the registry's error. A missing value or a DWORD of 1 is on, and
+anything else is off. At
 off, `admit` turns `StartHelper { input: true }` into `input: false` and refuses `SendSas` with `PolicyOff`.
 `dari-service.exe policy on|off` writes the value and needs an administrator. The host settings' switch
 (`secure_desktop/win/policy.rs`, re-exported from `dari-session`) reads the value through the same function and
