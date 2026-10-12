@@ -27,7 +27,7 @@ win() { ssh "${ssh_options[@]}" "dari@$ip" "${1//$'\n'/ }"; }
 
 # Read before writing anything, so a failed read leaves the VM unchanged.
 # 0x7FFE02F0 is SharedDataFlags in KUSER_SHARED_DATA; bit 1, DbgElevationEnabled, is EnableLUA as of boot.
-probe=$(win '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o");
+probe=$(win '$ErrorActionPreference = "Stop"; (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o");
   ([Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]0x7FFE02F0) -shr 1) -band 1' | tr -d '\r')
 boot=${probe%%$'\n'*} lua_at_boot=${probe##*$'\n'}
 changed=$(win "\$want = '$want';"'
