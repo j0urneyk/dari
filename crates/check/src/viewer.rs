@@ -125,7 +125,7 @@ impl Session {
                 println!("session ended: {reason}");
                 self.ended = Some(reason);
             }
-            ViewerEvent::Transfer(_) => {}
+            ViewerEvent::Transfer(_) | ViewerEvent::SecureAttention(_) => {}
         }
     }
 }

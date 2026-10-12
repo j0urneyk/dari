@@ -148,7 +148,7 @@ pub(crate) async fn connect(address: &str, relay: &str, fps: Option<u16>) -> any
                 Some(ViewerEvent::HostStatus(status)) => {
                     println!("host screen: {:?}, host input: {:?}", status.screen, status.input);
                 }
-                Some(ViewerEvent::Transfer(_)) => {}
+                Some(ViewerEvent::Transfer(_) | ViewerEvent::SecureAttention(_)) => {}
                 Some(ViewerEvent::Ended(reason)) => {
                     println!("Session ended: {reason}");
                     break;

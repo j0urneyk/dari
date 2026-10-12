@@ -545,7 +545,8 @@ async fn missing_capture_permission_keeps_the_session_and_says_why() {
             ViewerEvent::AwaitingApproval
             | ViewerEvent::Displays { .. }
             | ViewerEvent::FrameRate(_)
-            | ViewerEvent::Transfer(_) => {}
+            | ViewerEvent::Transfer(_)
+            | ViewerEvent::SecureAttention(_) => {}
         }
     }
     // The session survives the end of the video stream.
