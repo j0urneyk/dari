@@ -373,7 +373,7 @@ revoke_held_case() {
   grep ' id 6: ' "$events" | sed 's/^/  /' || true
   [[ -n $revoked && $(wc -l <<<"$revoked") -eq 1 ]] ||
     { echo "DariService's log shows $(grep -c ' id 6: ' "$events") event 6 entries after the change, not 1"; return 1; }
-  [[ $revoked == *'released 1 held modifier keys and forgot 1 held inputs'* ]] ||
+  [[ $revoked == *'Held modifier keys released: 1. Held inputs forgotten without a release: 1.'* ]] ||
     { echo "event 6 doesn't say it released 1 modifier key and forgot 1 held input"; return 1; }
 }
 

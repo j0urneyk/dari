@@ -190,13 +190,14 @@ It inherits only the app's process handle, runs in a job that ends it when the s
 System32, creates no windows, and exits when the app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console
 program started as SYSTEM opens a console window on the user's desktop.
 
-Keys held on the secure desktop don't stay down, with one exception. Before the app moves input between the user's
+Keys held on the secure desktop don't stay down, with two exceptions. Before the app moves input between the user's
 desktop and the helper, it releases every held key and button through the old route. The helper tracks what it
 injected itself. At a desktop switch it forgets that without injecting anything, because Windows clears key state at
 the switch. When its input thread ends while it is attached to `Winlogon` (on `Stop`, when its pipe closes, and when
 the app exits), it releases what it holds there, but only while `Winlogon` is still the input desktop it reads. When
-it can't read the input desktop, it releases nothing. The exception is `SecureDesktopControl` turning off under a
-running helper. Then the helper releases held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
+it can't read the input desktop, it releases nothing, which is the first exception: Windows refuses injection from a
+thread whose desktop is no longer the input desktop, so the helper sends a release only when it knows it can land.
+The second exception is `SecureDesktopControl` turning off under a running helper. Then the helper releases held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
 button down for the local user until they press and release it or the desktop switches, because releasing it could
 answer the prompt.
 It never injects on `Default`, not even a release. Its log names how many inputs it released and why, never which keys. Text and keys never appear in

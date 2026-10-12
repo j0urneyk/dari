@@ -188,7 +188,8 @@ Neither thread creates a window or installs a hook, because `SetThreadDesktop` f
   holds without sending anything, because Windows already cleared key state. When its input thread ends while it is
   attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it releases what it holds there.
   It releases only while `Winlogon` is still the input desktop it reads. When it can't read the input desktop, it
-  releases nothing, because the release could land on whatever replaced the prompt. `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
+  releases nothing. Windows would refuse that release anyway (see the next point), and the log counts only releases
+  the helper could send. `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
   for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt. When the input thread ends because
   `SecureDesktopControl` reads off, it releases only held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
   button down for the local user until they press and release it or the desktop switches, because releasing it
@@ -539,6 +540,7 @@ consent prompt to answer, and an elevated host would hide integrity problems. Th
 | `secure-view-only` | Same as `uac-allow` | Same, in a view-only session | No `result.txt`, the prompt stays up until the host check dismisses it, and `SecureAttention` is refused |
 | `secure-policy-off` | Sets `SecureDesktopControl=0`, then as `uac-allow` | Same as `uac-allow`, in a session that allows control | No `result.txt`, the viewer still received a `Winlogon` frame, and `SecureAttention` is refused |
 | `secure-policy-revoke` | Same as `uac-allow`, then sets `SecureDesktopControl=0` once the viewer sees the prompt | Waits a second after the change, then sends Alt+Y | No `result.txt`, the desktop returns to `Default` once the host check dismisses the prompt, and the helper logs exactly one ID 6 after the change, from 250 ms before to 1000 ms after the change's ID 4 |
+| `secure-policy-revoke-held` | Same as `uac-allow`, then sets `SecureDesktopControl=0` while the viewer holds Shift and Space on the prompt | Presses Shift, then Space, and holds both | The prompt is still up 2 seconds after the change, no `result.txt` after the host check dismisses it, and the one ID 6 after the change says the helper released 1 modifier key and forgot 1 held input |
 | `drop-mid-prompt` | Same as `uac-allow` | Holds Alt, then disconnects | The helper's log shows it released Alt on pipe close, and the host check can still answer the prompt with Esc |
 | `helper-killed` | Same as `uac-allow`, then ends the helper process | Waits | The viewer gets PR 36's notice, and no key stays down |
 | `secure-second-display` | Same as `uac-allow`, on the VM with two displays | Selects the second display while the prompt is up, then the first | Frames from both displays arrive, and Alt+Y still answers the prompt |
@@ -568,7 +570,7 @@ Each phase ends in something a reviewer can run. Estimates assume one engineer w
 | 0. Spike | A throwaway service and helper in the VM with UAC on: winlogon token, restricted token, `SetThreadDesktop`, DXGI capture of a UAC prompt, a click on **Yes**, `SendSAS` | Screenshots of the prompt from the helper, an elevated `whoami`, and a written answer for each unknown: restricted token, DXGI on the VM's adapter, `SoftwareSASGeneration` | 3 days |
 | 1. Per-machine install | `perMachine` installer, the empty service, `install` and `uninstall`, migration from the per-user install, smoke test | Upgrading a per-user 0.0.x install in the VM leaves one per-machine install, a running service, and the old settings and identity | 1 week |
 | 2. See the secure desktop | `dari-winsvc` helper, both pipes and their checks, desktop following, DXGI capture, shared frames, the two-source capturer | The viewer sees a UAC prompt and the lock screen, and the session survives both switches. `uac-deny` passes with the host answering by hand | 2 weeks |
-| 3. Answer it | The routing input backend, held-key release, `input: false`, the `SecureDesktopControl` policy, event log entries | `uac-allow`, `uac-deny`, `lock-unlock`, `secure-view-only`, and `secure-policy-revoke` pass | 1 week |
+| 3. Answer it | The routing input backend, held-key release, `input: false`, the `SecureDesktopControl` policy, event log entries | `uac-allow`, `uac-deny`, `lock-unlock`, `secure-view-only`, `secure-policy-revoke`, and `secure-policy-revoke-held` pass | 1 week |
 | 4. Ctrl+Alt+Del | Protocol 2.2, the viewer menu item, `SendSas` and its `SoftwareSASGeneration` handling | `cad` passes, and a 2.1 peer still connects | 3 days |
 | 5. Documents | security.md threat model, user guide, README known limitations, architecture.md | The docs describe the shipped behavior | 2 days |
 

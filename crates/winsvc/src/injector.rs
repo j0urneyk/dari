@@ -7,7 +7,7 @@ use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, Secure
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The keys [`Follower::revoke`] releases. Event 6 calls them modifier keys.
-pub(crate) const MODIFIER_KEYS: [NamedKey; 4] = [
+const MODIFIER_KEYS: [NamedKey; 4] = [
     NamedKey::Shift,
     NamedKey::Control,
     NamedKey::Alt,
@@ -120,8 +120,10 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
     /// still the input desktop, then forgets whatever is left. Returns how many inputs `release`
     /// released and how many were forgotten.
     ///
-    /// An input desktop it can't read releases nothing: a release meant for the prompt could
-    /// land on whatever replaced it.
+    /// Windows refuses injection from a thread whose desktop is no longer the input desktop, so a
+    /// release there would be counted but never sent; an unreadable input desktop is treated the
+    /// same. A second `Winlogon` screen that replaced the first looks the same, but Windows cleared
+    /// key state at that switch, so those releases match no press.
     fn end(mut self, release: impl FnOnce(&mut Injector<B>) -> usize) -> (usize, usize) {
         let still_there = match &self.attachment {
             Attachment::To(desktop) => {
