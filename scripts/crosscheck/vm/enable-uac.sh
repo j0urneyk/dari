@@ -26,7 +26,10 @@ ssh_options=(-i "$state/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o Co
 win() { ssh "${ssh_options[@]}" "dari@$ip" "${1//$'\n'/ }"; }
 
 # Read before writing anything, so a failed read leaves the VM unchanged.
-boot=$(win '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o")' | tr -d '\r')
+# 0x7FFE02F0 is SharedDataFlags in KUSER_SHARED_DATA; bit 1, DbgElevationEnabled, is EnableLUA as of boot.
+probe=$(win '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o");
+  ([Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]0x7FFE02F0) -shr 1) -band 1' | tr -d '\r')
+boot=${probe%%$'\n'*} lua_at_boot=${probe##*$'\n'}
 changed=$(win "\$want = '$want';"'
   $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
   $now = Get-ItemProperty $key;
@@ -37,15 +40,14 @@ changed=$(win "\$want = '$want';"'
       Write-Output $name
     }
   }' | tr -d '\r')
-if [[ -z $changed ]]; then
+if [[ -n $changed ]]; then
+  echo "Set: ${changed//$'\n'/ }"
+else
   echo "Already set: $want"
-  exit 0
 fi
-echo "Set: ${changed//$'\n'/ }"
-# A change to EnableLUA takes effect only after a restart.
-if [[ $changed != *EnableLUA* ]]; then exit 0; fi
+if ((lua_at_boot == on)); then exit 0; fi
 
-echo "Restarting..."
+echo "Windows is running with EnableLUA=$lua_at_boot. Restarting..."
 win 'Restart-Computer -Force' || true
 # SSH answers before autologon has started the desktop, so wait for a new boot with explorer running.
 deadline=$((SECONDS + 600))
