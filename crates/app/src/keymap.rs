@@ -75,20 +75,60 @@ pub(crate) fn modifier_changes(previous: Modifiers, current: Modifiers) -> Vec<I
         .collect()
 }
 
+/// When the HID system last saw a key go down and a modifier change. Its state counts keys macOS
+/// consumed before they reached the window, and it doesn't wait for the main thread.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+pub struct HidEvents {
+    pub key_down: Option<Instant>,
+    pub modifier_change: Instant,
+}
+
+#[cfg(target_os = "macos")]
+impl HidEvents {
+    pub(crate) fn now() -> Self {
+        use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
+
+        let now = Instant::now();
+        let last = |event| {
+            let seconds = CGEventSource::seconds_since_last_event_type(
+                CGEventSourceStateID::HIDSystemState,
+                event,
+            );
+            Duration::try_from_secs_f64(seconds)
+                .ok()
+                .and_then(|age| now.checked_sub(age))
+        };
+        Self {
+            key_down: last(CGEventType::KeyDown),
+            modifier_change: last(CGEventType::FlagsChanged).unwrap_or(now),
+        }
+    }
+
+    /// For a release the viewer makes itself, such as on focus loss. The modifiers can still be
+    /// down, so the last HID modifier change can be their press, while the release happens now.
+    pub(crate) fn released_by_viewer(self) -> Self {
+        Self {
+            modifier_change: Instant::now(),
+            ..self
+        }
+    }
+}
+
 /// macOS keeps some chords for itself (Ctrl+Space, ⌘Space), so the window sees only their
 /// modifiers go down and up. Forwarded alone, that is a lone modifier tap, and Windows opens Start
 /// on a lone Win tap, which is what the Mac's Control becomes once shortcuts are translated.
 #[cfg(target_os = "macos")]
 pub(crate) struct Chord {
-    since: Instant,
+    started: Instant,
     key_sent: bool,
 }
 
 #[cfg(target_os = "macos")]
 impl Chord {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(started: Instant) -> Self {
         Self {
-            since: Instant::now(),
+            started,
             key_sent: false,
         }
     }
@@ -97,21 +137,12 @@ impl Chord {
         self.key_sent = true;
     }
 
-    pub(crate) fn consumed(&self, since_last_key_down: Duration) -> bool {
-        !self.key_sent && since_last_key_down < self.since.elapsed()
+    pub(crate) fn consumed(&self, hid: HidEvents) -> bool {
+        !self.key_sent
+            && hid
+                .key_down
+                .is_some_and(|key_down| self.started < key_down && key_down < hid.modifier_change)
     }
-}
-
-/// Reads the HID system state, which counts key downs macOS consumed before they reached the window.
-#[cfg(target_os = "macos")]
-pub(crate) fn since_last_key_down() -> Duration {
-    use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
-
-    let seconds = CGEventSource::seconds_since_last_event_type(
-        CGEventSourceStateID::HIDSystemState,
-        CGEventType::KeyDown,
-    );
-    Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
 }
 
 /// `-[NSApplication sendEvent:]` never hands a window the release of a key let go while ⌘ is down,
@@ -223,5 +254,19 @@ mod tests {
             ]
         );
         assert_eq!(modifier_changes(shift, shift), Vec::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_release_on_focus_loss_masks_a_key_consumed_while_held() {
+        let ago = |millis| Instant::now().checked_sub(Duration::from_millis(millis));
+        let pressed = ago(30).unwrap();
+        let still_held = HidEvents {
+            key_down: ago(15),
+            modifier_change: pressed,
+        };
+        let chord = Chord::new(pressed);
+        assert!(!chord.consumed(still_held));
+        assert!(chord.consumed(still_held.released_by_viewer()));
     }
 }

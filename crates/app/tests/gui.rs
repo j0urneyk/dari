@@ -51,7 +51,8 @@ mod macos {
     use gpui_kit::*;
 
     use dari::test_support::{
-        AppAssets, AppState, Home, Settings, TokioRuntime, apply_theme, open_viewer_window,
+        AppAssets, AppState, HidEvents, Home, Settings, TokioRuntime, apply_theme,
+        open_viewer_window,
     };
 
     const DISPLAY: DisplayInfo = DisplayInfo {
@@ -442,8 +443,28 @@ mod macos {
             control: true,
             ..Modifiers::default()
         };
-        let long_ago = Duration::from_secs(60);
-        let just_now = Duration::ZERO;
+        let now = Instant::now();
+        let ago = |millis| now - Duration::from_millis(millis);
+        let pressed = HidEvents {
+            key_down: None,
+            modifier_change: ago(30),
+        };
+        let pressed_after_key = HidEvents {
+            key_down: Some(ago(15)),
+            modifier_change: ago(25),
+        };
+        let released = HidEvents {
+            key_down: None,
+            modifier_change: now,
+        };
+        let released_after_key = HidEvents {
+            key_down: Some(ago(15)),
+            modifier_change: now,
+        };
+        let released_before_key = HidEvents {
+            key_down: Some(ago(5)),
+            modifier_change: ago(10),
+        };
         let control_key = |pressed| RecordedAction::Key(KeyCode::Named(NamedKey::Control), pressed);
         let mask_key = |pressed| {
             RecordedAction::Key(
@@ -454,11 +475,15 @@ mod macos {
         let recorded_before = actions.lock().unwrap().len();
         cx.update(|cx| {
             view.update(cx, |view, _| {
-                view.modifiers_changed(control, long_ago);
-                view.modifiers_changed(Modifiers::default(), just_now);
-                view.modifiers_changed(control, long_ago);
-                view.modifiers_changed(Modifiers::default(), long_ago);
-                view.modifiers_changed(control, long_ago);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
+                view.modifiers_changed(control, pressed_after_key);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released_before_key);
+                view.modifiers_changed(control, pressed);
             });
         });
         let control_a = Keystroke {
@@ -485,13 +510,19 @@ mod macos {
         .unwrap();
         cx.update(|cx| {
             view.update(cx, |view, _| {
-                view.modifiers_changed(Modifiers::default(), just_now);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
             });
         });
         let expected = [
             control_key(true),
             mask_key(true),
             mask_key(false),
+            control_key(false),
+            control_key(true),
+            mask_key(true),
+            mask_key(false),
+            control_key(false),
+            control_key(true),
             control_key(false),
             control_key(true),
             control_key(false),

@@ -138,6 +138,8 @@ fn init_ui(cx: &mut App) {
 pub mod test_support {
     pub use crate::home::Home;
     #[cfg(target_os = "macos")]
+    pub use crate::keymap::HidEvents;
+    #[cfg(target_os = "macos")]
     pub use crate::keymap::deliver_command_key_ups;
     pub use crate::runtime::TokioRuntime;
     pub use crate::settings::Settings;
