@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use dari_media::RgbaFrame;
-use dari_proto::{InputDesktop, OsInput, SecureDesktopControl};
+use dari_proto::{Availability, InputDesktop, OsInput, SecureDesktopControl};
 use tokio::sync::mpsc;
 
 pub(crate) use capturer::TwoSourceCapturer;
@@ -43,6 +43,15 @@ pub fn change_secure_desktop_control(_to: SecureDesktopControl) -> PolicyChange 
 /// What the helper reports to the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecureDesktopEvent {
+    /// The helper connected and passed the app's check. `secure_attention` says whether the
+    /// service lets the session ask for Ctrl+Alt+Del: only when the helper may inject, which
+    /// takes a session that allows control and the machine's [`SecureDesktopControl`] policy on,
+    /// and the session is the console session.
+    Connected { secure_attention: bool },
+    /// The service refused the secure attention sequence the session asked for. The session
+    /// doesn't ask again while the helper runs. A request the service failed to carry out isn't
+    /// a refusal.
+    SecureAttentionRefused(String),
     /// The input desktop changed. The first event names the desktop the helper started on.
     DesktopChanged(InputDesktop),
     /// The link ended and won't report again this session: the service is missing or refused,
@@ -56,6 +65,66 @@ pub enum LinkCommand {
     SelectDisplay(u32),
     /// Inject this on the secure desktop.
     Input(OsInput),
+    /// Ask the service to raise the secure attention sequence (Ctrl+Alt+Del).
+    SecureAttention,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecureAttentionState {
+    ViewOnly,
+    NoHelper,
+    Connecting,
+    NotGranted,
+    Granted,
+}
+
+impl SecureAttentionState {
+    pub(crate) fn of(control_allowed: bool, link: Option<&SecureDesktopLink>) -> Self {
+        match (control_allowed, link.map(|link| link.grant)) {
+            (false, _) => Self::ViewOnly,
+            (true, None) => Self::NoHelper,
+            (true, Some(ServiceGrant::HelperConnecting)) => Self::Connecting,
+            (true, Some(ServiceGrant::Denied)) => Self::NotGranted,
+            (true, Some(ServiceGrant::Granted)) => Self::Granted,
+        }
+    }
+
+    pub(crate) fn availability_to_report(self) -> Option<Availability> {
+        match self {
+            Self::ViewOnly => Some(Availability::NotAllowed),
+            Self::NoHelper | Self::NotGranted => Some(Availability::Unavailable),
+            Self::Connecting => None,
+            Self::Granted => Some(Availability::Available),
+        }
+    }
+}
+
+impl std::fmt::Display for SecureAttentionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ViewOnly => "the session is view-only",
+            Self::NoHelper => "no secure-desktop helper is connected",
+            Self::Connecting => "the secure-desktop helper is still connecting",
+            Self::NotGranted => "DariService doesn't grant it to this session",
+            Self::Granted => "DariService grants it to this session",
+        })
+    }
+}
+
+pub(crate) const SECURE_ATTENTION_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether the service lets the session ask for Ctrl+Alt+Del.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServiceGrant {
+    HelperConnecting,
+    Granted,
+    Denied,
+}
+
+impl ServiceGrant {
+    pub(crate) fn from_granted(granted: bool) -> Self {
+        if granted { Self::Granted } else { Self::Denied }
+    }
 }
 
 /// A live link to the helper, which lives as long as the session holds it. Dropping it stops
@@ -65,6 +134,8 @@ pub struct SecureDesktopLink {
     events: mpsc::UnboundedReceiver<SecureDesktopEvent>,
     commands: mpsc::UnboundedSender<LinkCommand>,
     shared: Arc<Shared>,
+    grant: ServiceGrant,
+    asked_at: Option<Instant>,
 }
 
 impl SecureDesktopLink {
@@ -78,6 +149,8 @@ impl SecureDesktopLink {
             events,
             commands,
             shared: shared.clone(),
+            grant: ServiceGrant::HelperConnecting,
+            asked_at: None,
         };
         let driver = LinkDriver {
             events: event_sender,
@@ -92,6 +165,10 @@ impl SecureDesktopLink {
         self.events.recv().await
     }
 
+    pub(crate) fn set_grant(&mut self, grant: ServiceGrant) {
+        self.grant = grant;
+    }
+
     /// Captures `display` from now on. The shared state changes before this returns, so a
     /// capture thread started after it never sees a frame of the previous display.
     pub(crate) fn select_display(&self, display: u32) {
@@ -101,6 +178,18 @@ impl SecureDesktopLink {
 
     pub(crate) fn view(&self) -> SecureDesktopView {
         SecureDesktopView(self.shared.clone())
+    }
+
+    pub(crate) fn ask_secure_attention(&mut self, now: Instant) -> bool {
+        if self
+            .asked_at
+            .is_some_and(|asked| now.saturating_duration_since(asked) < SECURE_ATTENTION_INTERVAL)
+        {
+            return false;
+        }
+        self.asked_at = Some(now);
+        let _sent = self.commands.send(LinkCommand::SecureAttention);
+        true
     }
 
     pub(crate) fn input(&self) -> SecureInput {
@@ -141,6 +230,20 @@ pub struct LinkDriver {
 }
 
 impl LinkDriver {
+    /// The helper connected; `secure_attention` is whether the service lets the session ask
+    /// for Ctrl+Alt+Del. Comes before the first [`LinkDriver::desktop_changed`].
+    pub fn connected(&self, secure_attention: bool) {
+        let _sent = self
+            .events
+            .send(SecureDesktopEvent::Connected { secure_attention });
+    }
+
+    pub fn secure_attention_refused(&self, reason: String) {
+        let _sent = self
+            .events
+            .send(SecureDesktopEvent::SecureAttentionRefused(reason));
+    }
+
     pub fn desktop_changed(&self, desktop: InputDesktop) {
         self.shared
             .update(|state| state.desktop_changed(desktop.clone()));
@@ -401,6 +504,8 @@ impl LinkState {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests may panic")]
 
+    use futures_util::FutureExt;
+
     use super::*;
 
     fn image(red: u8) -> RgbaFrame {
@@ -533,6 +638,39 @@ mod tests {
         state.frame(7, image(1));
         assert_eq!(state.route(), Route::Default { helper_live: false });
         assert_eq!((state.epoch, shown(&state)), (epoch, None));
+    }
+
+    #[test]
+    fn secure_attention_is_available_only_while_the_service_grants_it() {
+        let state = |control_allowed, link: Option<&SecureDesktopLink>| {
+            SecureAttentionState::of(control_allowed, link).availability_to_report()
+        };
+        assert_eq!(state(true, None), Some(Availability::Unavailable));
+        assert_eq!(state(false, None), Some(Availability::NotAllowed));
+
+        let (mut link, _driver) = SecureDesktopLink::pair();
+        assert_eq!(state(true, Some(&link)), None);
+        assert_eq!(state(false, Some(&link)), Some(Availability::NotAllowed));
+        link.set_grant(ServiceGrant::Granted);
+        assert_eq!(state(true, Some(&link)), Some(Availability::Available));
+        assert_eq!(state(false, Some(&link)), Some(Availability::NotAllowed));
+        link.set_grant(ServiceGrant::Denied);
+        assert_eq!(state(true, Some(&link)), Some(Availability::Unavailable));
+    }
+
+    #[test]
+    fn a_second_ask_within_the_interval_is_dropped() {
+        let (mut link, mut driver) = SecureDesktopLink::pair();
+        let start = Instant::now();
+        assert!(link.ask_secure_attention(start));
+        assert!(!link.ask_secure_attention(start + Duration::from_millis(999)));
+        assert!(link.ask_secure_attention(start + SECURE_ATTENTION_INTERVAL));
+        let mut asked = 0;
+        while let Some(Some(command)) = driver.command().now_or_never() {
+            assert_eq!(command, LinkCommand::SecureAttention);
+            asked += 1;
+        }
+        assert_eq!(asked, 2);
     }
 
     #[test]

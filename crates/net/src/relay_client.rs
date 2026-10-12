@@ -322,6 +322,7 @@ pub async fn connect_via_relay(
         SocketAddr::new(relay.ip(), allocation.port),
         password,
         client_name,
+        dari_proto::PROTOCOL_VERSION,
     )
     .await?;
     connection.link.relay_keepalive = Some(keepalive);

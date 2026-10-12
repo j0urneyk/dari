@@ -149,8 +149,8 @@ input, wherever it sits on the network.
 ## Known limitations
 
 - The viewer sees a Windows host's UAC prompts and lock screen, and in a session that allows control it can answer
-  them, unless the host's **Let viewers answer UAC prompts and the lock screen** setting is off. The viewer can't
-  send Ctrl+Alt+Del yet, so a host that requires it to sign in still needs someone there.
+  them, and send Ctrl+Alt+Del, unless the host's **Let viewers answer UAC prompts and the lock screen** setting is
+  off.
 - A Windows PC without a hardware H.264 encoder encodes on the CPU, at a much lower frame rate. There's no
   unattended access, and a Mac shares its sound only on macOS 14.6 or later.
 - Builds exist only for Apple silicon Macs and x64 Windows.

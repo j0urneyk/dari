@@ -38,11 +38,13 @@ mod macos {
     };
     use dari_net::{AccessPassword, DeviceIdentity};
     use dari_proto::{
-        Availability, KeyCode, MAX_FUNCTION_KEY, MouseButton as RemoteButton, NamedKey,
+        Availability, InputDesktop, KeyCode, MAX_FUNCTION_KEY, MouseButton as RemoteButton,
+        NamedKey,
     };
     use dari_session::{
-        HostConfig, HostEvent, HostPlatform, HostPolicy, TransferDirection, TransferState,
-        ViewerConfig, ViewerTarget, connect_viewer, start_host,
+        HostConfig, HostEvent, HostPlatform, HostPolicy, LinkCommand, LinkDriver,
+        SecureDesktopLink, TransferDirection, TransferState, ViewerConfig, ViewerTarget,
+        connect_viewer, start_host,
     };
     use gpui_kit::component::theme::ThemeMode;
     use gpui_kit::test::TestWindowExt as _;
@@ -67,6 +69,7 @@ mod macos {
     struct SyntheticPlatform {
         actions: Arc<Mutex<Vec<RecordedAction>>>,
         secure_desktop: Arc<AtomicBool>,
+        helpers: Option<Arc<Mutex<Vec<LinkDriver>>>>,
     }
 
     struct HideableCapturer {
@@ -133,6 +136,12 @@ mod macos {
         }
         fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
             Ok(Box::new(Recorder(self.actions.clone())))
+        }
+        fn open_secure_desktop(&self, _input: bool) -> Option<SecureDesktopLink> {
+            let helpers = self.helpers.as_ref()?;
+            let (link, driver) = SecureDesktopLink::pair();
+            helpers.lock().unwrap().push(driver);
+            Some(link)
         }
     }
 
@@ -248,9 +257,11 @@ mod macos {
         // A host with a synthetic screen and recorded input, served on the shared runtime.
         let actions = Arc::new(Mutex::new(Vec::new()));
         let secure_desktop = Arc::new(AtomicBool::new(false));
+        let helpers = Arc::new(Mutex::new(Vec::new()));
         let platform = Arc::new(SyntheticPlatform {
             actions: actions.clone(),
             secure_desktop: secure_desktop.clone(),
+            helpers: Some(helpers.clone()),
         });
         let identity = DeviceIdentity::generate().unwrap();
         let config = HostConfig {
@@ -538,6 +549,38 @@ mod macos {
             screen(cx) == Some(Availability::Available)
         });
 
+        let can_send_ctrl_alt_del =
+            |cx: &mut HeadlessAppContext| cx.update(|cx| view.read(cx).can_send_ctrl_alt_del());
+        assert!(!can_send_ctrl_alt_del(&mut cx));
+        let mut helper = helpers
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("no secure-desktop link");
+        helper.connected(true);
+        helper.desktop_changed(InputDesktop::Default);
+        pump(&mut cx, Duration::from_secs(10), can_send_ctrl_alt_del);
+        save(&mut cx, window, "viewer-ctrl-alt-del");
+        let asked = Arc::new(AtomicBool::new(false));
+        let asked_by_viewer = asked.clone();
+        let _helper = cx.update(|cx| {
+            TokioRuntime::spawn(cx, async move {
+                while let Some(command) = helper.command().await {
+                    if command == LinkCommand::SecureAttention {
+                        asked_by_viewer.store(true, Ordering::SeqCst);
+                    }
+                }
+            })
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("ctrl-alt-del", cx);
+        })
+        .unwrap();
+        pump(&mut cx, Duration::from_secs(10), |_| {
+            asked.load(Ordering::SeqCst)
+        });
+
         // Ending the session on the host side tells the viewer why and offers to close.
         host.end_session();
         pump(&mut cx, Duration::from_secs(10), |cx| {
@@ -789,6 +832,7 @@ mod macos {
         let platform = Arc::new(SyntheticPlatform {
             actions: Arc::new(Mutex::new(Vec::new())),
             secure_desktop: Arc::new(AtomicBool::new(false)),
+            helpers: None,
         });
         let config = HostConfig {
             bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),

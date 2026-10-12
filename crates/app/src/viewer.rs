@@ -126,6 +126,7 @@ pub struct ViewerView {
     /// Where the picture was last painted, for mapping the pointer.
     picture: Rc<Cell<Option<Bounds<Pixels>>>>,
     status: Option<HostStatus>,
+    secure_attention: Availability,
     ended: Option<SessionEndReason>,
     awaiting_approval: bool,
     displays: Vec<DisplayDescription>,
@@ -243,6 +244,7 @@ impl ViewerView {
             frames_shown: 0,
             picture: Rc::new(Cell::new(None)),
             status: None,
+            secure_attention: Availability::Unavailable,
             ended: None,
             awaiting_approval: false,
             displays: Vec::new(),
@@ -315,6 +317,11 @@ impl ViewerView {
     }
 
     #[doc(hidden)]
+    pub fn can_send_ctrl_alt_del(&self) -> bool {
+        self.session.is_some() && self.secure_attention == Availability::Available
+    }
+
+    #[doc(hidden)]
     pub fn can_send_files(&self) -> bool {
         self.files_available()
     }
@@ -336,6 +343,7 @@ impl ViewerView {
                 self.active_display = Some(active);
             }
             ViewerEvent::FrameRate(rate) => self.host_frame_rate = Some(rate),
+            ViewerEvent::SecureAttention(availability) => self.secure_attention = availability,
             ViewerEvent::Transfer(transfer) => self.transfers.update(transfer),
             ViewerEvent::Ended(reason) => {
                 self.ended = Some(reason);
@@ -673,6 +681,21 @@ impl ViewerView {
                         .icon(AssetIcon::VolumeX)
                         .label(text().sound_not_allowed)
                         .tooltip(text().remote_sound_permission),
+                )
+            })
+            .when(self.can_send_ctrl_alt_del(), |actions| {
+                actions.child(
+                    Button::new("ctrl-alt-del")
+                        .small()
+                        .ghost()
+                        .icon(AssetIcon::Keyboard)
+                        .label(text().send_ctrl_alt_del)
+                        .tooltip(text().send_ctrl_alt_del_hint)
+                        .on_click(cx.listener(|this, _, _, _| {
+                            if let Some(session) = &this.session {
+                                session.secure_attention();
+                            }
+                        })),
                 )
             })
             .when(self.files_available(), |actions| {

@@ -182,7 +182,7 @@ mod tests {
             while let Some(Some(command)) = self.driver.command().now_or_never() {
                 match command {
                     LinkCommand::Input(input) => received.push(input),
-                    LinkCommand::SelectDisplay(_) => {}
+                    LinkCommand::SelectDisplay(_) | LinkCommand::SecureAttention => {}
                 }
             }
             received

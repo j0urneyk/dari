@@ -33,6 +33,7 @@ gpui_kit::assets::icon_assets!(
         FileUp,
         Gauge,
         Image,
+        Keyboard,
         KeyRound,
         Languages,
         Layers,

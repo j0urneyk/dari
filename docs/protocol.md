@@ -2,7 +2,7 @@
 
 Hosts and viewers talk over a single QUIC connection (TLS 1.3, ALPN `dari/1`). All message types live in
 `dari-proto` (`crates/proto`); this document describes their format and order. The current protocol version is
-**2.1** (`PROTOCOL_VERSION`).
+**2.2** (`PROTOCOL_VERSION`).
 
 ## Version compatibility
 
@@ -13,7 +13,11 @@ advertise support for it. The host refuses a different `major` with `Rejected(In
 The ALPN stays `dari/1` across majors on purpose. The hello layout hasn't changed since 1.0, so a peer on another
 major still completes TLS, decodes the hello, and gets that readable rejection instead of a TLS failure. Version 2.0
 added the stream kind tag described below; 0.0.1 apps speak 1.0 and can't connect to newer ones. Version 2.1 added
-`Availability::SecureDesktop`; a host sends a 2.0 viewer `Unavailable` in its place.
+`Availability::SecureDesktop`; a host sends a 2.0 viewer `Unavailable` in its place. Version 2.2 added
+`SecureAttention` and `SecureAttentionStatus`. `ControlMessage::since` names the version that defines each kind, and
+both sides drop a message the peer's version doesn't define instead of sending it. So a 2.1 viewer never receives
+`SecureAttentionStatus`, and a 2.1 host never receives `SecureAttention`. These are new kinds, not new `HostStatus`
+fields: postcard encodes fields by position, so a 2.1 viewer couldn't decode a longer `HostStatus`.
 
 ## Framing
 
@@ -112,6 +116,8 @@ that hasn't been sent yet.
 | `FileCancel { id, reason }` | Both | Declined, cancelled, or failed (`Declined` / `Cancelled` / `Failed`) |
 | `SetFrameRate(fps)` | Viewer → host | The highest frame rate the viewer wants, 1..=240. The viewer sends it as its first control message; a host that admits viewers without approval waits for it (up to 2 seconds) before streaming |
 | `FrameRate(fps)` | Host → viewer | The frame rate the host now streams at (the request capped by its display's refresh rate), 1..=240. Sent once streaming starts and whenever it changes |
+| `SecureAttention` | Viewer → host | Since 2.2. Raise the secure attention sequence (Ctrl+Alt+Del) on the Windows host. The host passes it to `DariService` only while it reports `Available`, at most once a second, and ignores it otherwise |
+| `SecureAttentionStatus(availability)` | Host → viewer | Since 2.2. Whether `SecureAttention` can work: `Available` while the service grants it, which needs a session that allows control, `SecureDesktopControl` on, and the host in its console session; `NotAllowed` in a view-only session; `Unavailable` otherwise, including after the service refused the sequence. Sent once it is known (a host whose secure-desktop helper still connects sends nothing yet) and whenever it changes. A viewer offers **Send Ctrl+Alt+Del** only while it is `Available` |
 
 `HostStatus` reports `screen`, `input`, `files`, and `audio`. `Availability` is one of `Available`, `PermissionDenied`
 (macOS permission missing), `AwaitingPermission` (a macOS privacy prompt is open on the host), `Unavailable`,

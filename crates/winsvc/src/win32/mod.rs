@@ -4,6 +4,7 @@ mod eventlog;
 mod io;
 mod pipe;
 mod process;
+mod sas;
 mod section;
 mod token;
 
@@ -18,9 +19,10 @@ pub(crate) use eventlog::{EVENT_SOURCE, EventLog, TYPES_SUPPORTED};
 pub(crate) use io::Event;
 pub(crate) use pipe::Pipe;
 pub(crate) use process::{
-    InheritedProcess, Job, end_process, has_exited, image_path, launch_helper, open_client_process,
-    process_id, restrict_dll_search, session_is_active,
+    InheritedProcess, Job, console_session, end_process, has_exited, image_path, launch_helper,
+    open_client_process, process_id, restrict_dll_search, session_is_active,
 };
+pub(crate) use sas::send_sas;
 pub(crate) use section::AppSections;
 pub(crate) use token::{own_identity, own_user};
 

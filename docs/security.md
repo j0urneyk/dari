@@ -225,15 +225,54 @@ Two controls limit it further:
   value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
 - The Application event log under the source `DariService`. The service writes a warning, ID 3, each time it starts
   a helper with input on, naming the session and both process IDs. `policy on` and `policy off` write ID 4 with the
-  user who changed the value. These entries record that something used the feature. They can't prove that a remote
-  viewer did.
+  user who changed the value. Each `SendSAS` writes a warning, ID 5 (see below). These entries record that something
+  used the feature. They can't prove that a remote viewer did.
+
+### Ctrl+Alt+Del
+
+No injected key raises the secure attention sequence, so a viewer sends `SecureAttention` and the service calls
+`SendSAS(FALSE)`. Three checks come first:
+
+- The host passes the request on only while the service grants it, at most once a second and one at a time. A
+  view-only session reports `SecureAttentionStatus(NotAllowed)` and logs the refusal.
+- The service accepts `SendSas` only from the app process whose own helper runs with input in the client's session,
+  and only when that session is the console session: `SendSAS(FALSE)` names no session, so a request from a Remote
+  Desktop session could raise the sequence on the console. It refuses with `PolicyOff` while `SecureDesktopControl`
+  is off. It always answers `SendSas` with its refusal, and logs refusals within a budget of their own, 10 a minute,
+  so an app that keeps asking can't use up the budget that logs clients that aren't Dari. The host logs a refusal
+  once for each reason in a row.
+- The service reads the DWORD `SoftwareSASGeneration` under
+  `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`, which decides whether software may raise the
+  sequence. 1 (services) or 3 (services and Ease of Access applications) is called as is. Any other value, or a value
+  of another type, is an administrator's or a Group Policy's choice: the service refuses with `SasDisallowed` and
+  never writes it, and the host then reports `SecureAttentionStatus(Unavailable)`.
+
+When the value is missing, Windows treats it as 0, and `SendSAS` from a service does nothing. The service then does
+what RustDesk does: it sets the value to 1, calls `SendSAS`, and deletes the value again, also when the call fails.
+For that moment, any service on the machine could raise the sequence, including ones that run as LocalService or
+NetworkService. Raising it only shows the Ctrl+Alt+Del screen, which still needs the user's choice or password, so the
+exposure is small. One call at a time sets and deletes the value, under a lock of its own, so two requests can't
+interleave around it. Before it sets the value, the service writes `SoftwareSASGenerationSet` under its own key,
+`HKLM\SYSTEM\CurrentControlSet\Services\DariService\Parameters`, and it deletes that marker after the value. If the
+service dies between setting and deleting the value, or can't delete it, 1 stays until the service starts again,
+handles the next `SendSas`, or is uninstalled: a marked 1 is then deleted before anything else, so the service never
+reads its own leftover as an administrator's choice. Uninstalling stops the service first, so the marker goes only
+after the value. The service deletes the value only while it still reads 1, so a value an administrator writes
+during the call stays. The call's event 5 is written whenever `SendSAS`
+ran, and an error event names a value the service couldn't delete.
+
+The service loads `sas.dll` from System32 for each call and frees it afterwards, so the helper, which runs the same
+binary, never loads it. Each `SendSAS` writes a warning with ID 5 that names the session, the app's process, and
+what `SoftwareSASGeneration` was. A refusal is logged as information, and a failure as an error.
 
 ## Known limitations
 
 - There's no TOFU (pinning the host certificate fingerprint on first sight). The one-time password authenticates
   every session, so it wasn't considered necessary, but it should be revisited if unattended access (permanent
   passwords) is ever added.
-- The viewer can answer the Windows secure desktop (UAC, the lock screen) but can't send Ctrl+Alt+Del yet (#48).
+- When `SoftwareSASGeneration` is missing, any service can raise Ctrl+Alt+Del while `DariService` raises it. See
+  [Ctrl+Alt+Del](#ctrlaltdel).
+- A viewer can send Ctrl+Alt+Del only to a host in the PC's console session, not in a Remote Desktop session.
 - While `SecureDesktopControl` is on, malware running as the signed-in administrator can answer its own UAC consent
   prompts through Dari. See
   [Same-user malware can answer its own consent prompts](#same-user-malware-can-answer-its-own-consent-prompts).

@@ -37,6 +37,7 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+dari-net = { workspace = true, features = ["test-support"] }
 dari-relay.workspace = true
 enigo.workspace = true
 image = { workspace = true, features = ["png"] }

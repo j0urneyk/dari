@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use dari_proto::{ClientHello, Os, PROTOCOL_VERSION, RejectReason, ServerHello};
+use dari_proto::{ClientHello, Os, PROTOCOL_VERSION, ProtocolVersion, RejectReason, ServerHello};
 use thiserror::Error;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
@@ -430,13 +430,33 @@ pub async fn connect(
     password: &AccessPassword,
     client_name: String,
 ) -> Result<AuthenticatedConnection, ConnectError> {
+    connect_direct(address, password, client_name, PROTOCOL_VERSION).await
+}
+
+/// [`connect`], claiming to speak `version`, so tests can play an older viewer.
+#[cfg(feature = "test-support")]
+pub async fn connect_as_version(
+    address: SocketAddr,
+    password: &AccessPassword,
+    client_name: String,
+    version: ProtocolVersion,
+) -> Result<AuthenticatedConnection, ConnectError> {
+    connect_direct(address, password, client_name, version).await
+}
+
+async fn connect_direct(
+    address: SocketAddr,
+    password: &AccessPassword,
+    client_name: String,
+    version: ProtocolVersion,
+) -> Result<AuthenticatedConnection, ConnectError> {
     let unspecified: IpAddr = match address {
         SocketAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
         SocketAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
     };
     let endpoint =
         quinn::Endpoint::client(SocketAddr::new(unspecified, 0)).map_err(EndpointError::from)?;
-    connect_with(endpoint, address, password, client_name).await
+    connect_with(endpoint, address, password, client_name, version).await
 }
 
 /// Authenticates to the host at `address` through `endpoint` (direct or relay-bound socket).
@@ -445,11 +465,12 @@ pub(crate) async fn connect_with(
     address: SocketAddr,
     password: &AccessPassword,
     client_name: String,
+    version: ProtocolVersion,
 ) -> Result<AuthenticatedConnection, ConnectError> {
     endpoint.set_default_client_config(client_config().map_err(EndpointError::from)?);
 
     let hello = ClientHello {
-        version: PROTOCOL_VERSION,
+        version,
         client_name,
         client_os: Os::current(),
     };

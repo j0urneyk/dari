@@ -29,6 +29,10 @@ tokio-util.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 
+[features]
+# `connect_as_version`, for tests that play an older viewer.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3"
 

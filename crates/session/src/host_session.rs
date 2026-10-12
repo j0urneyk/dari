@@ -32,7 +32,8 @@ use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent, HostPolicy};
 use crate::input_route::{Router, follow_route};
 use crate::platform::HostPlatform;
 use crate::secure_desktop::{
-    SecureDesktopEvent, SecureDesktopLink, SecureDesktopView, SecureInput, TwoSourceCapturer,
+    SecureAttentionState, SecureDesktopEvent, SecureDesktopLink, SecureDesktopView, SecureInput,
+    ServiceGrant, TwoSourceCapturer,
 };
 use crate::transfer::{
     PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
@@ -166,6 +167,9 @@ pub(crate) async fn serve_viewer(
         audio_opened: None,
         clipboard: None,
         secure_desktop: None,
+        control_allowed: false,
+        reported_secure_attention: None,
+        last_logged_refusal: None,
     };
 
     let reason = match session
@@ -217,6 +221,9 @@ struct HostSession {
     audio_opened: Option<mpsc::UnboundedSender<AudioOpened>>,
     clipboard: Option<ClipboardSync>,
     secure_desktop: Option<SecureDesktopLink>,
+    control_allowed: bool,
+    reported_secure_attention: Option<Availability>,
+    last_logged_refusal: Option<SecureAttentionState>,
 }
 
 enum AudioState {
@@ -400,7 +407,9 @@ impl HostSession {
                     }
                 }
                 event = next_secure_desktop_event(self.secure_desktop.as_mut()) => {
-                    self.secure_desktop_event(event);
+                    if let Err(reason) = self.secure_desktop_event(event).await {
+                        return reason;
+                    }
                 }
                 opened = opened_audio.recv() => {
                     let Some(opened) = opened else { continue };
@@ -456,8 +465,23 @@ impl HostSession {
         }
     }
 
-    fn secure_desktop_event(&mut self, event: Option<SecureDesktopEvent>) {
+    async fn secure_desktop_event(
+        &mut self,
+        event: Option<SecureDesktopEvent>,
+    ) -> Result<(), SessionEndReason> {
         match event {
+            Some(SecureDesktopEvent::Connected { secure_attention }) => {
+                info!(secure_attention, "secure-desktop helper connected");
+                if let Some(link) = self.secure_desktop.as_mut() {
+                    link.set_grant(ServiceGrant::from_granted(secure_attention));
+                }
+            }
+            Some(SecureDesktopEvent::SecureAttentionRefused(reason)) => {
+                info!("refused SecureAttention: {reason}");
+                if let Some(link) = self.secure_desktop.as_mut() {
+                    link.set_grant(ServiceGrant::Denied);
+                }
+            }
             Some(SecureDesktopEvent::DesktopChanged(desktop)) => {
                 info!("secure-desktop helper: DesktopChanged({desktop})");
             }
@@ -466,6 +490,38 @@ impl HostSession {
                 self.secure_desktop = None;
             }
             None => self.secure_desktop = None,
+        }
+        self.publish_secure_attention().await
+    }
+
+    fn secure_attention(&self) -> SecureAttentionState {
+        SecureAttentionState::of(self.control_allowed, self.secure_desktop.as_ref())
+    }
+
+    async fn publish_secure_attention(&mut self) -> Result<(), SessionEndReason> {
+        let Some(availability) = self.secure_attention().availability_to_report() else {
+            return Ok(());
+        };
+        let status = ControlMessage::SecureAttentionStatus(availability);
+        if !self.peer_version.supports(status.since())
+            || self.reported_secure_attention.replace(availability) == Some(availability)
+        {
+            return Ok(());
+        }
+        self.send(&status).await
+    }
+
+    fn handle_secure_attention(&mut self) {
+        let state = self.secure_attention();
+        if let (SecureAttentionState::Granted, Some(link)) = (state, self.secure_desktop.as_mut()) {
+            if link.ask_secure_attention(Instant::now()) {
+                info!("asking DariService to raise Ctrl+Alt+Del");
+                self.last_logged_refusal = None;
+            } else {
+                debug!("refused SecureAttention: the last one came less than a second ago");
+            }
+        } else if self.last_logged_refusal.replace(state) != Some(state) {
+            info!("refused SecureAttention: {state}");
         }
     }
 
@@ -478,6 +534,7 @@ impl HostSession {
         clipboard_out: mpsc::Sender<String>,
     ) -> Result<Option<IncomingFiles>, SessionEndReason> {
         self.secure_desktop = self.platform.open_secure_desktop(control_allowed);
+        self.control_allowed = control_allowed;
         self.displays = match self.platform.displays() {
             Ok(mut displays) => {
                 displays.truncate(MAX_DISPLAYS);
@@ -564,6 +621,7 @@ impl HostSession {
         };
 
         self.publish_status().await?;
+        self.publish_secure_attention().await?;
         self.publish_displays().await?;
         self.publish_frame_rate().await?;
         Ok(incoming_files)
@@ -728,11 +786,13 @@ impl HostSession {
             ControlMessage::Ping { token } => self.send(&ControlMessage::Pong { token }).await?,
             ControlMessage::Pong { .. } => {}
             ControlMessage::Disconnect => return Err(SessionEndReason::ViewerLeft),
+            ControlMessage::SecureAttention => self.handle_secure_attention(),
             ControlMessage::HostStatus(_)
             | ControlMessage::AwaitingApproval
             | ControlMessage::Declined
             | ControlMessage::Displays { .. }
-            | ControlMessage::FrameRate(_) => {
+            | ControlMessage::FrameRate(_)
+            | ControlMessage::SecureAttentionStatus(_) => {
                 return Err(SessionEndReason::ProtocolError(
                     "viewer sent a host message".into(),
                 ));

@@ -5,7 +5,8 @@
 //! output: `READY` once the baseline is saved, then for each screen `SEEN LABEL` once its picture
 //! has settled, `SENT LABEL` once the screen's keys are sent (a held key stays down), `NOTICE
 //! LABEL` when the host reports the secure-desktop notice in a screen that expects it, and `BACK
-//! LABEL` once the desktop is back. A screen without keys is dismissed by the script.
+//! LABEL` once the desktop is back. A screen without keys is dismissed by the script. A screen
+//! the viewer raises itself with Ctrl+Alt+Del prints `RAISED LABEL` once it asked.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -36,8 +37,9 @@ pub(crate) struct SecureViewArgs {
     #[arg(long)]
     password_file: Option<PathBuf>,
     /// A secure screen the script shows, in order: `LABEL[:EXPECT][=KEYS]`. EXPECT is `notice`
-    /// when the script ends the host's secure-desktop helper once the screen is seen, or
-    /// `present` when the screen is already up as the viewer connects. KEYS is what the viewer
+    /// when the script ends the host's secure-desktop helper once the screen is seen, `present`
+    /// when the screen is already up as the viewer connects, or `raise` when the viewer raises
+    /// it itself by sending Ctrl+Alt+Del once the host says it can. KEYS is what the viewer
     /// sends once the screen has settled: `alt-y`, `esc`, `password` (a click, the
     /// --secret-file text, Enter), `hold-alt-leave` (holds Alt and disconnects; last screen
     /// only), or `hold-f20` (holds F20 until the session ends). Without KEYS the script
@@ -53,6 +55,10 @@ pub(crate) struct SecureViewArgs {
     /// Expect a view-only session: the host reports input `NotAllowed`.
     #[arg(long)]
     view_only: bool,
+    /// Before READY, expect the host to report Ctrl+Alt+Del as this, send it anyway, and check
+    /// that the host doesn't then report it `Available`.
+    #[arg(long, value_enum)]
+    refused_attention: Option<Refused>,
     /// File holding what a `password` screen types: ASCII letters and digits. No frame is saved
     /// once typing starts, and `RUST_LOG` is ignored for the whole run.
     #[arg(long)]
@@ -83,6 +89,21 @@ impl SecureViewArgs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Refused {
+    NotAllowed,
+    Unavailable,
+}
+
+impl Refused {
+    fn availability(self) -> Availability {
+        match self {
+            Self::NotAllowed => Availability::NotAllowed,
+            Self::Unavailable => Availability::Unavailable,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Screen {
     label: String,
@@ -95,12 +116,13 @@ enum Expect {
     Captured,
     Notice,
     Present,
+    Raised,
 }
 
 impl Expect {
     fn allows(self, before_seen: &[Availability], after_seen: &[Availability]) -> bool {
         let allowed_after: &[Availability] = match self {
-            Expect::Captured | Expect::Present => &[Availability::Available],
+            Expect::Captured | Expect::Present | Expect::Raised => &[Availability::Available],
             Expect::Notice => &[Availability::Available, Availability::SecureDesktop],
         };
         before_seen
@@ -159,9 +181,10 @@ impl Screen {
             None => (text, Expect::Captured),
             Some((label, "notice")) => (label, Expect::Notice),
             Some((label, "present")) => (label, Expect::Present),
+            Some((label, "raise")) => (label, Expect::Raised),
             Some((_, other)) => {
                 return Err(format!(
-                    "unknown expectation {other:?}; try `notice` or `present`"
+                    "unknown expectation {other:?}; try `notice`, `present`, or `raise`"
                 ));
             }
         };
@@ -566,6 +589,11 @@ async fn view_screens(
             picture: shot.picture,
         });
     }
+    if let Some(refused) = args.refused_attention
+        && !refuse_attention(feed, verdict, refused.availability()).await
+    {
+        return Outcome::Failed;
+    }
     (feed.say)("READY");
 
     for screen in &args.screens {
@@ -575,6 +603,67 @@ async fn view_screens(
         }
     }
     Outcome::Done
+}
+
+async fn refuse_attention(
+    feed: &mut Feed<'_>,
+    verdict: &mut Verdict,
+    refused: Availability,
+) -> bool {
+    let reported = feed
+        .session
+        .wait_until(Duration::from_secs(10), |session| {
+            session.secure_attention == Some(refused)
+        })
+        .await;
+    verdict.check(
+        reported,
+        format!(
+            "the host reports Ctrl+Alt+Del {refused:?} (got {:?})",
+            feed.session.secure_attention
+        ),
+    );
+    if !reported {
+        return false;
+    }
+    feed.viewer.secure_attention();
+    let offered = feed
+        .session
+        .wait_until(REFUSAL_GRACE, |session| {
+            session.secure_attention == Some(Availability::Available)
+        })
+        .await;
+    verdict.check(
+        !offered,
+        format!(
+            "the host still doesn't offer Ctrl+Alt+Del after the viewer asked (got {:?})",
+            feed.session.secure_attention
+        ),
+    );
+    !offered
+}
+
+const REFUSAL_GRACE: Duration = Duration::from_secs(3);
+
+async fn raise(feed: &mut Feed<'_>, verdict: &mut Verdict, label: &str, step: Duration) -> bool {
+    let offered = feed
+        .session
+        .wait_until(step, |session| {
+            session.secure_attention == Some(Availability::Available)
+        })
+        .await;
+    verdict.check(
+        offered,
+        format!(
+            "{label}: the host offers Ctrl+Alt+Del (got {:?})",
+            feed.session.secure_attention
+        ),
+    );
+    if offered {
+        feed.viewer.secure_attention();
+        (feed.say)(&format!("RAISED {label}"));
+    }
+    offered
 }
 
 async fn view_screen(
@@ -592,6 +681,9 @@ async fn view_screen(
     };
     let start = feed.session.screen_history.len();
 
+    if screen.expect == Expect::Raised && !raise(feed, verdict, label, step).await {
+        return Outcome::Failed;
+    }
     if screen.expect != Expect::Present {
         if !see(args, feed, verdict, label, home, others).await {
             return Outcome::Failed;
@@ -651,7 +743,7 @@ async fn view_screen(
 
     let history = &feed.session.screen_history;
     let after = match screen.expect {
-        Expect::Captured | Expect::Present => "",
+        Expect::Captured | Expect::Present | Expect::Raised => "",
         Expect::Notice => ", then SecureDesktop until the screen is gone",
     };
     verdict.check(
@@ -924,7 +1016,11 @@ mod tests {
         CaptureError, CapturedFrame, DisplayInfo, RgbaFrame, ScreenCapturer, StreamSettings,
     };
     use dari_net::DeviceIdentity;
-    use dari_session::{HostConfig, HostEvent, HostPlatform, HostPolicy, start_host};
+    use dari_proto::InputDesktop;
+    use dari_session::{
+        HostConfig, HostEvent, HostPlatform, HostPolicy, LinkCommand, SecureDesktopLink, start_host,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -1005,6 +1101,13 @@ mod tests {
     struct ScenePlatform {
         scene: Arc<Mutex<Scene>>,
         recorded: Recorded,
+        helper: Option<Helper>,
+    }
+
+    #[derive(Clone)]
+    struct Helper {
+        secure_attention: bool,
+        asked: Arc<AtomicUsize>,
     }
 
     impl HostPlatform for ScenePlatform {
@@ -1030,6 +1133,24 @@ mod tests {
         }
         fn open_input(&self) -> Result<Box<dyn InputBackend>, InjectError> {
             Ok(Box::new(Recorder(self.recorded.clone())))
+        }
+        fn open_secure_desktop(&self, _input: bool) -> Option<SecureDesktopLink> {
+            let helper = self.helper.clone()?;
+            let scene = self.scene.clone();
+            let (link, mut driver) = SecureDesktopLink::pair();
+            tokio::spawn(async move {
+                driver.connected(helper.secure_attention);
+                driver.desktop_changed(InputDesktop::Default);
+                while let Some(command) = driver.command().await {
+                    if command == LinkCommand::SecureAttention {
+                        helper.asked.fetch_add(1, Ordering::SeqCst);
+                        if helper.secure_attention {
+                            *scene.lock().unwrap() = Scene::Prompt;
+                        }
+                    }
+                }
+            });
+            Some(link)
         }
     }
 
@@ -1091,6 +1212,14 @@ mod tests {
     }
 
     async fn start_check(scene: &Arc<Mutex<Scene>>, arguments: &[&str]) -> Run {
+        start_check_with(scene, None, arguments).await
+    }
+
+    async fn start_check_with(
+        scene: &Arc<Mutex<Scene>>,
+        helper: Option<Helper>,
+        arguments: &[&str],
+    ) -> Run {
         let recorded = Recorded::default();
         let (host, mut host_events) = start_host(
             HostConfig {
@@ -1110,6 +1239,7 @@ mod tests {
             Arc::new(ScenePlatform {
                 scene: scene.clone(),
                 recorded: recorded.clone(),
+                helper,
             }),
         )
         .unwrap();
@@ -1286,6 +1416,100 @@ mod tests {
         assert_eq!(run.finish().await, ExitCode::SUCCESS);
     }
 
+    fn helper(secure_attention: bool) -> Helper {
+        Helper {
+            secure_attention,
+            asked: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raises_ctrl_alt_del_and_answers_its_screen() {
+        let scene = Arc::new(Mutex::new(Scene::Desktop));
+        let helper = helper(true);
+        let mut run = start_check_with(
+            &scene,
+            Some(helper.clone()),
+            &[
+                "--screen",
+                "cad:raise=esc",
+                "--settle-ms",
+                "500",
+                "--timeout",
+                "15",
+            ],
+        )
+        .await;
+        run.expect_line("READY").await;
+        run.expect_line("RAISED cad").await;
+        run.expect_line("SEEN cad").await;
+        run.expect_line("SENT cad").await;
+        assert_eq!(helper.asked.load(Ordering::SeqCst), 1);
+        let escape = named(NamedKey::Escape);
+        assert_eq!(run.keys(2).await, [(escape, true), (escape, false)]);
+        *scene.lock().unwrap() = Scene::Desktop;
+        run.expect_line("BACK cad").await;
+        assert_eq!(run.finish().await, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_a_refused_ctrl_alt_del_before_ready() {
+        let scene = Arc::new(Mutex::new(Scene::Desktop));
+        let helper = helper(false);
+        let mut run = start_check_with(
+            &scene,
+            Some(helper.clone()),
+            &[
+                "--screen",
+                "uac",
+                "--refused-attention",
+                "unavailable",
+                "--settle-ms",
+                "500",
+                "--timeout",
+                "15",
+            ],
+        )
+        .await;
+        run.expect_line("READY").await;
+        assert_eq!(helper.asked.load(Ordering::SeqCst), 0);
+        *scene.lock().unwrap() = Scene::Prompt;
+        run.expect_line("SEEN uac").await;
+        *scene.lock().unwrap() = Scene::Desktop;
+        run.expect_line("BACK uac").await;
+        assert_eq!(run.finish().await, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fails_when_the_host_reports_ctrl_alt_del_otherwise_than_refused() {
+        let scene = Arc::new(Mutex::new(Scene::Desktop));
+        let helper = helper(true);
+        let mut run = start_check_with(
+            &scene,
+            Some(helper.clone()),
+            &[
+                "--screen",
+                "uac",
+                "--refused-attention",
+                "not-allowed",
+                "--settle-ms",
+                "500",
+                "--timeout",
+                "15",
+            ],
+        )
+        .await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(30), run.said.recv())
+                .await
+                .unwrap(),
+            None,
+            "the check never says READY"
+        );
+        assert_eq!(helper.asked.load(Ordering::SeqCst), 0);
+        assert_eq!(run.finish().await, ExitCode::FAILURE);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_present_screen_is_answered_at_once_and_back_once_the_picture_leaves_it() {
         let scene = Arc::new(Mutex::new(Scene::Prompt));
@@ -1435,6 +1659,14 @@ mod tests {
 
     #[test]
     fn screens_parse_from_labels_with_an_expectation_and_keys() {
+        assert_eq!(
+            Screen::parse("cad:raise=esc"),
+            Ok(Screen {
+                label: "cad".into(),
+                expect: Expect::Raised,
+                keys: Keys::Escape,
+            })
+        );
         let screen = |label: &str, expect, keys| Screen {
             label: label.into(),
             expect,

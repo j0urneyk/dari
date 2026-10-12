@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version spoken by this build.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 2, minor: 1 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 2, minor: 2 };
 
 /// Protocol version advertised during the handshake.
 ///

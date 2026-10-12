@@ -63,6 +63,7 @@ pub(crate) struct ViewArgs {
 pub(crate) struct Session {
     pub(crate) events: mpsc::UnboundedReceiver<ViewerEvent>,
     pub(crate) status: Option<HostStatus>,
+    pub(crate) secure_attention: Option<Availability>,
     pub(crate) screen_history: Vec<Availability>,
     pub(crate) displays: Vec<DisplayDescription>,
     pub(crate) active: Option<u32>,
@@ -74,6 +75,7 @@ impl Session {
         Self {
             events,
             status: None,
+            secure_attention: None,
             screen_history: Vec::new(),
             displays: Vec::new(),
             active: None,
@@ -124,6 +126,10 @@ impl Session {
             ViewerEvent::Ended(reason) => {
                 println!("session ended: {reason}");
                 self.ended = Some(reason);
+            }
+            ViewerEvent::SecureAttention(availability) => {
+                println!("host Ctrl+Alt+Del: {availability:?}");
+                self.secure_attention = Some(availability);
             }
             ViewerEvent::Transfer(_) => {}
         }

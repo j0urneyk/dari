@@ -15,10 +15,12 @@ use dari_proto::{
     HelperPipeName, HelperToApp, InputDesktop, LOCAL_FRAME_LIMIT, MessageCodec, PIPE_CLIENT_RIGHTS,
     PIPE_RANDOM_BYTES, Refusal, SERVICE_PIPE, ServiceReply, ServiceRequest,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::future::BoxFuture;
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, PipeMode, ServerOptions};
 use tokio_util::codec::{Encoder, FramedRead, FramedWrite};
+use tracing::{info, warn};
 use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, HANDLE, HLOCAL, LocalFree,
 };
@@ -53,6 +55,8 @@ pub(crate) enum LinkError {
     ServiceMissing,
     #[error("DariService refused: {0:?}")]
     Refused(Refusal),
+    #[error("DariService answered {0:?}")]
+    UnexpectedReply(ServiceReply),
     #[error("the helper didn't connect in time")]
     HelperTimedOut,
     #[error("the helper's pipe client is {0}, not LocalSystem")]
@@ -82,11 +86,12 @@ pub(crate) fn open(input: bool) -> SecureDesktopLink {
 }
 
 async fn run(input: bool, driver: &mut LinkDriver) -> Result<(), LinkError> {
-    let (messages, first) = tokio::select! {
+    let helper = tokio::select! {
         connected = connect(input) => connected?,
         () = session_gone(driver) => return Ok(()),
     };
-    relay(messages, first, driver).await
+    driver.connected(helper.secure_attention);
+    relay(helper.messages, helper.first, driver).await
 }
 
 /// Plays what a connected helper says into `driver` until the session drops the link or the
@@ -98,6 +103,7 @@ async fn relay(
 ) -> Result<(), LinkError> {
     driver.desktop_changed(first);
     let (mut messages, mut replies) = split(messages);
+    let mut asking: Option<BoxFuture<'static, Result<(), LinkError>>> = None;
     let relayed: Result<(), LinkError> = async {
         if let Some(display) = driver.selected_display() {
             replies.send(&AppToHelper::SelectDisplay(display)).await?;
@@ -112,8 +118,27 @@ async fn relay(
                     Some(LinkCommand::Input(input)) => {
                         replies.send(&AppToHelper::Input(input)).await?;
                     }
+                    Some(LinkCommand::SecureAttention) => match asking {
+                        Some(_) => info!("dropped a Ctrl+Alt+Del request: one is in flight"),
+                        None => asking = Some(send_sas().boxed()),
+                    },
                     None => return Ok(()),
                 },
+                answer = async {
+                    match asking.as_mut() {
+                        Some(asking) => asking.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    asking = None;
+                    match answer {
+                        Ok(()) => {}
+                        Err(refused @ LinkError::Refused(refusal)) if refusal != Refusal::Failed => {
+                            driver.secure_attention_refused(refused.to_string());
+                        }
+                        Err(error) => warn!("cannot ask DariService for Ctrl+Alt+Del: {error}"),
+                    }
+                }
                 message = messages.next() => {
                     let message = message.ok_or(LinkError::HelperClosed)??;
                     if let Some(reply) = handover.handle(message, driver).await? {
@@ -156,12 +181,34 @@ fn split(messages: HelperMessages) -> (HelperReader, HelperReplies) {
     (messages, replies)
 }
 
-async fn connect(input: bool) -> Result<(HelperMessages, InputDesktop), LinkError> {
+struct ConnectedHelper {
+    messages: HelperMessages,
+    first: InputDesktop,
+    secure_attention: bool,
+}
+
+async fn connect(input: bool) -> Result<ConnectedHelper, LinkError> {
     let pipe = random_pipe_name()?;
     let server = create_helper_pipe(&pipe)?;
     match ask_service(&ServiceRequest::StartHelper { pipe, input }).await? {
-        ServiceReply::HelperStarted => accept_helper(server).await,
+        ServiceReply::HelperStarted { secure_attention } => {
+            let (messages, first) = accept_helper(server).await?;
+            Ok(ConnectedHelper {
+                messages,
+                first,
+                secure_attention,
+            })
+        }
         ServiceReply::Refused(refusal) => Err(LinkError::Refused(refusal)),
+        reply @ ServiceReply::SasSent => Err(LinkError::UnexpectedReply(reply)),
+    }
+}
+
+async fn send_sas() -> Result<(), LinkError> {
+    match ask_service(&ServiceRequest::SendSas).await? {
+        ServiceReply::SasSent => Ok(()),
+        ServiceReply::Refused(refusal) => Err(LinkError::Refused(refusal)),
+        reply @ ServiceReply::HelperStarted { .. } => Err(LinkError::UnexpectedReply(reply)),
     }
 }
 

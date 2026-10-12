@@ -18,13 +18,14 @@ and dismisses secure screens, and reports what they left behind.
   kill-helper   Ends DariService's secure-desktop helper. Needs an elevated shell
   policy        Runs "dari-service.exe policy -State" and prints the stored value. Needs an
                 elevated shell
+  sas-value     Prints "SoftwareSASGeneration: VALUE", or "missing" when there is no value
   event-mark    Prints "mark: N", the newest Application log record
   events        Prints DariService's Application log entries newer than record -After
 #>
 param(
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('status', 'prepare', 'uac', 'clear-result', 'result', 'lock', 'keys-down',
-        'cancel-uac', 'kill-helper', 'policy', 'event-mark', 'events')]
+        'cancel-uac', 'kill-helper', 'policy', 'sas-value', 'event-mark', 'events')]
     [string] $Action,
     [string] $WorkDir = 'C:\dari-check',
     [ValidateSet('on', 'off')]
@@ -126,6 +127,11 @@ public static extern short GetAsyncKeyState(int key);
         if ($change.ExitCode) { throw "dari-service.exe policy $State exited with $($change.ExitCode)" }
         $stored = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Dari' -Name SecureDesktopControl -ErrorAction SilentlyContinue
         Write-Output "SecureDesktopControl: $($stored.SecureDesktopControl)"
+    }
+    'sas-value' {
+        $system = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+        $value = $system.PSObject.Properties['SoftwareSASGeneration']
+        Write-Output "SoftwareSASGeneration: $(if ($value) { $value.Value } else { 'missing' })"
     }
     'event-mark' {
         $newest = Get-WinEvent -LogName Application -MaxEvents 1 -ErrorAction SilentlyContinue

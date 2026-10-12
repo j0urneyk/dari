@@ -16,7 +16,7 @@ use dari_net::{
 };
 use dari_proto::{
     Availability, ControlMessage, DeviceId, DisplayDescription, HostStatus, InputEvent,
-    MAX_FRAME_RATE, Os, QualityPreset, TransferId, VideoPacket,
+    MAX_FRAME_RATE, Os, ProtocolVersion, QualityPreset, TransferId, VideoPacket,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
@@ -68,6 +68,9 @@ pub enum ViewerEvent {
     },
     /// The frame rate the host streams at.
     FrameRate(u16),
+    /// Whether [`ViewerHandle::secure_attention`] can raise Ctrl+Alt+Del on the host. Hosts older
+    /// than protocol 2.2 never send it.
+    SecureAttention(Availability),
     /// A file transfer changed. Offers from the host wait in
     /// [`TransferState::Offered`](crate::TransferState::Offered) until
     /// [`ViewerHandle::accept_transfer`] or [`ViewerHandle::cancel_transfer`].
@@ -120,6 +123,7 @@ enum Outgoing {
     /// A file transfer message.
     Transfer(ControlMessage),
     SetAudio(bool),
+    SecureAttention,
     Disconnect,
 }
 
@@ -150,6 +154,7 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::Clipboard(_) => "Clipboard",
             Outgoing::Transfer(_) => "Transfer",
             Outgoing::SetAudio(_) => "SetAudio",
+            Outgoing::SecureAttention => "SecureAttention",
             Outgoing::Disconnect => "Disconnect",
         })
     }
@@ -234,6 +239,12 @@ impl ViewerHandle {
             audio_enabled.store(enabled, Ordering::Relaxed);
             let _sent = self.outgoing.try_send(Outgoing::SetAudio(enabled));
         }
+    }
+
+    /// Asks the host to raise Ctrl+Alt+Del, which works while it reports
+    /// [`ViewerEvent::SecureAttention`] as `Available`.
+    pub fn secure_attention(&self) {
+        let _sent = self.outgoing.try_send(Outgoing::SecureAttention);
     }
 
     /// Tells the host the session is over and closes the connection.
@@ -344,7 +355,12 @@ async fn supervise(
     let audio_task = audio
         .as_ref()
         .map(|audio| tokio::spawn(receive_audio(link.streams(), audio.clone())));
-    let mut writer = tokio::spawn(write_control(control_sender, outgoing_receiver, mapping));
+    let mut writer = tokio::spawn(write_control(
+        control_sender,
+        outgoing_receiver,
+        mapping,
+        link.peer().version,
+    ));
     let (files, mut incoming_files) = mpsc::channel(4);
     let mut streams = Some(tokio::spawn(receive_streams(
         link.streams(),
@@ -444,6 +460,7 @@ async fn write_control(
     mut control: dari_net::MessageSender<ControlMessage>,
     mut outgoing: mpsc::Receiver<Outgoing>,
     mapping: Option<ModifierMapping>,
+    host_version: ProtocolVersion,
 ) -> Result<(), String> {
     while let Some(item) = outgoing.recv().await {
         let message = match item {
@@ -458,12 +475,16 @@ async fn write_control(
             Outgoing::Clipboard(text) => ControlMessage::Clipboard(text),
             Outgoing::Transfer(message) => message,
             Outgoing::SetAudio(enabled) => ControlMessage::SetAudio(enabled),
+            Outgoing::SecureAttention => ControlMessage::SecureAttention,
             Outgoing::Disconnect => {
                 let _sent = control.send(&ControlMessage::Disconnect).await;
                 let _closed = control.close().await;
                 return Ok(());
             }
         };
+        if !host_version.supports(message.since()) {
+            continue;
+        }
         control
             .send(&message)
             .await
@@ -582,13 +603,17 @@ impl ViewerSession {
                 self.send_transfer_reply(reply).await;
             }
             ControlMessage::Disconnect => return Err(SessionEndReason::HostEnded),
+            ControlMessage::SecureAttentionStatus(availability) => {
+                let _sent = self.events.send(ViewerEvent::SecureAttention(availability));
+            }
             ControlMessage::Pong { .. } | ControlMessage::Ping { .. } => {}
             ControlMessage::Input(_)
             | ControlMessage::RequestKeyframe
             | ControlMessage::SelectDisplay(_)
             | ControlMessage::SetQuality(_)
             | ControlMessage::SetFrameRate(_)
-            | ControlMessage::SetAudio(_) => {
+            | ControlMessage::SetAudio(_)
+            | ControlMessage::SecureAttention => {
                 return Err(SessionEndReason::ProtocolError(
                     "host sent a viewer message".into(),
                 ));

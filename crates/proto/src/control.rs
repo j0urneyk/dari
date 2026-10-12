@@ -30,6 +30,8 @@ pub enum Availability {
 }
 
 const SECURE_DESKTOP_SINCE: ProtocolVersion = ProtocolVersion { major: 2, minor: 1 };
+const SECURE_ATTENTION_SINCE: ProtocolVersion = ProtocolVersion { major: 2, minor: 2 };
+const BASE: ProtocolVersion = ProtocolVersion { major: 2, minor: 0 };
 
 impl Availability {
     fn for_version(self, version: ProtocolVersion) -> Self {
@@ -142,6 +144,44 @@ pub enum ControlMessage {
     SetFrameRate(u16),
     /// Host → viewer: the frame rate the host now streams at, at most what the viewer asked for.
     FrameRate(u16),
+    /// Viewer → host: raise the secure attention sequence (Ctrl+Alt+Del). Since protocol 2.2.
+    SecureAttention,
+    /// Host → viewer: whether the host can raise Ctrl+Alt+Del for this viewer: `Available`,
+    /// `NotAllowed` in a view-only session, or `Unavailable`. Sent once the host knows, which
+    /// for a Windows host is once its secure-desktop helper connected, and whenever it changes.
+    /// Since protocol 2.2.
+    SecureAttentionStatus(Availability),
+}
+
+impl ControlMessage {
+    /// The protocol version that defines this message. A peer speaking an older version can't
+    /// decode it, so it is never sent to one.
+    pub fn since(&self) -> ProtocolVersion {
+        match self {
+            ControlMessage::SecureAttention | ControlMessage::SecureAttentionStatus(_) => {
+                SECURE_ATTENTION_SINCE
+            }
+            ControlMessage::Ping { .. }
+            | ControlMessage::Pong { .. }
+            | ControlMessage::Disconnect
+            | ControlMessage::Input(_)
+            | ControlMessage::RequestKeyframe
+            | ControlMessage::HostStatus(_)
+            | ControlMessage::AwaitingApproval
+            | ControlMessage::Declined
+            | ControlMessage::Displays { .. }
+            | ControlMessage::SelectDisplay(_)
+            | ControlMessage::SetQuality(_)
+            | ControlMessage::SetAudio(_)
+            | ControlMessage::Clipboard(_)
+            | ControlMessage::FileOffer(_)
+            | ControlMessage::FileAccept(_)
+            | ControlMessage::FileDone(_)
+            | ControlMessage::FileCancel { .. }
+            | ControlMessage::SetFrameRate(_)
+            | ControlMessage::FrameRate(_) => BASE,
+        }
+    }
 }
 
 impl Validate for ControlMessage {
@@ -189,7 +229,9 @@ impl Validate for ControlMessage {
             | ControlMessage::SetAudio(_)
             | ControlMessage::FileAccept(_)
             | ControlMessage::FileDone(_)
-            | ControlMessage::FileCancel { .. } => Ok(()),
+            | ControlMessage::FileCancel { .. }
+            | ControlMessage::SecureAttention
+            | ControlMessage::SecureAttentionStatus(_) => Ok(()),
         }
     }
 }
@@ -217,6 +259,63 @@ mod tests {
         assert_eq!(status.for_version(SECURE_DESKTOP_SINCE), status);
         let v2_7 = ProtocolVersion { major: 2, minor: 7 };
         assert_eq!(status.for_version(v2_7), status);
+    }
+
+    #[test]
+    fn only_a_2_2_peer_decodes_the_secure_attention_messages() {
+        let v2_1 = ProtocolVersion { major: 2, minor: 1 };
+        let v2_2 = ProtocolVersion { major: 2, minor: 2 };
+        for message in [
+            ControlMessage::SecureAttention,
+            ControlMessage::SecureAttentionStatus(Availability::Available),
+        ] {
+            assert!(!v2_1.supports(message.since()), "{message:?}");
+            assert!(v2_2.supports(message.since()), "{message:?}");
+        }
+        for message in [
+            ControlMessage::HostStatus(HostStatus {
+                screen: Availability::Available,
+                input: Availability::Available,
+                files: Availability::Available,
+                audio: Availability::Available,
+            }),
+            ControlMessage::SetFrameRate(60),
+            ControlMessage::Disconnect,
+        ] {
+            assert!(
+                ProtocolVersion { major: 2, minor: 0 }.supports(message.since()),
+                "{message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_kinds_take_the_next_wire_indexes() {
+        let encoded = |message: &ControlMessage| postcard::to_allocvec(message).unwrap();
+        assert_eq!(encoded(&ControlMessage::FrameRate(1)), [18, 1]);
+        assert_eq!(encoded(&ControlMessage::SecureAttention), [19]);
+        assert_eq!(
+            encoded(&ControlMessage::SecureAttentionStatus(
+                Availability::NotAllowed
+            )),
+            [20, 4]
+        );
+    }
+
+    #[test]
+    fn a_2_2_viewer_decodes_a_2_1_hosts_status() {
+        let status = HostStatus {
+            screen: Availability::SecureDesktop,
+            input: Availability::Available,
+            files: Availability::NotAllowed,
+            audio: Availability::Unavailable,
+        };
+        let from_2_1_host = postcard::to_allocvec(&ControlMessage::HostStatus(status)).unwrap();
+        assert_eq!(from_2_1_host, [5, 5, 0, 4, 3]);
+        assert_eq!(
+            postcard::from_bytes::<ControlMessage>(&from_2_1_host).unwrap(),
+            ControlMessage::HostStatus(status)
+        );
     }
 
     fn display(id: u32, name: &str) -> DisplayDescription {
