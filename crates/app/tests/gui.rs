@@ -150,6 +150,14 @@ mod macos {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/gui-snapshots")
     }
 
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
     /// A headless app with the real Metal renderer and the app's globals installed.
     fn app(data_directory: &std::path::Path) -> HeadlessAppContext {
         let mut cx = HeadlessAppContext::with_platform(
@@ -538,6 +546,55 @@ mod macos {
             actions.lock().unwrap()[recorded_before..],
             expected,
             "only the chord macOS consumed gets a key inside it"
+        );
+
+        let control_still_held = || {
+            let now = Instant::now();
+            HidEvents {
+                key_down: now.checked_sub(Duration::from_millis(15)),
+                modifier_change: now.checked_sub(Duration::from_millis(30)).unwrap(),
+            }
+        };
+        let (other_window, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(window_options(200., 200.), cx, |_, cx| cx.new(|_| Blank))
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, _| window.activate_window())
+            .unwrap();
+        pump(&mut cx, Duration::from_secs(5), |cx| {
+            cx.update_window(window, |_, window, _| window.is_window_active())
+                .unwrap()
+        });
+        let recorded_before = actions.lock().unwrap().len();
+        cx.update(|cx| {
+            view.update(cx, |view, _| {
+                view.read_hid_events_with(control_still_held);
+                view.modifiers_changed(control, pressed);
+            });
+        });
+        cx.update_window(other_window, |_, window, _| window.activate_window())
+            .unwrap();
+        let expected = [
+            control_key(true),
+            mask_key(true),
+            mask_key(false),
+            control_key(false),
+        ];
+        let chord_keys = || {
+            actions.lock().unwrap()[recorded_before..]
+                .iter()
+                .filter(|action| expected.contains(action))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        pump(&mut cx, Duration::from_secs(5), |_| {
+            chord_keys().ends_with(&[control_key(false)])
+        });
+        assert_eq!(
+            chord_keys(),
+            expected,
+            "losing focus with Control held masks the key macOS consumed"
         );
 
         // Every frame becomes a new GPU texture (~1.4 MB here). If replaced frames were not
