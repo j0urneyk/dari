@@ -41,8 +41,8 @@ pub use input::{
 pub use local::{
     AppToHelper, DesktopName, HelperPipeName, HelperToApp, InputDesktop, LOCAL_FRAME_LIMIT,
     MAX_DESKTOP_NAME_CHARS, MAX_OS_COORDINATE, OsInput, PIPE_CLIENT_RIGHTS, PIPE_RANDOM_BYTES,
-    POLICY_KEY, POLICY_VALUE, Refusal, SERVICE_PIPE, SecureDesktopControl, ServiceReply,
-    ServiceRequest,
+    POLICY_KEY, POLICY_VALUE, PolicyReading, Refusal, SERVICE_PIPE, SecureDesktopControl,
+    ServiceReply, ServiceRequest,
 };
 pub use relay::{
     Allocation, DEFAULT_RELAY_PORT, DeviceId, RELAY_ACK_MAGIC, RELAY_ALPN, RELAY_BIND_MAGIC,
