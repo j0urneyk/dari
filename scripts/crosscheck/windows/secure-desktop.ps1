@@ -45,8 +45,9 @@ function Assert-Ready {
     if (-not $dariService) { throw 'DariService is not registered' }
     if ($dariService.Status -ne 'Running') { throw "DariService is $($dariService.Status), not Running" }
     # With UAC off there is no prompt, and a Limited task runs elevated.
-    $policy = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-    if ($policy.EnableLUA -ne 1) { throw 'UAC is off: run scripts/crosscheck/vm/enable-uac.sh' }
+    # 0x7FFE02F0 is SharedDataFlags in KUSER_SHARED_DATA; bit 1, DbgElevationEnabled, is EnableLUA as of boot.
+    $luaAtBoot = ([Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]0x7FFE02F0) -shr 1) -band 1
+    if ($luaAtBoot -ne 1) { throw 'UAC is off: run scripts/crosscheck/vm/enable-uac.sh' }
     Write-Output "installed: $app; DariService: $($dariService.Status); UAC on"
 }
 
