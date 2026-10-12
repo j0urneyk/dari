@@ -534,7 +534,8 @@ current modifier change, and none reached the viewer, the viewer taps F20, a key
 come up. This holds while the delivery lag is shorter than the time the modifier is held. In testing, a person held
 Control for 400 ms or more, and synthetic input held it for about 30 ms.
 A deliberate modifier tap has no key under it and still reaches the host as a tap. Releasing everything when the
-window loses focus takes the same path, so the record of held modifiers starts over.
+window loses focus takes the same path, so the record of held modifiers starts over. That release happens while the
+modifiers can still be down, so the viewer bounds it by the current time instead of the last HID modifier change.
 
 ## Relay
 

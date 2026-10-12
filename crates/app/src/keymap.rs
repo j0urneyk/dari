@@ -104,6 +104,15 @@ impl HidEvents {
             modifier_change: last(CGEventType::FlagsChanged).unwrap_or(now),
         }
     }
+
+    /// For a release the viewer makes itself, such as on focus loss. The modifiers can still be
+    /// down, so the last HID modifier change can be their press, while the release happens now.
+    pub(crate) fn released_by_viewer(self) -> Self {
+        Self {
+            modifier_change: Instant::now(),
+            ..self
+        }
+    }
 }
 
 /// macOS keeps some chords for itself (Ctrl+Space, ⌘Space), so the window sees only their
@@ -211,5 +220,19 @@ mod tests {
             ]
         );
         assert_eq!(modifier_changes(shift, shift), Vec::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_release_on_focus_loss_masks_a_key_consumed_while_held() {
+        let ago = |millis| Instant::now().checked_sub(Duration::from_millis(millis));
+        let pressed = ago(30).unwrap();
+        let still_held = HidEvents {
+            key_down: ago(15),
+            modifier_change: pressed,
+        };
+        let chord = Chord::new(pressed);
+        assert!(!chord.consumed(still_held));
+        assert!(chord.consumed(still_held.released_by_viewer()));
     }
 }

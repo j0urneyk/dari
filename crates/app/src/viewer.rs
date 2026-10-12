@@ -461,6 +461,11 @@ impl ViewerView {
                 pressed: false,
             });
         }
+        #[cfg(target_os = "macos")]
+        if self.modifiers != Modifiers::default() {
+            self.modifiers_changed(Modifiers::default(), HidEvents::now().released_by_viewer());
+        }
+        #[cfg(not(target_os = "macos"))]
         self.on_modifiers(Modifiers::default());
         for button in std::mem::take(&mut self.held_buttons) {
             self.send(InputEvent::PointerButton {
