@@ -117,9 +117,9 @@ pub(crate) struct Chord {
 
 #[cfg(target_os = "macos")]
 impl Chord {
-    pub(crate) fn new(_started: Instant) -> Self {
+    pub(crate) fn new(started: Instant) -> Self {
         Self {
-            started: Instant::now(),
+            started,
             key_sent: false,
         }
     }
@@ -132,7 +132,7 @@ impl Chord {
         !self.key_sent
             && hid
                 .key_down
-                .is_some_and(|key_down| self.started < key_down)
+                .is_some_and(|key_down| self.started < key_down && key_down < hid.modifier_change)
     }
 }
 
