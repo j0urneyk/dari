@@ -31,7 +31,7 @@ use crate::config::{FRAME_RATE_CHOICES, auto_frame_rate};
 #[cfg(target_os = "macos")]
 use crate::input_source::{InputSourceTracker, selected_input_source};
 #[cfg(target_os = "macos")]
-use crate::keymap::{CHORD_MASK, Chord, since_last_key_down};
+use crate::keymap::{CHORD_MASK, Chord, HidEvents};
 use crate::keymap::{key_code, modifier_changes};
 use crate::state::AppState;
 use crate::style;
@@ -514,16 +514,19 @@ impl ViewerView {
             return;
         }
         #[cfg(target_os = "macos")]
-        self.modifiers_changed(modifiers, since_last_key_down());
+        self.modifiers_changed(modifiers, HidEvents::now());
         #[cfg(not(target_os = "macos"))]
         self.send_modifiers(modifiers);
     }
 
     #[cfg(target_os = "macos")]
     #[doc(hidden)]
-    pub fn modifiers_changed(&mut self, modifiers: Modifiers, since_last_key_down: Duration) {
-        let mut chord = self.chord.take().unwrap_or_else(Chord::new);
-        if chord.consumed(since_last_key_down) {
+    pub fn modifiers_changed(&mut self, modifiers: Modifiers, hid: HidEvents) {
+        let mut chord = self
+            .chord
+            .take()
+            .unwrap_or_else(|| Chord::new(hid.modifier_change));
+        if chord.consumed(hid) {
             chord.key_sent();
             for event in CHORD_MASK {
                 self.send(event);

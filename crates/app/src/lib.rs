@@ -135,6 +135,8 @@ fn init_ui(cx: &mut App) {
 #[doc(hidden)]
 pub mod test_support {
     pub use crate::home::Home;
+    #[cfg(target_os = "macos")]
+    pub use crate::keymap::HidEvents;
     pub use crate::runtime::TokioRuntime;
     pub use crate::settings::Settings;
     pub use crate::state::AppState;
