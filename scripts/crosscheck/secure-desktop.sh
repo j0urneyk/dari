@@ -3,7 +3,7 @@
 set -euo pipefail
 
 all_cases=(uac-allow uac-deny secure-second-display drop-mid-prompt helper-killed secure-policy-off
-  secure-view-only lock-unlock)
+  secure-view-only lock-unlock cad)
 
 usage() {
   cat <<'EOF'
@@ -34,10 +34,14 @@ Cases (in the order they run):
                              released it, and Esc from a new viewer still cancels the prompt
   helper-killed              The viewer holds F20 and the script ends the helper; the viewer
                              gets the notice, and no key is down once the prompt is gone
-  secure-policy-off          SecureDesktopControl is off; the viewer sees the prompt, but its
-                             Alt+Y does nothing
-  secure-view-only           The host grants view-only sessions; the viewer's Alt+Y does nothing
+  secure-policy-off          SecureDesktopControl is off; the host refuses the viewer's
+                             Ctrl+Alt+Del, and the viewer sees the prompt, but its Alt+Y does
+                             nothing
+  secure-view-only           The host grants view-only sessions; the host refuses the viewer's
+                             Ctrl+Alt+Del, and its Alt+Y does nothing
   lock-unlock                The viewer types the peer user's password on the lock screen
+  cad                        The viewer sends Ctrl+Alt+Del and answers its screen with Esc;
+                             SoftwareSASGeneration is as it was before
 EOF
 }
 
@@ -242,11 +246,33 @@ answer_case() {
 
 answer_grace=5
 
+# The viewer asks for Ctrl+Alt+Del before it prints READY. Passes when the host log, after line
+# MARK, says the request was refused for REASON and shows no switch to Winlogon.
+attention_refused() {
+  local mark=$1 reason=$2 deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
+    fetch "$peer_host_log" "$host_log" 2>/dev/null || true
+    if tail -n "+$((mark + 1))" "$host_log" | grep -qF "refused SecureAttention: $reason"; then
+      if tail -n "+$((mark + 1))" "$host_log" | grep -qF 'DesktopChanged(Winlogon)'; then
+        echo "the host log shows a switch to Winlogon after the refused Ctrl+Alt+Del"
+        return 1
+      fi
+      echo "  the host refused Ctrl+Alt+Del: $reason"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "the host log shows no 'refused SecureAttention: $reason'"
+  return 1
+}
+
 unanswered_case() {
-  local name=$1 mode=$2
-  shift 2
+  local name=$1 mode=$2 refusal=$3 reason=$4 mark
+  shift 4
   ensure_host "$mode" || return 1
-  start_viewer "$name" --screen "$name=alt-y" "$@" || return 1
+  mark=$(log_mark)
+  start_viewer "$name" --screen "$name=alt-y" --refused-attention "$refusal" "$@" || return 1
+  attention_refused "$mark" "$reason" || return 1
   show_uac || return 1
   wait_for_viewer "SEEN $name" || return 1
   wait_for_viewer "SENT $name" || return 1
@@ -263,7 +289,7 @@ policy_off_case() {
   echo "  turning SecureDesktopControl off"
   policy_off=1
   secure policy -State off || return 1
-  unanswered_case secure-policy-off control || code=$?
+  unanswered_case secure-policy-off control unavailable "DariService doesn't grant it to this session" || code=$?
   echo "  turning SecureDesktopControl on"
   secure policy -State on && policy_off=0
   return "$code"
@@ -346,6 +372,29 @@ unlock() {
   script interactive.ps1 running -Name secure-host || { echo "the host task stopped"; return 1; }
 }
 
+cad_case() {
+  local name=cad mark events before after
+  ensure_host control || return 1
+  before=$(secure sas-value | value_of SoftwareSASGeneration)
+  [[ -n $before ]] || { echo "could not read SoftwareSASGeneration"; return 1; }
+  mark=$(log_mark)
+  events=$(secure event-mark | value_of mark)
+  start_viewer "$name" --screen "$name:raise=esc" || return 1
+  wait_for_viewer "RAISED $name" || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  winlogon_then_default "$mark" || return 1
+  secure events -After "$events" | tr -d '\r' >"$out/$name-events.log" || true
+  grep -q 'id 5: raised Ctrl+Alt+Del' "$out/$name-events.log" ||
+    { echo "DariService's log shows no event 5 for the SendSAS"; return 1; }
+  after=$(secure sas-value | value_of SoftwareSASGeneration)
+  [[ $after == "$before" ]] ||
+    { echo "SoftwareSASGeneration was $before before the case and is ${after:-unknown} after it"; return 1; }
+  echo "  SoftwareSASGeneration: $after, as before the case"
+}
+
 lock_case() {
   local code=0 leaked
   unlock || code=$?
@@ -363,8 +412,9 @@ run_case() {
     drop-mid-prompt) drop_case ;;
     helper-killed) helper_killed_case ;;
     secure-policy-off) policy_off_case ;;
-    secure-view-only) unanswered_case secure-view-only view-only --view-only ;;
+    secure-view-only) unanswered_case secure-view-only view-only not-allowed 'the session is view-only' --view-only ;;
     lock-unlock) lock_case ;;
+    cad) cad_case ;;
   esac
 }
 
