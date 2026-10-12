@@ -20,7 +20,8 @@ and dismisses secure screens, and reports what they left behind.
                 elevated shell
   sas-value     Prints "SoftwareSASGeneration: VALUE", or "missing" when there is no value
   event-mark    Prints "mark: N", the newest Application log record
-  events        Prints DariService's Application log entries newer than record -After
+  events        Prints DariService's Application log entries newer than record -After, each with
+                its time in Unix milliseconds
 #>
 param(
     [Parameter(Mandatory, Position = 0)]
@@ -144,7 +145,8 @@ public static extern short GetAsyncKeyState(int key);
         foreach ($entry in $entries) {
             # The insertion string is there even when the source's message file is missing.
             $text = if ($entry.Properties.Count) { $entry.Properties[0].Value } else { $entry.Message }
-            Write-Output "event $($entry.RecordId) id $($entry.Id): $text"
+            $at = ([DateTimeOffset]$entry.TimeCreated).ToUnixTimeMilliseconds()
+            Write-Output "event $($entry.RecordId) at $at id $($entry.Id): $text"
         }
     }
 }

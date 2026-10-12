@@ -3,7 +3,7 @@
 set -euo pipefail
 
 all_cases=(uac-allow uac-deny secure-second-display drop-mid-prompt helper-killed secure-policy-off
-  secure-view-only lock-unlock cad)
+  secure-policy-revoke secure-view-only lock-unlock cad)
 
 usage() {
   cat <<'EOF'
@@ -37,6 +37,9 @@ Cases (in the order they run):
   secure-policy-off          SecureDesktopControl is off; the host refuses the viewer's
                              Ctrl+Alt+Del, and the viewer sees the prompt, but its Alt+Y does
                              nothing
+  secure-policy-revoke       The viewer sees the prompt with SecureDesktopControl on, the script
+                             turns it off, and the viewer's Alt+Y a second later does nothing;
+                             the helper logs event 6 within a second of the change
   secure-view-only           The host grants view-only sessions; the host refuses the viewer's
                              Ctrl+Alt+Del, and its Alt+Y does nothing
   lock-unlock                The viewer types the peer user's password on the lock screen
@@ -295,6 +298,45 @@ policy_off_case() {
   return "$code"
 }
 
+# Passes when the prompt stays unanswered and DariService logs event 6 within a second of event 4.
+revoke_case() {
+  local name=secure-policy-revoke send=$out/secure-policy-revoke.send mark events changed revoked
+  ensure_host control || return 1
+  rm -f "$send"
+  mark=$(secure event-mark | value_of mark)
+  start_viewer "$name" --screen "$name=alt-y" --send-when "$send" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  echo "  turning SecureDesktopControl off while the viewer sees the prompt"
+  policy_off=1
+  secure policy -State off || return 1
+  sleep 1
+  touch "$send"
+  wait_for_viewer "SENT $name" || return 1
+  sleep "$answer_grace"
+  secure cancel-uac || return 1
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  expect_result missing || return 1
+  events=$out/$name-events.log
+  secure events -After "$mark" | tr -d '\r' >"$events" || true
+  changed=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 4: .*SecureDesktopControl to 0 .*/\1/p' "$events" | head -n 1)
+  revoked=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 6: .*/\1/p' "$events" | head -n 1)
+  [[ -n $changed ]] || { echo "DariService's log shows no event 4 for the policy change"; return 1; }
+  [[ -n $revoked ]] || { echo "DariService's log shows no event 6"; return 1; }
+  grep ' id 6: ' "$events" | sed 's/^/  /'
+  echo "  event 6 came $((revoked - changed)) ms after event 4"
+  ((revoked - changed <= 1000)) || { echo "event 6 came more than 1000 ms after event 4"; return 1; }
+}
+
+policy_revoke_case() {
+  local code=0
+  revoke_case || code=$?
+  echo "  turning SecureDesktopControl on"
+  secure policy -State on && policy_off=0
+  return "$code"
+}
+
 helper_release() {
   local mark=$1 events=$2 deadline=$((SECONDS + 30)) released
   while ((SECONDS < deadline)); do
@@ -412,6 +454,7 @@ run_case() {
     drop-mid-prompt) drop_case ;;
     helper-killed) helper_killed_case ;;
     secure-policy-off) policy_off_case ;;
+    secure-policy-revoke) policy_revoke_case ;;
     secure-view-only) unanswered_case secure-view-only view-only not-allowed 'the session is view-only' --view-only ;;
     lock-unlock) lock_case ;;
     cad) cad_case ;;
