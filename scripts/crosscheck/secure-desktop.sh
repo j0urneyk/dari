@@ -299,7 +299,8 @@ policy_off_case() {
 }
 
 revoke_case() {
-  local name=secure-policy-revoke send=$out/secure-policy-revoke.send mark events changed revoked
+  local name=secure-policy-revoke send=$out/secure-policy-revoke.send mark off_mark events changed
+  local fresh revoked count delta
   ensure_host control || return 1
   rm -f "$send"
   mark=$(secure event-mark | value_of mark)
@@ -307,6 +308,8 @@ revoke_case() {
   show_uac || return 1
   wait_for_viewer "SEEN $name" || return 1
   echo "  turning SecureDesktopControl off while the viewer sees the prompt"
+  off_mark=$(secure event-mark | value_of mark)
+  [[ -n $off_mark ]] || { echo "could not mark the Application log"; return 1; }
   policy_off=1
   secure policy -State off || return 1
   sleep 1
@@ -319,13 +322,18 @@ revoke_case() {
   expect_result missing || return 1
   events=$out/$name-events.log
   secure events -After "$mark" | tr -d '\r' >"$events" || true
-  changed=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 4: .*SecureDesktopControl to 0 .*/\1/p' "$events" | head -n 1)
-  revoked=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 6: .*/\1/p' "$events" | head -n 1)
+  # An event 6 recorded before the change can't be this change's.
+  fresh=$(awk -v mark="$off_mark" '$1 == "event" && $2 > mark' "$events")
+  changed=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 4: .*SecureDesktopControl to 0 .*/\1/p' <<<"$fresh" | head -n 1)
+  count=$(grep -c ' id 6: ' <<<"$fresh" || true)
+  revoked=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 6: .*/\1/p' <<<"$fresh" | head -n 1)
   [[ -n $changed ]] || { echo "DariService's log shows no event 4 for the policy change"; return 1; }
-  [[ -n $revoked ]] || { echo "DariService's log shows no event 6"; return 1; }
-  grep ' id 6: ' "$events" | sed 's/^/  /'
-  echo "  event 6 came $((revoked - changed)) ms after event 4"
-  ((revoked - changed <= 1000)) || { echo "event 6 came more than 1000 ms after event 4"; return 1; }
+  ((count == 1)) || { echo "DariService's log shows $count event 6 entries after the change, not 1"; return 1; }
+  grep ' id 6: ' <<<"$fresh" | sed 's/^/  /'
+  delta=$((revoked - changed))
+  echo "  event 6 came $delta ms after event 4"
+  # policy off writes event 4 only after its registry write, which the helper may read first.
+  ((delta >= -250 && delta <= 1000)) || { echo "event 6 came $delta ms after event 4, outside -250..1000"; return 1; }
 }
 
 policy_revoke_case() {
