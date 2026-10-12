@@ -41,6 +41,10 @@ gpui-kit = { workspace = true, features = ["test-support"] }
 sha2.workspace = true
 tempfile = "3"
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-app-kit = { workspace = true, features = ["NSGraphicsContext", "NSView"] }
+objc2-foundation.workspace = true
+
 [[test]]
 name = "gui"
 # Needs GPUI's Metal renderer on the main thread; select explicitly with --test gui.

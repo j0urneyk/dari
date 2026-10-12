@@ -114,6 +114,13 @@ pub(crate) fn since_last_key_down() -> Duration {
     Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)
 }
 
+/// `-[NSApplication sendEvent:]` never hands a window the release of a key let go while ⌘ is down,
+/// so ⌘A would leave A pressed on the host until the window lost focus. Hands each such release to
+/// its window itself, as winit and GLFW do. Call once on the main thread after launch; the monitor
+/// lasts as long as the app.
+#[cfg(target_os = "macos")]
+pub fn deliver_command_key_ups() {}
+
 /// F20, which no shortcut binds on the host, so tapping it only turns a modifier tap into a chord.
 #[cfg(target_os = "macos")]
 pub(crate) const CHORD_MASK: [InputEvent; 2] = [
