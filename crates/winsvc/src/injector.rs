@@ -7,7 +7,12 @@ use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, Secure
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The keys [`Follower::revoke`] releases. Event 6 calls them modifier keys.
-pub(crate) const MODIFIER_KEYS: [NamedKey; 3] = [NamedKey::Shift, NamedKey::Control, NamedKey::Alt];
+pub(crate) const MODIFIER_KEYS: [NamedKey; 4] = [
+    NamedKey::Shift,
+    NamedKey::Control,
+    NamedKey::Alt,
+    NamedKey::Meta,
+];
 
 fn is_modifier(key: KeyCode) -> bool {
     matches!(key, KeyCode::Named(named) if MODIFIER_KEYS.contains(&named))
@@ -522,6 +527,8 @@ mod tests {
     }
 
     const SHIFT: KeyCode = KeyCode::Named(NamedKey::Shift);
+    const CONTROL: KeyCode = KeyCode::Named(NamedKey::Control);
+    const META: KeyCode = KeyCode::Named(NamedKey::Meta);
     const SPACE: KeyCode = KeyCode::Named(NamedKey::Space);
 
     fn key(key: KeyCode) -> OsInput {
@@ -531,16 +538,15 @@ mod tests {
     #[test]
     fn turning_the_policy_off_on_winlogon_releases_only_held_modifiers() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = sent_then_hung_up(vec![
-            key(SHIFT),
-            left(true),
-            key(SPACE),
-            OsInput::Move { x: 5, y: 6 },
-        ]);
+        let modifiers = MODIFIER_KEYS.map(KeyCode::Named);
+        let mut inputs = vec![left(true), key(SPACE)];
+        inputs.extend(modifiers.map(key));
+        inputs.push(OsInput::Move { x: 5, y: 6 });
+        let received = sent_then_hung_up(inputs);
         let mut notes = Vec::new();
         let ended = run(
             follower,
-            scripted(vec![ON, ON, ON, OFF]),
+            scripted(vec![ON, ON, ON, ON, ON, ON, OFF]),
             &received,
             |note| {
                 notes.push(note);
@@ -549,18 +555,17 @@ mod tests {
         assert_eq!(
             ended,
             Ended::Revoked {
-                released: 1,
+                released: 4,
                 forgot: 2,
                 reading: OFF
             }
         );
         assert_eq!(
-            taken(&timeline),
+            taken(&timeline)[7..],
             [
-                Happened::Attached(InputDesktop::Winlogon),
-                Happened::Did(RecordedAction::Key(SHIFT, true)),
-                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
-                Happened::Did(RecordedAction::Key(SPACE, true)),
+                Happened::Did(RecordedAction::Key(META, false)),
+                Happened::Did(RecordedAction::Key(ALT, false)),
+                Happened::Did(RecordedAction::Key(CONTROL, false)),
                 Happened::Did(RecordedAction::Key(SHIFT, false)),
             ]
         );

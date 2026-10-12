@@ -99,9 +99,9 @@ fn inject(inputs: &mpsc::Receiver<OsInput>) -> Ended {
     {
         log.input_revoked(&format!(
             "helper pid {}: {reading}, so the viewer's input no longer reaches the secure \
-             desktop for the rest of this session. It released {released} held Shift, Ctrl, or \
-             Alt keys, and forgot {forgot} other held inputs without releasing them. The viewer \
-             still sees the secure desktop.",
+             desktop for the rest of this session. It released {released} held modifier keys and \
+             forgot {forgot} held inputs without releasing them. The viewer still sees the \
+             secure desktop.",
             std::process::id()
         ));
     }
