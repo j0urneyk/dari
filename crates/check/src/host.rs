@@ -70,6 +70,8 @@ struct Observations {
     keys: Vec<(KeyCode, bool)>,
     /// Buttons, wheel, and text, which a view-only session must not inject.
     other_input: usize,
+    /// The window under the pointer at each left click, on Windows.
+    clicked_windows: Vec<String>,
     inject_errors: Vec<String>,
     /// Text the session put on the system clipboard, as read back from it.
     clipboard_writes: Vec<Option<String>>,
@@ -167,7 +169,15 @@ impl InputBackend for ObservedInput {
     }
 
     fn button(&mut self, button: MouseButton, pressed: bool) -> Result<(), InjectError> {
-        observe(&self.observations, |seen| seen.other_input += 1);
+        #[cfg(windows)]
+        let clicked = (pressed && button == MouseButton::Left)
+            .then(crate::front::window_under_pointer)
+            .flatten();
+        observe(&self.observations, |seen| {
+            seen.other_input += 1;
+            #[cfg(windows)]
+            seen.clicked_windows.extend(clicked);
+        });
         let result = self.inner.button(button, pressed);
         self.record(result)
     }
@@ -406,7 +416,7 @@ fn judge(
     match args.approve {
         Approval::Allow => {
             judge_allowed(args, displays, timeline, seen, &mut verdict);
-            judge_effects(args, probe, &mut verdict);
+            judge_effects(args, seen, probe, &mut verdict);
         }
         Approval::ViewOnly => judge_view_only(timeline, seen, &mut verdict),
     }
@@ -493,7 +503,12 @@ fn judge_allowed(
 
 /// What the session's input did in the input window: the checks a person would make by typing,
 /// clicking, and scrolling in an app on the host.
-fn judge_effects(args: &HostArgs, probe: Option<&ProbeLog>, verdict: &mut Verdict) {
+fn judge_effects(
+    args: &HostArgs,
+    seen: &Observations,
+    probe: Option<&ProbeLog>,
+    verdict: &mut Verdict,
+) {
     let Some(probe) = probe.filter(|probe| probe.opened) else {
         verdict.fail(format!(
             "the input window opens ({})",
@@ -503,11 +518,16 @@ fn judge_effects(args: &HostArgs, probe: Option<&ProbeLog>, verdict: &mut Verdic
         ));
         return;
     };
+    let landed_on = if seen.clicked_windows.is_empty() {
+        String::new()
+    } else {
+        format!("; clicked {}", seen.clicked_windows.join(", "))
+    };
     verdict.check(
         probe.clicked_middle(),
         format!(
             "a click at the display's centre lands in the input window (clicks {:?} in a {}x{} \
-             window)",
+             window{landed_on})",
             probe.left_clicks, probe.size.0, probe.size.1
         ),
     );

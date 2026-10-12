@@ -13,6 +13,12 @@
 )]
 
 mod audio;
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "a few Win32 calls that read which window and program are in front"
+)]
+mod front;
 mod host;
 mod picture;
 mod probe;

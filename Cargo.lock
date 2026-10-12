@@ -1751,6 +1751,7 @@ dependencies = [
  "image",
  "tokio",
  "tracing-subscriber",
+ "windows 0.62.2",
  "winit",
 ]
 
