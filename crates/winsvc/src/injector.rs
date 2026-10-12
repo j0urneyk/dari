@@ -6,7 +6,6 @@ use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, Secure
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The keys [`Follower::revoke`] releases. Event 6 calls them modifier keys.
 const MODIFIER_KEYS: [NamedKey; 4] = [
     NamedKey::Shift,
     NamedKey::Control,
@@ -100,15 +99,10 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         notes
     }
 
-    /// Releases everything it holds, as [`Follower::end`] allows. Returns how many inputs it
-    /// released.
     pub(crate) fn finish(self) -> usize {
         self.end(Injector::release_all).0
     }
 
-    /// Releases held modifier keys, as [`Follower::end`] allows, and forgets everything else it
-    /// holds. Returns how many inputs it released and how many it forgot.
-    ///
     /// A modifier left down would garble what the local user types next, and its release can't
     /// answer a prompt. Any other release can: a button up over **Yes** completes the click, and
     /// a Space up activates the focused button.
@@ -116,14 +110,7 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         self.end(|injector| injector.release_keys(is_modifier))
     }
 
-    /// Calls `release` only while attached to a desktop that takes helper input and that is
-    /// still the input desktop, then forgets whatever is left. Returns how many inputs `release`
-    /// released and how many were forgotten.
-    ///
-    /// Windows refuses injection from a thread whose desktop is no longer the input desktop, so a
-    /// release there would be counted but never sent; an unreadable input desktop is treated the
-    /// same. A second `Winlogon` screen that replaced the first looks the same, but Windows cleared
-    /// key state at that switch, so those releases match no press.
+    /// Windows refuses injection from a thread whose desktop is no longer the input desktop.
     fn end(mut self, release: impl FnOnce(&mut Injector<B>) -> usize) -> (usize, usize) {
         let still_there = match &self.attachment {
             Attachment::To(desktop) => {
@@ -153,8 +140,6 @@ pub(crate) enum Ended {
     },
 }
 
-/// `policy` is read after every receive, not only on idle ticks: the app is untrusted and can keep
-/// the channel busy forever.
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
     mut policy: impl FnMut() -> PolicyReading,

@@ -153,8 +153,7 @@ enum Keys {
     /// type.
     HoldF20,
     /// Space goes down last: a key pressed after it cancels the focused button's press, and with
-    /// Alt down Space is a system key. A release of everything lifts Space first, which then
-    /// activates the focused button.
+    /// Alt down Space is a system key.
     HoldShiftSpace,
 }
 

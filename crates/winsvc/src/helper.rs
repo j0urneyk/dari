@@ -156,7 +156,6 @@ fn converse<W: DesktopWorld>(
             let ended = injector
                 .join()
                 .map_err(|_| "the input thread panicked".to_owned())?;
-            // A revoked input thread already wrote event 6.
             if let (Ended::HungUp { released }, Some(log)) = (ended, log) {
                 log.info(&format!(
                     "helper: released {released} held inputs because {reason}"

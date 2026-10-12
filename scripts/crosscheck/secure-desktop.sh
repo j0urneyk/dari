@@ -302,9 +302,10 @@ policy_off_case() {
   return "$code"
 }
 
+helper_reads_before_event4_ms=250
 revoke_case() {
   local name=secure-policy-revoke send=$out/secure-policy-revoke.send mark off_mark events changed
-  local fresh revoked count delta
+  local after_off revoked count delta
   ensure_host control || return 1
   rm -f "$send"
   mark=$(secure event-mark | value_of mark)
@@ -326,18 +327,17 @@ revoke_case() {
   expect_result missing || return 1
   events=$out/$name-events.log
   secure events -After "$mark" | tr -d '\r' >"$events" || true
-  # An event 6 recorded before the change can't be this change's.
-  fresh=$(awk -v mark="$off_mark" '$1 == "event" && $2 > mark' "$events")
-  changed=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 4: .*SecureDesktopControl to 0 .*/\1/p' <<<"$fresh" | head -n 1)
-  count=$(grep -c ' id 6: ' <<<"$fresh" || true)
-  revoked=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 6: .*/\1/p' <<<"$fresh" | head -n 1)
+  after_off=$(awk -v mark="$off_mark" '$1 == "event" && $2 > mark' "$events")
+  changed=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 4: .*SecureDesktopControl to 0 .*/\1/p' <<<"$after_off" | head -n 1)
+  count=$(grep -c ' id 6: ' <<<"$after_off" || true)
+  revoked=$(sed -n 's/^event [0-9]* at \([0-9]*\) id 6: .*/\1/p' <<<"$after_off" | head -n 1)
   [[ -n $changed ]] || { echo "DariService's log shows no event 4 for the policy change"; return 1; }
   ((count == 1)) || { echo "DariService's log shows $count event 6 entries after the change, not 1"; return 1; }
-  grep ' id 6: ' <<<"$fresh" | sed 's/^/  /'
+  grep ' id 6: ' <<<"$after_off" | sed 's/^/  /'
   delta=$((revoked - changed))
   echo "  event 6 came $delta ms after event 4"
-  # policy off writes event 4 only after its registry write, which the helper may read first.
-  ((delta >= -250 && delta <= 1000)) || { echo "event 6 came $delta ms after event 4, outside -250..1000"; return 1; }
+  ((delta >= -helper_reads_before_event4_ms && delta <= 1000)) ||
+    { echo "event 6 came $delta ms after event 4, outside -$helper_reads_before_event4_ms..1000"; return 1; }
 }
 
 revoke_held_case() {
@@ -377,7 +377,6 @@ revoke_held_case() {
     { echo "event 6 doesn't say it released 1 modifier key and forgot 1 held input"; return 1; }
 }
 
-# Runs a case that turns SecureDesktopControl off, and turns it on again whatever the case did.
 then_policy_on() {
   local code=0
   "$@" || code=$?
