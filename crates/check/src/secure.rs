@@ -42,7 +42,8 @@ pub(crate) struct SecureViewArgs {
     /// it itself by sending Ctrl+Alt+Del once the host says it can. KEYS is what the viewer
     /// sends once the screen has settled: `alt-y`, `esc`, `password` (a click, the
     /// --secret-file text, Enter), `hold-alt-leave` (holds Alt and disconnects; last screen
-    /// only), or `hold-f20` (holds F20 until the session ends). Without KEYS the script
+    /// only), `hold-f20` (holds F20 until the session ends), or `hold-shift-space` (presses Shift,
+    /// then Space, and holds both until the session ends). Without KEYS the script
     /// dismisses the screen.
     #[arg(long = "screen", required = true, value_parser = Screen::parse)]
     screens: Vec<Screen>,
@@ -151,6 +152,10 @@ enum Keys {
     /// F20 has no Windows binding, so a key left down by a bug changes nothing the later cases
     /// type.
     HoldF20,
+    /// Space goes down last: a key pressed after it cancels the focused button's press, and with
+    /// Alt down Space is a system key. A release of everything lifts Space first, which then
+    /// activates the focused button.
+    HoldShiftSpace,
 }
 
 impl Keys {
@@ -161,6 +166,7 @@ impl Keys {
             "password" => Self::Password,
             "hold-alt-leave" => Self::HoldAltLeave,
             "hold-f20" => Self::HoldF20,
+            "hold-shift-space" => Self::HoldShiftSpace,
             _ => return None,
         })
     }
@@ -174,8 +180,8 @@ impl Screen {
                 text,
                 Keys::parse(keys).ok_or_else(|| {
                     format!(
-                        "unknown keys {keys:?}; try alt-y, esc, password, hold-alt-leave, or \
-                         hold-f20"
+                        "unknown keys {keys:?}; try alt-y, esc, password, hold-alt-leave, \
+                         hold-f20, or hold-shift-space"
                     )
                 })?,
             ),
@@ -841,6 +847,10 @@ async fn send_keys(
             tokio::time::sleep(HOLD_BEFORE_LEAVING).await;
         }
         Keys::HoldF20 => press(viewer, KeyCode::Named(NamedKey::Function(20)), true).await,
+        Keys::HoldShiftSpace => {
+            press(viewer, KeyCode::Named(NamedKey::Shift), true).await;
+            press(viewer, KeyCode::Named(NamedKey::Space), true).await;
+        }
         Keys::Password => {
             let Some(keystrokes) = keystrokes else {
                 verdict.fail(format!("{}: no secret to type", screen.label));
@@ -1742,6 +1752,10 @@ mod tests {
             (
                 "killed:notice=hold-f20",
                 screen("killed", Expect::Notice, Keys::HoldF20),
+            ),
+            (
+                "held=hold-shift-space",
+                screen("held", Expect::Captured, Keys::HoldShiftSpace),
             ),
             (
                 "again:present=esc",

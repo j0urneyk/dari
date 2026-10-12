@@ -394,6 +394,16 @@ settle, saves its frame, and sends the case's keys. The cases run in this order:
   before to 1000 ms after the change's event 4. `policy off` writes event 4 only after its registry write, so the
   helper may read the change first. It runs `policy on`
   after the case and again when it exits.
+- `secure-policy-revoke-held`: with the policy on, the viewer presses Shift and then Space on the prompt and holds
+  both. A second later the script runs `dari-service.exe policy off` and waits 2 seconds. The case passes when the
+  host log shows no `DesktopChanged(Default)` after the change, the script's `cancel-uac` then ends one
+  `consent.exe`, no `result.txt` exists, and DariService's Application log has exactly one event 6 after the change,
+  which says the helper released 1 held modifier key and forgot 1 held input. The helper releases Shift, Ctrl, Alt,
+  and the Windows key at revocation and forgets the rest. A released Space would activate the prompt's focused
+  button, **No**, and close the prompt, so a prompt that stays up shows the Space was forgotten. In the test VM, a
+  helper changed to release everything closed the prompt within the 2 seconds. Space goes down last because a key
+  pressed after it cancels the button's press, and with Alt down Space is a system key. It runs `policy on`
+  after the case and again when it exits.
 - `secure-view-only`: the same steps against `dari.exe host --view-only`, where the host reports
   `SecureAttentionStatus(NotAllowed)` and its log shows `refused SecureAttention: the session is view-only`.
 - `lock-unlock`: the script locks the VM. The viewer clicks the lock screen, types the VM user's password from

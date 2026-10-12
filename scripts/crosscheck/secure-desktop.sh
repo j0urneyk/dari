@@ -3,7 +3,7 @@
 set -euo pipefail
 
 all_cases=(uac-allow uac-deny secure-second-display drop-mid-prompt helper-killed secure-policy-off
-  secure-policy-revoke secure-view-only lock-unlock cad)
+  secure-policy-revoke secure-policy-revoke-held secure-view-only lock-unlock cad)
 
 usage() {
   cat <<'EOF'
@@ -40,6 +40,10 @@ Cases (in the order they run):
   secure-policy-revoke       The viewer sees the prompt with SecureDesktopControl on, the script
                              turns it off, and the viewer's Alt+Y a second later does nothing;
                              the helper logs event 6 within a second of the change
+  secure-policy-revoke-held  The viewer holds Shift and Space on the prompt, and the script turns
+                             SecureDesktopControl off; event 6 says the helper released 1
+                             modifier key (Shift, Ctrl, Alt, or the Windows key) and forgot 1
+                             held input, and the prompt is still up 2 seconds later
   secure-view-only           The host grants view-only sessions; the host refuses the viewer's
                              Ctrl+Alt+Del, and its Alt+Y does nothing
   lock-unlock                The viewer types the peer user's password on the lock screen
@@ -336,9 +340,47 @@ revoke_case() {
   ((delta >= -250 && delta <= 1000)) || { echo "event 6 came $delta ms after event 4, outside -250..1000"; return 1; }
 }
 
-policy_revoke_case() {
+revoke_held_case() {
+  local name=secure-policy-revoke-held log off_mark events ended revoked
+  ensure_host control || return 1
+  start_viewer "$name" --screen "$name=hold-shift-space" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  sleep 1
+  echo "  turning SecureDesktopControl off while the viewer holds Shift and Space"
+  log=$(log_mark)
+  off_mark=$(secure event-mark | value_of mark)
+  [[ -n $off_mark ]] || { echo "could not mark the Application log"; return 1; }
+  policy_off=1
+  secure policy -State off || return 1
+  # A released Space would activate the prompt's focused button, No, and close it.
+  sleep 2
+  fetch "$peer_host_log" "$host_log" || true
+  if tail -n "+$((log + 1))" "$host_log" | grep -qF 'DesktopChanged(Default)'; then
+    echo "the prompt closed within 2 seconds of the change: the host log shows DesktopChanged(Default)"
+    return 1
+  fi
+  ended=$(secure cancel-uac | tr -d '\r' | sed -n 's/^ended \([0-9]*\) consent.exe$/\1/p')
+  [[ $ended == 1 ]] || { echo "the script ended ${ended:-no} consent.exe 2 seconds after the change, not 1"; return 1; }
+  echo "  the prompt was still up 2 seconds after the change"
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  expect_result missing || return 1
+  events=$out/$name-events.log
+  secure events -After "$off_mark" | tr -d '\r' >"$events" || true
+  revoked=$(grep ' id 6: ' "$events" || true)
+  grep ' id 6: ' "$events" | sed 's/^/  /' || true
+  [[ -n $revoked && $(wc -l <<<"$revoked") -eq 1 ]] ||
+    { echo "DariService's log shows $(grep -c ' id 6: ' "$events") event 6 entries after the change, not 1"; return 1; }
+  [[ $revoked == *'released 1 held modifier keys and forgot 1 held inputs'* ]] ||
+    { echo "event 6 doesn't say it released 1 modifier key and forgot 1 held input"; return 1; }
+}
+
+# Runs a case that turns SecureDesktopControl off, and turns it on again whatever the case did.
+then_policy_on() {
   local code=0
-  revoke_case || code=$?
+  "$@" || code=$?
   echo "  turning SecureDesktopControl on"
   secure policy -State on && policy_off=0
   return "$code"
@@ -461,7 +503,8 @@ run_case() {
     drop-mid-prompt) drop_case ;;
     helper-killed) helper_killed_case ;;
     secure-policy-off) policy_off_case ;;
-    secure-policy-revoke) policy_revoke_case ;;
+    secure-policy-revoke) then_policy_on revoke_case ;;
+    secure-policy-revoke-held) then_policy_on revoke_held_case ;;
     secure-view-only) unanswered_case secure-view-only view-only not-allowed 'the session is view-only' --view-only ;;
     lock-unlock) lock_case ;;
     cad) cad_case ;;
