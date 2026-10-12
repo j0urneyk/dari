@@ -44,7 +44,6 @@ impl EventLog {
         self.report(EVENTLOG_WARNING_TYPE, 5, message);
     }
 
-    /// Information, not a warning: it records a risk going away.
     pub(crate) fn input_revoked(&self, message: &str) {
         self.report(EVENTLOG_INFORMATION_TYPE, 6, message);
     }

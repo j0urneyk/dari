@@ -100,27 +100,21 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         }
     }
 
-    /// Forgets what it holds on any desktop and injects nothing. Releasing could finish what the
-    /// viewer started: a button up over **Yes** completes the click, and a Space up activates the
-    /// focused button. Returns how many inputs it forgot.
+    /// Never releases: a button up over **Yes** completes the click, and a Space up activates the
+    /// focused button.
     pub(crate) fn revoke(mut self) -> usize {
         self.injector.forget()
     }
 }
 
-/// Why the input thread stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ended {
-    /// The pipe reader hung up. `released` inputs held on `Winlogon` were released there.
     HungUp { released: usize },
-    /// `SecureDesktopControl` read off. The `forgot` held inputs were forgotten, not released.
     Revoked { forgot: usize },
 }
 
-/// Follows the input desktop and replays `inputs` on `Winlogon` until the reader hangs up or
-/// `policy` reads off. `policy` is read after every receive, input or timeout, so an off value
-/// stops input within one `FOLLOW_INTERVAL` plus one replay, however busy the app keeps the
-/// channel.
+/// `policy` is read after every receive, not only on idle ticks: the app is untrusted and can keep
+/// the channel busy forever.
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
     mut policy: impl FnMut() -> SecureDesktopControl,
@@ -129,7 +123,6 @@ pub(crate) fn run<D: InputDesk, B: InputBackend>(
 ) -> Ended {
     loop {
         let received = inputs.recv_timeout(FOLLOW_INTERVAL);
-        // Before `finish` too: under an off policy the helper injects nothing, releases included.
         if policy() == SecureDesktopControl::Off {
             return Ended::Revoked {
                 forgot: follower.revoke(),
@@ -463,7 +456,6 @@ mod tests {
         assert_eq!(*notes.lock().unwrap(), []);
     }
 
-    /// Like `ScriptedDesk`: each read takes the next value, and the last one sticks.
     fn scripted(controls: Vec<SecureDesktopControl>) -> impl FnMut() -> SecureDesktopControl {
         let mut controls = VecDeque::from(controls);
         let mut last = On;
@@ -475,8 +467,7 @@ mod tests {
         }
     }
 
-    /// A receiver holding `inputs`, whose sender has hung up.
-    fn queued(inputs: Vec<OsInput>) -> mpsc::Receiver<OsInput> {
+    fn sent_then_hung_up(inputs: Vec<OsInput>) -> mpsc::Receiver<OsInput> {
         let (sender, received) = mpsc::sync_channel(inputs.len());
         for input in inputs {
             sender.send(input).unwrap();
@@ -494,10 +485,10 @@ mod tests {
     #[test]
     fn turning_the_policy_off_forgets_held_input_without_releasing_it() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = queued(vec![alt(true), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let received = sent_then_hung_up(vec![alt(true), left(true), OsInput::Move { x: 5, y: 6 }]);
         let mut notes = Vec::new();
         let ended = run(follower, scripted(vec![On, On, Off]), &received, |note| {
-            notes.push(note)
+            notes.push(note);
         });
         assert_eq!(ended, Ended::Revoked { forgot: 2 });
         assert_eq!(
@@ -514,7 +505,7 @@ mod tests {
     #[test]
     fn an_off_policy_at_the_first_read_injects_nothing() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = queued(vec![alt(true)]);
+        let received = sent_then_hung_up(vec![alt(true)]);
         let ended = run(follower, scripted(vec![Off]), &received, |_| {});
         assert_eq!(ended, Ended::Revoked { forgot: 0 });
         assert_eq!(taken(&timeline), []);
@@ -523,7 +514,7 @@ mod tests {
     #[test]
     fn an_off_policy_when_the_reader_hangs_up_forgets_instead_of_releasing() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = queued(vec![alt(true)]);
+        let received = sent_then_hung_up(vec![alt(true)]);
         let ended = run(follower, scripted(vec![On, Off]), &received, |_| {});
         assert_eq!(ended, Ended::Revoked { forgot: 1 });
         assert_eq!(

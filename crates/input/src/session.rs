@@ -79,7 +79,8 @@ impl<B: InputBackend> Injector<B> {
     }
 
     /// Clears the held set without calling the backend, and returns how many there were. For when
-    /// the OS already let go of them, as Windows does when the input desktop switches.
+    /// the OS already let go of them, as Windows does when the input desktop switches, or when a
+    /// release would itself act, as on a secure desktop the viewer may no longer answer.
     pub fn forget(&mut self) -> usize {
         let forgotten = self.held();
         self.held_keys.clear();

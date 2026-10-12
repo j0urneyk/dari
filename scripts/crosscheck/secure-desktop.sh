@@ -298,7 +298,6 @@ policy_off_case() {
   return "$code"
 }
 
-# Passes when the prompt stays unanswered and DariService logs event 6 within a second of event 4.
 revoke_case() {
   local name=secure-policy-revoke send=$out/secure-policy-revoke.send mark events changed revoked
   ensure_host control || return 1
