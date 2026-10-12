@@ -21,6 +21,10 @@ pub trait ScreenCapturer {
     /// A polled source captures whenever it is called. A source that delivers frames on its own
     /// clock ([`ScreenCapturer::paces_itself`]) waits up to `timeout` for a frame newer than the
     /// last one it returned, and returns `None` if the screen has not changed.
+    ///
+    /// After [`CaptureError::SecureDesktop`], a source returns a frame once the screen is back,
+    /// even if it looks the same as before: the stream resends no frame from before a hidden
+    /// stretch, and the session reports the screen available again only when a frame arrives.
     fn capture(&mut self, timeout: Duration) -> Result<Option<CapturedFrame>, CaptureError>;
 
     /// Whether frames arrive on the source's own clock, already limited to the stream's frame
