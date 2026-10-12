@@ -63,7 +63,7 @@ pub(crate) struct SecureViewArgs {
     /// once typing starts, and `RUST_LOG` is ignored for the whole run.
     #[arg(long)]
     secret_file: Option<PathBuf>,
-    /// Before sending a screen's keys, wait until this file exists.
+    /// Before sending the keys of every screen that has keys, wait until this file exists.
     #[arg(long)]
     send_when: Option<PathBuf>,
     /// After the last screen, keep the session open until this file exists.
