@@ -63,6 +63,9 @@ pub(crate) struct SecureViewArgs {
     /// once typing starts, and `RUST_LOG` is ignored for the whole run.
     #[arg(long)]
     secret_file: Option<PathBuf>,
+    /// Before sending a screen's keys, wait until this file exists.
+    #[arg(long)]
+    send_when: Option<PathBuf>,
     /// After the last screen, keep the session open until this file exists.
     #[arg(long)]
     finish_when: Option<PathBuf>,
@@ -451,7 +454,7 @@ async fn check(
     if outcome == Outcome::Done
         && let Some(file) = &args.finish_when
     {
-        finish_when(args, &mut feed.session, &mut verdict, file).await;
+        wait_for_file(args, &mut feed.session, &mut verdict, file).await;
     }
 
     let session = &mut feed.session;
@@ -487,12 +490,12 @@ async fn check(
     verdict
 }
 
-async fn finish_when(
+async fn wait_for_file(
     args: &SecureViewArgs,
     session: &mut Session,
     verdict: &mut Verdict,
     file: &Path,
-) {
+) -> bool {
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
     while !file.exists() {
         if session.ended.is_some() || Instant::now() >= deadline {
@@ -501,7 +504,7 @@ async fn finish_when(
                 file.display(),
                 args.timeout
             ));
-            return;
+            return false;
         }
         session
             .wait_until(Duration::from_millis(250), |session| {
@@ -509,6 +512,7 @@ async fn finish_when(
             })
             .await;
     }
+    true
 }
 
 async fn view_screens(
@@ -696,6 +700,11 @@ async fn view_screen(
     let seen = feed.session.screen_history.len();
 
     if screen.keys != Keys::None {
+        if let Some(file) = &args.send_when
+            && !wait_for_file(args, &mut feed.session, verdict, file).await
+        {
+            return Outcome::Failed;
+        }
         if !send_keys(args, keystrokes, feed, verdict, screen).await {
             return Outcome::Failed;
         }
@@ -1592,6 +1601,45 @@ mod tests {
         std::fs::write(&finish, "").unwrap();
         assert_eq!(run.finish().await, ExitCode::SUCCESS);
         std::fs::remove_file(finish).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sends_the_keys_only_once_the_send_file_appears() {
+        let scene = Arc::new(Mutex::new(Scene::Desktop));
+        let set = |next| *scene.lock().unwrap() = next;
+        let send = out_dir(&["send"]).with_extension("go");
+        let _absent = std::fs::remove_file(&send);
+        let mut run = start_check(
+            &scene,
+            &[
+                "--screen",
+                "secure-policy-revoke=alt-y",
+                "--send-when",
+                send.to_str().unwrap(),
+                "--settle-ms",
+                "500",
+                "--timeout",
+                "15",
+            ],
+        )
+        .await;
+        run.expect_line("READY").await;
+        set(Scene::Prompt);
+        run.expect_line("SEEN secure-policy-revoke").await;
+        run.expect_silence().await;
+        assert_eq!(run.keys(1).await, [], "no key before the file appears");
+        std::fs::write(&send, "").unwrap();
+        run.expect_line("SENT secure-policy-revoke").await;
+        let alt = named(NamedKey::Alt);
+        let y = KeyCode::Character('y');
+        assert_eq!(
+            run.keys(4).await,
+            [(alt, true), (y, true), (y, false), (alt, false)]
+        );
+        set(Scene::Desktop);
+        run.expect_line("BACK secure-policy-revoke").await;
+        assert_eq!(run.finish().await, ExitCode::SUCCESS);
+        std::fs::remove_file(send).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
