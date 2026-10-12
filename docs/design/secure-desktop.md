@@ -187,9 +187,10 @@ Neither thread creates a window or installs a hook, because `SetThreadDesktop` f
   button through the old route. The helper also tracks what it holds itself. At a desktop switch it forgets what it
   holds without sending anything, because Windows already cleared key state. When its input thread ends while it is
   attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it releases what it holds there.
-  `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
+  It releases only while `Winlogon` is still the input desktop it reads. When it can't read the input desktop, it
+  releases nothing, because the release could land on whatever replaced the prompt. `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
   for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt. When the input thread ends because
-  `SecureDesktopControl` reads off, it releases only held Shift, Ctrl, and Alt, and leaves any other held key or
+  `SecureDesktopControl` reads off, it releases only held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
   button down for the local user until they press and release it or the desktop switches, because releasing it
   could answer the prompt.
 - Windows clears key state at a desktop switch. In the test VM, with UAC on, a medium-integrity process pressed a
@@ -468,8 +469,9 @@ Two controls limit it further:
   `Refused(PolicyOff)`, so viewers can still see the secure desktop but not answer it. A helper with input reads the
   value through the same function after each input it receives and every 100 ms while idle, before it injects
   anything. A value it can't read reads off, and a key deleted while it reads, as when Group Policy rewrites its
-  keys, reads as missing. When it reads off on `Winlogon`, it releases held Shift, Ctrl, and Alt, because a modifier
-  left down would garble the local user's password and its release can't answer a prompt. It forgets the other keys
+  keys, reads as missing. When it reads off on `Winlogon`, it releases held Shift, Ctrl, Alt, and Windows keys, because
+  a modifier left down would garble the local user's password or turn their typing into Win shortcuts, and its
+  release can't answer a prompt. It forgets the other keys
   and buttons it holds without releasing them, because a button up over **Yes** or a Space up on a focused button
   completes an answer, and its input thread ends. The helper then behaves like one started without input: it keeps
   serving frames and drops input. The viewer isn't told: its input on the secure desktop just stops having effect. Turning the value off takes input

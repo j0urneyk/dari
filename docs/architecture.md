@@ -409,10 +409,13 @@ while idle and before each event. When the desktop changes, it opens a new handl
 Windows cleared key state at the switch. It replays
 input through the `Injector` and `EnigoBackend` only while it is attached to `Winlogon`, and
 drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits while the thread is attached to
-`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. A helper started without input has no input thread
+`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. It
+releases only while `Winlogon` is still the input desktop it reads; when it can't read the input desktop, it releases
+nothing and forgets what it holds. A helper started without input has no input thread
 and drops every `Input`. The input thread also reads `SecureDesktopControl` after every receive, input or 100 ms
-timeout, before it injects anything. When it reads off while attached to `Winlogon`, it releases held Shift, Ctrl,
-and Alt and forgets everything else it holds without releasing it. It then writes event 6 and ends, so the helper
+timeout, before it injects anything. When it reads off while attached to `Winlogon`, it releases the held modifier keys
+(`MODIFIER_KEYS` in `crates/winsvc/src/injector.rs`: Shift, Ctrl, Alt, and the Windows key) under the same input
+desktop rule, and forgets everything else it holds without releasing it. It then writes event 6 and ends, so the helper
 goes on like one started without input.
 
 The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request
