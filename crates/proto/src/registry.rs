@@ -118,11 +118,12 @@ mod tests {
     }
 
     #[test]
-    fn any_other_error_is_unreadable_and_names_itself() {
-        let path = format!(r"Software\{}", "a".repeat(300));
-        let reading = PolicyReading::read_from(CURRENT_USER, &path);
+    fn any_other_error_is_unreadable_and_names_its_code() {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        let denied = std::io::Error::from_raw_os_error(ERROR_ACCESS_DENIED).into();
+        let reading = PolicyReading::parse(Err(denied));
         assert!(
-            matches!(&reading, PolicyReading::Unreadable(error) if error.contains("0x")),
+            matches!(&reading, PolicyReading::Unreadable(error) if error.contains("0x80070005")),
             "{reading:?}"
         );
         assert_eq!(reading.control(), SecureDesktopControl::Off);

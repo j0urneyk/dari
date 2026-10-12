@@ -200,7 +200,7 @@ pub enum PolicyReading {
     Missing,
     /// A DWORD.
     Stored(u32),
-    /// A value that isn't a DWORD.
+    /// A value that isn't a 4-byte DWORD: another type, or a DWORD of another length.
     WrongType,
     /// The registry's error.
     Unreadable(String),
@@ -222,7 +222,7 @@ impl fmt::Display for PolicyReading {
         match self {
             Self::Missing => write!(f, "{POLICY_VALUE} is missing"),
             Self::Stored(value) => write!(f, "{POLICY_VALUE} is {value}"),
-            Self::WrongType => write!(f, "{POLICY_VALUE} isn't a DWORD"),
+            Self::WrongType => write!(f, "{POLICY_VALUE} isn't a 4-byte DWORD"),
             Self::Unreadable(error) => write!(f, "{POLICY_VALUE} could not be read: {error}"),
         }
     }
@@ -818,7 +818,7 @@ mod tests {
             (
                 PolicyReading::WrongType,
                 Off,
-                "SecureDesktopControl isn't a DWORD",
+                "SecureDesktopControl isn't a 4-byte DWORD",
             ),
             (
                 PolicyReading::Unreadable("Access is denied. (0x80070005)".into()),
