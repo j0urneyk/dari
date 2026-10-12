@@ -344,11 +344,12 @@ scripts/crosscheck/vm/add-second-display.sh
 ```
 
 The answer file turns UAC off, so Windows shows no prompts. `vm/enable-uac.sh` turns on the Windows defaults
-(`EnableLUA=1`, `ConsentPromptBehaviorAdmin=5`, `PromptOnSecureDesktop=1`) and restarts the VM. A second run changes
-nothing and doesn't restart. `--off` turns UAC off again, as the answer file left it. With UAC
-on, the VM user's SSH session still gets an elevated token, so the scripts can still write `HKLM` and register tasks
-over SSH. `windows/interactive.ps1 start -RunLevel Limited` then runs a program at medium integrity, like the
-installed app; `Highest`, the default, runs it elevated. The existing cases pass with UAC on too, so `crosscheck.sh`
+(`EnableLUA=1`, `ConsentPromptBehaviorAdmin=5`, `PromptOnSecureDesktop=1`) and restarts the VM. It decides the restart
+from the UAC setting the running Windows booted with, so a rerun finishes a run that stopped before the restart. After a
+completed run, a second run changes nothing and doesn't restart. `--off` turns UAC off again, as the answer file left
+it. With UAC on, the VM user's SSH session still gets an elevated token, so the scripts can still write `HKLM` and
+register tasks over SSH. `windows/interactive.ps1 start -RunLevel Limited` then runs a program at medium integrity, like
+the installed app; `Highest`, the default, runs it elevated. The existing cases pass with UAC on too, so `crosscheck.sh`
 works with either setting.
 
 ```bash
