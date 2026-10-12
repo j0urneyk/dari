@@ -6,6 +6,13 @@ use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, Secure
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The keys [`Follower::revoke`] releases. Event 6 calls them modifier keys.
+pub(crate) const MODIFIER_KEYS: [NamedKey; 3] = [NamedKey::Shift, NamedKey::Control, NamedKey::Alt];
+
+fn is_modifier(key: KeyCode) -> bool {
+    matches!(key, KeyCode::Named(named) if MODIFIER_KEYS.contains(&named))
+}
+
 pub(crate) trait InputDesk {
     fn input_desktop(&mut self) -> Option<InputDesktop>;
     fn attach(&mut self, desktop: &InputDesktop) -> Result<(), String>;
@@ -88,40 +95,40 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         notes
     }
 
-    /// Releases what it holds when attached to a desktop that takes helper input, and forgets
-    /// it anywhere else. Returns how many inputs it released.
-    pub(crate) fn finish(mut self) -> usize {
-        match &self.attachment {
-            Attachment::To(desktop) if desktop.takes_helper_input() => self.injector.release_all(),
-            Attachment::To(_) | Attachment::Failed(_) | Attachment::None => {
-                self.injector.forget();
-                0
-            }
-        }
+    /// Releases everything it holds, as [`Follower::end`] allows. Returns how many inputs it
+    /// released.
+    pub(crate) fn finish(self) -> usize {
+        self.end(Injector::release_all).0
     }
 
-    /// Releases held Shift, Control and Alt while the input desktop is still the one it is
-    /// attached to and that desktop takes helper input, and forgets everything else it holds.
-    /// Returns how many inputs it released and how many it forgot.
+    /// Releases held modifier keys, as [`Follower::end`] allows, and forgets everything else it
+    /// holds. Returns how many inputs it released and how many it forgot.
     ///
-    /// A modifier left down would garble the password the local user types on the lock screen,
-    /// and its release can't answer a prompt. Any other release can: a button up over **Yes**
-    /// completes the click, and a Space up activates the focused button.
-    pub(crate) fn revoke(mut self) -> (usize, usize) {
-        let now = self.desk.input_desktop();
-        let released = match &self.attachment {
-            Attachment::To(desktop)
-                if desktop.takes_helper_input()
-                    && now.as_ref().is_none_or(|now| now == desktop) =>
-            {
-                self.injector.release_keys(|key| {
-                    matches!(
-                        key,
-                        KeyCode::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt)
-                    )
-                })
+    /// A modifier left down would garble what the local user types next, and its release can't
+    /// answer a prompt. Any other release can: a button up over **Yes** completes the click, and
+    /// a Space up activates the focused button.
+    pub(crate) fn revoke(self) -> (usize, usize) {
+        self.end(|injector| injector.release_keys(is_modifier))
+    }
+
+    /// Calls `release` only while attached to a desktop that takes helper input and that is
+    /// still the input desktop, then forgets whatever is left. Returns how many inputs `release`
+    /// released and how many were forgotten.
+    ///
+    /// An input desktop it can't read releases nothing: a release meant for the prompt could
+    /// land on whatever replaced it.
+    fn end(mut self, release: impl FnOnce(&mut Injector<B>) -> usize) -> (usize, usize) {
+        let still_there = match &self.attachment {
+            Attachment::To(desktop) => {
+                desktop.takes_helper_input()
+                    && self.desk.input_desktop().is_some_and(|now| &now == desktop)
             }
-            Attachment::To(_) | Attachment::Failed(_) | Attachment::None => 0,
+            Attachment::Failed(_) | Attachment::None => false,
+        };
+        let released = if still_there {
+            release(&mut self.injector)
+        } else {
+            0
         };
         (released, self.injector.forget())
     }
@@ -563,6 +570,46 @@ mod tests {
     #[test]
     fn turning_the_policy_off_after_a_switch_away_from_winlogon_injects_nothing() {
         let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, DEFAULT], 0);
+        let received =
+            sent_then_hung_up(vec![key(SHIFT), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 2,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(SHIFT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hang_up_while_the_input_desktop_is_unreadable_releases_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, None], 0);
+        let received = sent_then_hung_up(vec![alt(true), left(true)]);
+        let ended = run(follower, || ON, &received, |_| {});
+        assert_eq!(ended, Ended::HungUp { released: 0 });
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn turning_the_policy_off_while_the_input_desktop_is_unreadable_releases_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, None], 0);
         let received =
             sent_then_hung_up(vec![key(SHIFT), left(true), OsInput::Move { x: 5, y: 6 }]);
         let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
