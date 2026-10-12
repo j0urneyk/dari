@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-10-13
+
 ### Added
 
 - When a Windows host shows a User Account Control prompt or the lock screen, the viewer now sees it, on every
@@ -162,7 +164,8 @@ The first release of Dari.
   network declarations, and a tag-triggered release workflow that also ships the Linux relay.
 - Licensed under MIT OR Apache-2.0.
 
-[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/j0urneyk/dari/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/j0urneyk/dari/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/j0urneyk/dari/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/j0urneyk/dari/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/j0urneyk/dari/releases/tag/v0.0.1
