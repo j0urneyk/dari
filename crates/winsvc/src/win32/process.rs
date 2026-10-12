@@ -22,7 +22,7 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::RemoteDesktop::{
     ProcessIdToSessionId, WTS_CONNECTSTATE_CLASS, WTSActive, WTSConnectState, WTSFreeMemory,
-    WTSQuerySessionInformationW,
+    WTSGetActiveConsoleSessionId, WTSQuerySessionInformationW,
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::Threading::{
@@ -88,6 +88,12 @@ pub(crate) fn process_id(process: &impl AsRawHandle) -> u32 {
 pub(crate) fn has_exited(process: &impl AsRawHandle) -> bool {
     // SAFETY: a zero timeout only polls the handle's state.
     unsafe { WaitForSingleObject(raw(process), 0) == WAIT_OBJECT_0 }
+}
+
+pub(crate) fn console_session() -> Option<u32> {
+    // SAFETY: the call takes nothing and returns an ID.
+    let session = unsafe { WTSGetActiveConsoleSessionId() };
+    (session != u32::MAX).then_some(session)
 }
 
 /// Whether `session` is an active session (signed in and connected, locked or not).

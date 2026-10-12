@@ -46,4 +46,9 @@ fn dari_service_imports_no_networking() {
         .filter(|dll| NETWORKING.contains(&dll.as_str()))
         .collect();
     assert!(networking.is_empty(), "imports {networking:?}");
+    assert!(
+        !dlls.iter().any(|dll| dll == "sas.dll"),
+        "the helper runs this binary too, so only the service may load sas.dll, when it calls \
+         SendSAS: {dlls:?}"
+    );
 }

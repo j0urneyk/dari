@@ -17,6 +17,8 @@ mod limiter;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod pointer;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod sas;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod screen;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod slot;

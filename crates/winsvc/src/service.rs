@@ -7,17 +7,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dari_proto::{
-    PIPE_CLIENT_RIGHTS, Refusal, SERVICE_PIPE, SecureDesktopControl, ServiceReply, ServiceRequest,
+    HelperPipeName, PIPE_CLIENT_RIGHTS, Refusal, SERVICE_PIPE, SecureDesktopControl, ServiceReply,
+    ServiceRequest,
 };
 use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
 
 use crate::command::HelperArgs;
 use crate::frames::{MessageReader, write_message};
 use crate::limiter::RefusalLimiter;
+use crate::sas::{self, NotRaised, Raised};
 use crate::slot::{self, Start};
 use crate::win32::{
-    Event, EventLog, Job, Pipe, end_process, has_exited, image_path, launch_helper,
-    open_client_process, own_user, process_id, same_path, session_is_active,
+    Event, EventLog, Job, Pipe, console_session, end_process, has_exited, image_path,
+    launch_helper, open_client_process, own_user, process_id, same_path, session_is_active,
 };
 
 const INSTANCES: u32 = 4;
@@ -51,7 +53,10 @@ pub(crate) struct Server {
     expected_app: PathBuf,
     helpers: Mutex<HashMap<u32, Helper>>,
     limiter: Mutex<RefusalLimiter>,
+    sas_limiter: Mutex<RefusalLimiter>,
     policy: fn() -> SecureDesktopControl,
+    console: fn() -> Option<u32>,
+    raise_sas: fn() -> Result<Raised, NotRaised>,
 }
 
 /// A helper and the handle to the app it serves, which keeps the app's process ID from being
@@ -60,6 +65,7 @@ pub(crate) struct Server {
 struct Helper {
     process: OwnedHandle,
     app: OwnedHandle,
+    input: bool,
 }
 
 #[derive(Debug)]
@@ -102,7 +108,10 @@ impl Server {
             exe,
             helpers: Mutex::default(),
             limiter: Mutex::new(RefusalLimiter::new(REFUSALS_PER_WINDOW, REFUSAL_WINDOW)),
+            sas_limiter: Mutex::new(RefusalLimiter::new(REFUSALS_PER_WINDOW, REFUSAL_WINDOW)),
             policy: SecureDesktopControl::read,
+            console: console_session,
+            raise_sas: sas::raise,
         })
     }
 
@@ -143,7 +152,7 @@ impl Server {
         let client = match vet(pipe, &self.expected_app) {
             Ok(client) => client,
             Err(refused) => {
-                if self.count_refusal(refused.refusal, &refused.detail, log) {
+                if count_refusal(&self.limiter, refused.refusal, &refused.detail, log) {
                     let _written = write_message(
                         pipe,
                         &ServiceReply::Refused(refused.refusal),
@@ -159,9 +168,11 @@ impl Server {
             return;
         };
         let detail = client.detail.clone();
+        let starts_helper = matches!(request, ServiceRequest::StartHelper { .. });
         let reply = self.handle(client, request, log);
-        if let ServiceReply::Refused(refusal) = reply
-            && !self.count_refusal(refusal, &detail, log)
+        if starts_helper
+            && let ServiceReply::Refused(refusal) = reply
+            && !count_refusal(&self.limiter, refusal, &detail, log)
         {
             return;
         }
@@ -173,87 +184,165 @@ impl Server {
         }
     }
 
-    fn count_refusal(&self, refusal: Refusal, detail: &str, log: Option<&EventLog>) -> bool {
-        let answer = lock(&self.limiter).allow(Instant::now());
-        if answer && let Some(log) = log {
-            log.info(&format!("refused a client ({detail}): {refusal:?}"));
-        }
-        answer
-    }
-
     fn handle(
         &self,
         client: Client,
         request: ServiceRequest,
         log: Option<&EventLog>,
     ) -> ServiceReply {
-        let request = match admit(request, (self.policy)()) {
-            Ok(request) => request,
-            Err(refusal) => return ServiceReply::Refused(refusal),
-        };
+        match admit(request, (self.policy)()) {
+            Ok(ServiceRequest::StartHelper { pipe, input }) => {
+                self.start_helper(client, pipe, input, log)
+            }
+            Ok(ServiceRequest::SendSas) => self.send_sas(&client, log),
+            Err(refusal) => self.refuse_sas(&client, refusal, None, log),
+        }
+    }
+
+    fn start_helper(
+        &self,
+        client: Client,
+        pipe: HelperPipeName,
+        input: bool,
+        log: Option<&EventLog>,
+    ) -> ServiceReply {
         let session = client.session;
         let mut helpers = self.helpers();
-        match request {
-            ServiceRequest::StartHelper { pipe, input } => {
-                let owner = helpers.get(&session).map(|helper| process_id(&helper.app));
-                match slot::start(owner, process_id(&client.process)) {
-                    Start::Refuse => return ServiceReply::Refused(Refusal::HelperRunning),
-                    Start::Replace => {
-                        if let Some(old) = helpers.remove(&session) {
-                            if !end_process(&old.process, REPLACE_TIME) {
-                                helpers.insert(session, old);
-                                return ServiceReply::Refused(Refusal::HelperRunning);
-                            }
-                            if let Some(log) = log {
-                                log.info(&format!(
-                                    "ended helper pid {} in session {session}: its app asked for another",
-                                    process_id(&old.process)
-                                ));
-                            }
-                        }
+        let owner = helpers.get(&session).map(|helper| process_id(&helper.app));
+        match slot::start(owner, process_id(&client.process)) {
+            Start::Refuse => return ServiceReply::Refused(Refusal::HelperRunning),
+            Start::Replace => {
+                if let Some(old) = helpers.remove(&session) {
+                    if !end_process(&old.process, REPLACE_TIME) {
+                        helpers.insert(session, old);
+                        return ServiceReply::Refused(Refusal::HelperRunning);
                     }
-                    Start::New => {}
-                }
-                let arguments = |app| HelperArgs { pipe, input, app }.to_arguments();
-                match launch_helper(session, &self.exe, &client.process, arguments, &self.job) {
-                    Ok(launched) => {
-                        if let Some(log) = log {
-                            let message = format!(
-                                "started a helper in session {session}: pid {}, input {input}, for {}",
-                                launched.pid, client.detail
-                            );
-                            if input {
-                                log.input_helper_started(&message);
-                            } else {
-                                log.info(&message);
-                            }
-                        }
-                        helpers.insert(
-                            session,
-                            Helper {
-                                process: launched.process,
-                                app: client.process,
-                            },
-                        );
-                        ServiceReply::HelperStarted {
-                            secure_attention: false,
-                        }
-                    }
-                    Err(error) => {
-                        if let Some(log) = log {
-                            log.error(&format!(
-                                "cannot start a helper in session {session}: {error}"
-                            ));
-                        }
-                        ServiceReply::Refused(Refusal::Failed)
+                    if let Some(log) = log {
+                        log.info(&format!(
+                            "ended helper pid {} in session {session}: its app asked for another",
+                            process_id(&old.process)
+                        ));
                     }
                 }
             }
-            ServiceRequest::SendSas if !helpers.contains_key(&session) => {
-                ServiceReply::Refused(Refusal::NoHelper)
-            }
-            ServiceRequest::SendSas => ServiceReply::Refused(Refusal::Failed),
+            Start::New => {}
         }
+        let arguments = |app| HelperArgs { pipe, input, app }.to_arguments();
+        match launch_helper(session, &self.exe, &client.process, arguments, &self.job) {
+            Ok(launched) => {
+                if let Some(log) = log {
+                    let message = format!(
+                        "started a helper in session {session}: pid {}, input {input}, for {}",
+                        launched.pid, client.detail
+                    );
+                    if input {
+                        log.input_helper_started(&message);
+                    } else {
+                        log.info(&message);
+                    }
+                }
+                helpers.insert(
+                    session,
+                    Helper {
+                        process: launched.process,
+                        app: client.process,
+                        input,
+                    },
+                );
+                ServiceReply::HelperStarted {
+                    secure_attention: self.sas_grant(input, session).is_ok(),
+                }
+            }
+            Err(error) => {
+                if let Some(log) = log {
+                    log.error(&format!(
+                        "cannot start a helper in session {session}: {error}"
+                    ));
+                }
+                ServiceReply::Refused(Refusal::Failed)
+            }
+        }
+    }
+
+    fn sas_grant(&self, input: bool, session: u32) -> Result<(), Refusal> {
+        if !input {
+            return Err(Refusal::NoInput);
+        }
+        if (self.console)() != Some(session) {
+            return Err(Refusal::NotConsole);
+        }
+        Ok(())
+    }
+
+    fn send_sas(&self, client: &Client, log: Option<&EventLog>) -> ServiceReply {
+        let session = client.session;
+        let Some(input) = self.own_helper_input(client) else {
+            return self.refuse_sas(client, Refusal::NoHelper, None, log);
+        };
+        if let Err(refusal) = self.sas_grant(input, session) {
+            return self.refuse_sas(client, refusal, None, log);
+        }
+        match (self.raise_sas)() {
+            Ok(Raised {
+                generation,
+                cleanup_error,
+            }) => {
+                if let Some(log) = log {
+                    log.sas_sent(&format!(
+                        "raised Ctrl+Alt+Del in session {session} for {}; {generation}",
+                        client.detail
+                    ));
+                    if let Some(cleanup_error) = cleanup_error {
+                        log.error(&format!(
+                            "after Ctrl+Alt+Del in session {session}: {cleanup_error}"
+                        ));
+                    }
+                }
+                ServiceReply::SasSent
+            }
+            Err(NotRaised::Disallowed(generation)) => self.refuse_sas(
+                client,
+                Refusal::SasDisallowed,
+                Some(format!(
+                    "{generation}, which keeps services from raising it"
+                )),
+                log,
+            ),
+            Err(NotRaised::Failed(error)) => {
+                self.refuse_sas(client, Refusal::Failed, Some(error), log)
+            }
+        }
+    }
+
+    fn refuse_sas(
+        &self,
+        client: &Client,
+        refusal: Refusal,
+        why: Option<String>,
+        log: Option<&EventLog>,
+    ) -> ServiceReply {
+        if lock(&self.sas_limiter).allow(Instant::now())
+            && let Some(log) = log
+        {
+            let why = why.map(|why| format!(": {why}")).unwrap_or_default();
+            let message = format!(
+                "refused Ctrl+Alt+Del for a client ({}): {refusal:?}{why}",
+                client.detail
+            );
+            if refusal == Refusal::Failed {
+                log.error(&message);
+            } else {
+                log.info(&message);
+            }
+        }
+        ServiceReply::Refused(refusal)
+    }
+
+    fn own_helper_input(&self, client: &Client) -> Option<bool> {
+        let app = process_id(&client.process);
+        let helpers = self.helpers();
+        let helper = helpers.get(&client.session)?;
+        (process_id(&helper.app) == app).then_some(helper.input)
     }
 
     fn helpers(&self) -> MutexGuard<'_, HashMap<u32, Helper>> {
@@ -273,6 +362,19 @@ fn admit(
         ServiceRequest::SendSas if control == SecureDesktopControl::Off => Err(Refusal::PolicyOff),
         ServiceRequest::SendSas => Ok(ServiceRequest::SendSas),
     }
+}
+
+fn count_refusal(
+    limiter: &Mutex<RefusalLimiter>,
+    refusal: Refusal,
+    detail: &str,
+    log: Option<&EventLog>,
+) -> bool {
+    let answer = lock(limiter).allow(Instant::now());
+    if answer && let Some(log) = log {
+        log.info(&format!("refused a client ({detail}): {refusal:?}"));
+    }
+    answer
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -319,6 +421,7 @@ mod tests {
     use windows::Win32::Foundation::ERROR_PIPE_BUSY;
 
     use super::*;
+    use crate::sas::Generation;
     use crate::test_support::{test_pipe, test_pipe_path};
 
     #[test]
@@ -372,6 +475,96 @@ mod tests {
         assert_eq!(reply(&server), ServiceReply::Refused(Refusal::NoHelper));
         POLICY_ON.store(false, Ordering::Relaxed);
         assert_eq!(reply(&server), ServiceReply::Refused(Refusal::PolicyOff));
+    }
+
+    #[test]
+    fn only_the_app_whose_helper_runs_with_input_on_the_console_may_raise_the_sequence() {
+        let mut server = Server::start(&test_pipe_path()).unwrap();
+        server.policy = || SecureDesktopControl::On;
+        server.console = || Some(7);
+        server.raise_sas = || {
+            Ok(Raised {
+                generation: Generation::Allowed(1),
+                cleanup_error: None,
+            })
+        };
+        let this_process = || open_client_process(std::process::id()).unwrap();
+        let client = |session| Client {
+            session,
+            process: this_process(),
+            detail: "this test".into(),
+        };
+        let send_sas = |server: &Server, session| {
+            server.handle(client(session), ServiceRequest::SendSas, None)
+        };
+        let helper = |app, input| Helper {
+            process: this_process(),
+            app,
+            input,
+        };
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::NoHelper)
+        );
+
+        let mut other_app = std::process::Command::new("cmd.exe")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        server.helpers().insert(
+            7,
+            helper(open_client_process(other_app.id()).unwrap(), true),
+        );
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::NoHelper)
+        );
+        other_app.kill().unwrap();
+        other_app.wait().unwrap();
+
+        server.helpers().insert(7, helper(this_process(), false));
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::NoInput)
+        );
+
+        server.helpers().insert(7, helper(this_process(), true));
+        assert_eq!(send_sas(&server, 7), ServiceReply::SasSent);
+        assert_eq!(
+            send_sas(&server, 8),
+            ServiceReply::Refused(Refusal::NoHelper)
+        );
+        server.helpers().insert(8, helper(this_process(), true));
+        assert_eq!(
+            send_sas(&server, 8),
+            ServiceReply::Refused(Refusal::NotConsole)
+        );
+        server.console = || None;
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::NotConsole)
+        );
+        server.console = || Some(7);
+
+        server.raise_sas = || Err(NotRaised::Disallowed(Generation::Disallowed(2)));
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::SasDisallowed)
+        );
+        server.raise_sas = || Err(NotRaised::Failed("no sas.dll".into()));
+        assert_eq!(send_sas(&server, 7), ServiceReply::Refused(Refusal::Failed));
+        server.raise_sas = || {
+            Ok(Raised {
+                generation: Generation::Unset,
+                cleanup_error: Some("cannot delete SoftwareSASGeneration".into()),
+            })
+        };
+        assert_eq!(send_sas(&server, 7), ServiceReply::SasSent);
+        server.policy = || SecureDesktopControl::Off;
+        assert_eq!(
+            send_sas(&server, 7),
+            ServiceReply::Refused(Refusal::PolicyOff)
+        );
     }
 
     fn connected_pipe() -> (Pipe, Pipe) {

@@ -45,6 +45,7 @@ pub(crate) enum Failure {
         waiting_for: &'static str,
     },
     ExecutablePath(io::Error),
+    LeftoverSasValue(String),
     Registry {
         doing: &'static str,
         error: windows::core::Error,
@@ -66,6 +67,7 @@ impl fmt::Display for Failure {
                 WAIT_LIMIT.as_secs()
             ),
             Self::ExecutablePath(error) => write!(f, "cannot find this executable's path: {error}"),
+            Self::LeftoverSasValue(error) => f.write_str(error),
             Self::Registry { doing, error } => write!(f, "cannot {doing}: {error}"),
         }
     }
@@ -132,8 +134,16 @@ fn service_main(_arguments: Vec<OsString>) {
         }
         Ok(server) => match status.set_service_status(service_status(ServiceState::Running)) {
             Ok(()) => {
+                let leftover = crate::sas::delete_leftover();
                 if let Some(log) = &log {
                     log.info("DariService started");
+                    match leftover {
+                        Ok(true) => log.info(
+                            "deleted the SoftwareSASGeneration value a Ctrl+Alt+Del that didn't finish left",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => log.error(&error),
+                    }
                 }
                 server.run(&stop, EventLog::open);
                 if let Some(log) = &log {
@@ -284,6 +294,7 @@ fn remove_service() -> Result<(), Failure> {
         .map(|()| Progress::Pending),
         _ => Ok(Progress::Pending),
     })?;
+    crate::sas::delete_leftover().map_err(Failure::LeftoverSasValue)?;
     unless_already(
         service.delete(),
         &[ERROR_SERVICE_MARKED_FOR_DELETE],
