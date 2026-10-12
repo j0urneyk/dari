@@ -6,7 +6,7 @@ use std::thread::{self, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
 use dari_input::EnigoBackend;
-use dari_proto::{AppToHelper, HelperToApp, OsInput, POLICY_VALUE, SecureDesktopControl};
+use dari_proto::{AppToHelper, HelperToApp, OsInput, PolicyReading};
 
 use crate::channel::{AppChannel, Offered, Outbox, SectionFactory};
 use crate::command::HelperArgs;
@@ -72,7 +72,7 @@ fn serve(args: &HelperArgs, log: Option<&EventLog>) -> Result<&'static str, Stri
     )
 }
 
-fn inject(inputs: &mpsc::Receiver<OsInput>) -> usize {
+fn inject(inputs: &mpsc::Receiver<OsInput>) -> Ended {
     let log = EventLog::open();
     let log = log.as_ref();
     let backend = match EnigoBackend::new() {
@@ -81,29 +81,24 @@ fn inject(inputs: &mpsc::Receiver<OsInput>) -> usize {
             if let Some(log) = log {
                 log.error(&format!("helper: cannot inject input: {error}"));
             }
-            return 0;
+            return Ended::HungUp { released: 0 };
         }
     };
     let follower = Follower::new(InputThreadDesktop::default(), backend);
-    let ended = injector::run(follower, SecureDesktopControl::read, inputs, |note| {
+    let ended = injector::run(follower, PolicyReading::read, inputs, |note| {
         if let Some(log) = log {
             log.info(&describe(&note));
         }
     });
-    match ended {
-        Ended::HungUp { released } => released,
-        Ended::Revoked { forgot } => {
-            if let Some(log) = log {
-                log.input_revoked(&format!(
-                    "helper pid {}: {POLICY_VALUE} reads off, so the viewer's input no longer \
-                     reaches the secure desktop for the rest of this session. It forgot {forgot} \
-                     held inputs without releasing them. The viewer still sees the secure desktop.",
-                    std::process::id()
-                ));
-            }
-            0
-        }
+    if let (Ended::Revoked { forgot, reading }, Some(log)) = (&ended, log) {
+        log.input_revoked(&format!(
+            "helper pid {}: {reading}, so the viewer's input no longer reaches the secure \
+             desktop for the rest of this session. It forgot {forgot} held inputs without \
+             releasing them. The viewer still sees the secure desktop.",
+            std::process::id()
+        ));
     }
+    ended
 }
 
 fn describe(note: &Note) -> String {
@@ -124,7 +119,7 @@ fn converse<W: DesktopWorld>(
     pipe: &Pipe,
     app: &InheritedProcess,
     world: impl FnOnce() -> W + Send,
-    input: Option<impl FnOnce(&mpsc::Receiver<OsInput>) -> usize + Send>,
+    input: Option<impl FnOnce(&mpsc::Receiver<OsInput>) -> Ended + Send>,
     log: Option<&EventLog>,
 ) -> Result<&'static str, String> {
     thread::scope(|scope| {
@@ -151,10 +146,11 @@ fn converse<W: DesktopWorld>(
             reason
         };
         if let Some(injector) = injector {
-            let released = injector
+            let ended = injector
                 .join()
                 .map_err(|_| "the input thread panicked".to_owned())?;
-            if let Some(log) = log {
+            // A revoked input thread already wrote event 6.
+            if let (Ended::HungUp { released }, Some(log)) = (ended, log) {
                 log.info(&format!(
                     "helper: released {released} held inputs because {reason}"
                 ));
@@ -311,19 +307,17 @@ pub(crate) fn server_is_app(pipe: &Pipe, app: &impl AsRawHandle) -> io::Result<b
 mod tests {
     use std::sync::Mutex;
 
-    use dari_input::RecordingBackend;
     use dari_proto::{InputDesktop, KeyCode, NamedKey};
 
     use super::*;
     use crate::dxgi_result::Hresult;
-    use crate::injector::InputDesk;
     use crate::pointer::RawPointerShape;
     use crate::screen::{AcquiredFrame, Duplicate, Duplication, Size};
     use crate::test_support::test_pipe;
     use crate::tracker::{DesktopSource, Observation};
     use crate::win32::open_client_process;
 
-    const NO_INPUT: Option<fn(&mpsc::Receiver<OsInput>) -> usize> = None;
+    const NO_INPUT: Option<fn(&mpsc::Receiver<OsInput>) -> Ended> = None;
 
     #[derive(Debug)]
     struct NoOutputs;
@@ -448,7 +442,7 @@ mod tests {
         let replayed = Mutex::new(Vec::new());
         let input = |inputs: &mpsc::Receiver<OsInput>| {
             replayed.lock().unwrap().extend(inputs.iter());
-            1
+            Ended::HungUp { released: 1 }
         };
         thread::scope(|scope| {
             let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
@@ -463,33 +457,15 @@ mod tests {
         assert_eq!(*replayed.lock().unwrap(), [alt]);
     }
 
-    #[derive(Debug)]
-    struct WinlogonDesk<'a>(&'a Mutex<Vec<InputDesktop>>);
-
-    impl InputDesk for WinlogonDesk<'_> {
-        fn input_desktop(&mut self) -> Option<InputDesktop> {
-            Some(InputDesktop::Winlogon)
-        }
-
-        fn attach(&mut self, desktop: &InputDesktop) -> Result<(), String> {
-            self.0.lock().unwrap().push(desktop.clone());
-            Ok(())
-        }
-    }
-
     #[test]
     fn a_revoked_input_thread_leaves_the_screen_serving() {
         let (server, path) = test_pipe();
         let client = Pipe::open(&path).unwrap();
         let this = open_client_process(std::process::id()).unwrap();
         let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
-        let attached = Mutex::new(Vec::new());
-        let ended = Mutex::new(None);
-        let input = |inputs: &mpsc::Receiver<OsInput>| {
-            let follower = Follower::new(WinlogonDesk(&attached), RecordingBackend::default());
-            let revoked = injector::run(follower, || SecureDesktopControl::Off, inputs, |_| {});
-            *ended.lock().unwrap() = Some(revoked);
-            0
+        let input = |_: &mpsc::Receiver<OsInput>| Ended::Revoked {
+            forgot: 0,
+            reading: PolicyReading::Stored(0),
         };
         thread::scope(|scope| {
             let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
@@ -510,8 +486,6 @@ mod tests {
             drop(server);
             assert_eq!(helper.join().unwrap(), Ok("the app closed its pipe"));
         });
-        assert_eq!(*ended.lock().unwrap(), Some(Ended::Revoked { forgot: 0 }));
-        assert_eq!(*attached.lock().unwrap(), []);
     }
 
     #[test]
@@ -524,7 +498,7 @@ mod tests {
         let input = |inputs: &mpsc::Receiver<OsInput>| {
             thread::sleep(Duration::from_secs(1));
             *replayed.lock().unwrap() += inputs.iter().count();
-            0
+            Ended::HungUp { released: 0 }
         };
         let sent = 4 * QUEUED_INPUTS;
         thread::scope(|scope| {

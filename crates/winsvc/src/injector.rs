@@ -2,7 +2,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dari_input::{Injector, InputBackend};
-use dari_proto::{InputDesktop, OsInput, SecureDesktopControl};
+use dari_proto::{InputDesktop, OsInput, PolicyReading, SecureDesktopControl};
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -107,25 +107,32 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ended {
-    HungUp { released: usize },
-    Revoked { forgot: usize },
+    HungUp {
+        released: usize,
+    },
+    Revoked {
+        forgot: usize,
+        reading: PolicyReading,
+    },
 }
 
 /// `policy` is read after every receive, not only on idle ticks: the app is untrusted and can keep
 /// the channel busy forever.
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
-    mut policy: impl FnMut() -> SecureDesktopControl,
+    mut policy: impl FnMut() -> PolicyReading,
     inputs: &mpsc::Receiver<OsInput>,
     mut note: impl FnMut(Note),
 ) -> Ended {
     loop {
         let received = inputs.recv_timeout(FOLLOW_INTERVAL);
-        if policy() == SecureDesktopControl::Off {
+        let reading = policy();
+        if reading.control() == SecureDesktopControl::Off {
             return Ended::Revoked {
                 forgot: follower.revoke(),
+                reading,
             };
         }
         let input = match received {
@@ -151,7 +158,6 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
-    use SecureDesktopControl::{Off, On};
     use dari_input::{InjectError, RecordedAction, RecordingBackend};
     use dari_proto::{KeyCode, MouseButton, NamedKey};
 
@@ -416,7 +422,7 @@ mod tests {
             thread::spawn(move || {
                 run(
                     follower,
-                    || On,
+                    || ON,
                     &received,
                     |note| {
                         notes.lock().unwrap().push(note);
@@ -456,14 +462,17 @@ mod tests {
         assert_eq!(*notes.lock().unwrap(), []);
     }
 
-    fn scripted(controls: Vec<SecureDesktopControl>) -> impl FnMut() -> SecureDesktopControl {
-        let mut controls = VecDeque::from(controls);
-        let mut last = On;
+    const ON: PolicyReading = PolicyReading::Stored(1);
+    const OFF: PolicyReading = PolicyReading::Stored(0);
+
+    fn scripted(readings: Vec<PolicyReading>) -> impl FnMut() -> PolicyReading {
+        let mut readings = VecDeque::from(readings);
+        let mut last = ON;
         move || {
-            if let Some(next) = controls.pop_front() {
+            if let Some(next) = readings.pop_front() {
                 last = next;
             }
-            last
+            last.clone()
         }
     }
 
@@ -487,10 +496,16 @@ mod tests {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
         let received = sent_then_hung_up(vec![alt(true), left(true), OsInput::Move { x: 5, y: 6 }]);
         let mut notes = Vec::new();
-        let ended = run(follower, scripted(vec![On, On, Off]), &received, |note| {
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |note| {
             notes.push(note);
         });
-        assert_eq!(ended, Ended::Revoked { forgot: 2 });
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                forgot: 2,
+                reading: OFF
+            }
+        );
         assert_eq!(
             taken(&timeline),
             [
@@ -506,8 +521,35 @@ mod tests {
     fn an_off_policy_at_the_first_read_injects_nothing() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
         let received = sent_then_hung_up(vec![alt(true)]);
-        let ended = run(follower, scripted(vec![Off]), &received, |_| {});
-        assert_eq!(ended, Ended::Revoked { forgot: 0 });
+        let ended = run(follower, scripted(vec![OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                forgot: 0,
+                reading: OFF
+            }
+        );
+        assert_eq!(taken(&timeline), []);
+    }
+
+    #[test]
+    fn an_unreadable_policy_ends_input_and_says_why() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = sent_then_hung_up(vec![alt(true)]);
+        let unreadable = PolicyReading::Unreadable("Access is denied. (0x80070005)".into());
+        let ended = run(
+            follower,
+            scripted(vec![unreadable.clone()]),
+            &received,
+            |_| {},
+        );
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                forgot: 0,
+                reading: unreadable
+            }
+        );
         assert_eq!(taken(&timeline), []);
     }
 
@@ -515,8 +557,14 @@ mod tests {
     fn an_off_policy_when_the_reader_hangs_up_forgets_instead_of_releasing() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
         let received = sent_then_hung_up(vec![alt(true)]);
-        let ended = run(follower, scripted(vec![On, Off]), &received, |_| {});
-        assert_eq!(ended, Ended::Revoked { forgot: 1 });
+        let ended = run(follower, scripted(vec![ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                forgot: 1,
+                reading: OFF
+            }
+        );
         assert_eq!(
             taken(&timeline),
             [
@@ -534,14 +582,17 @@ mod tests {
         thread::spawn(move || {
             let _sent = ended.send(run(
                 follower,
-                scripted(vec![On, On, Off]),
+                scripted(vec![ON, ON, OFF]),
                 &received,
                 |_| {},
             ));
         });
         assert_eq!(
             end.recv_timeout(Duration::from_secs(1)),
-            Ok(Ended::Revoked { forgot: 0 })
+            Ok(Ended::Revoked {
+                forgot: 0,
+                reading: OFF
+            })
         );
         assert_eq!(
             taken(&timeline),
