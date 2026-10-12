@@ -2,7 +2,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dari_input::{Injector, InputBackend};
-use dari_proto::{InputDesktop, OsInput, PolicyReading, SecureDesktopControl};
+use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, SecureDesktopControl};
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -100,10 +100,30 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         }
     }
 
-    /// Never releases: a button up over **Yes** completes the click, and a Space up activates the
-    /// focused button.
-    pub(crate) fn revoke(mut self) -> usize {
-        self.injector.forget()
+    /// Releases held Shift, Control and Alt while the input desktop is still the one it is
+    /// attached to and that desktop takes helper input, and forgets everything else it holds.
+    /// Returns how many inputs it released and how many it forgot.
+    ///
+    /// A modifier left down would garble the password the local user types on the lock screen,
+    /// and its release can't answer a prompt. Any other release can: a button up over **Yes**
+    /// completes the click, and a Space up activates the focused button.
+    pub(crate) fn revoke(mut self) -> (usize, usize) {
+        let now = self.desk.input_desktop();
+        let released = match &self.attachment {
+            Attachment::To(desktop)
+                if desktop.takes_helper_input()
+                    && now.as_ref().is_none_or(|now| now == desktop) =>
+            {
+                self.injector.release_keys(|key| {
+                    matches!(
+                        key,
+                        KeyCode::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt)
+                    )
+                })
+            }
+            Attachment::To(_) | Attachment::Failed(_) | Attachment::None => 0,
+        };
+        (released, self.injector.forget())
     }
 }
 
@@ -113,6 +133,7 @@ pub(crate) enum Ended {
         released: usize,
     },
     Revoked {
+        released: usize,
         forgot: usize,
         reading: PolicyReading,
     },
@@ -130,8 +151,10 @@ pub(crate) fn run<D: InputDesk, B: InputBackend>(
         let received = inputs.recv_timeout(FOLLOW_INTERVAL);
         let reading = policy();
         if reading.control() == SecureDesktopControl::Off {
+            let (released, forgot) = follower.revoke();
             return Ended::Revoked {
-                forgot: follower.revoke(),
+                released,
+                forgot,
                 reading,
             };
         }
@@ -159,7 +182,7 @@ mod tests {
     use std::time::Instant;
 
     use dari_input::{InjectError, RecordedAction, RecordingBackend};
-    use dari_proto::{KeyCode, MouseButton, NamedKey};
+    use dari_proto::MouseButton;
 
     use super::*;
 
@@ -491,17 +514,35 @@ mod tests {
         }
     }
 
+    const SHIFT: KeyCode = KeyCode::Named(NamedKey::Shift);
+    const SPACE: KeyCode = KeyCode::Named(NamedKey::Space);
+
+    fn key(key: KeyCode) -> OsInput {
+        OsInput::Key { key, pressed: true }
+    }
+
     #[test]
-    fn turning_the_policy_off_forgets_held_input_without_releasing_it() {
+    fn turning_the_policy_off_on_winlogon_releases_only_held_modifiers() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = sent_then_hung_up(vec![alt(true), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let received = sent_then_hung_up(vec![
+            key(SHIFT),
+            left(true),
+            key(SPACE),
+            OsInput::Move { x: 5, y: 6 },
+        ]);
         let mut notes = Vec::new();
-        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |note| {
-            notes.push(note);
-        });
+        let ended = run(
+            follower,
+            scripted(vec![ON, ON, ON, OFF]),
+            &received,
+            |note| {
+                notes.push(note);
+            },
+        );
         assert_eq!(
             ended,
             Ended::Revoked {
+                released: 1,
                 forgot: 2,
                 reading: OFF
             }
@@ -510,11 +551,37 @@ mod tests {
             taken(&timeline),
             [
                 Happened::Attached(InputDesktop::Winlogon),
-                Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Key(SHIFT, true)),
                 Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+                Happened::Did(RecordedAction::Key(SPACE, true)),
+                Happened::Did(RecordedAction::Key(SHIFT, false)),
             ]
         );
         assert_eq!(notes, []);
+    }
+
+    #[test]
+    fn turning_the_policy_off_after_a_switch_away_from_winlogon_injects_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, DEFAULT], 0);
+        let received =
+            sent_then_hung_up(vec![key(SHIFT), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 2,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(SHIFT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
     }
 
     #[test]
@@ -525,6 +592,7 @@ mod tests {
         assert_eq!(
             ended,
             Ended::Revoked {
+                released: 0,
                 forgot: 0,
                 reading: OFF
             }
@@ -546,6 +614,7 @@ mod tests {
         assert_eq!(
             ended,
             Ended::Revoked {
+                released: 0,
                 forgot: 0,
                 reading: unreadable
             }
@@ -554,13 +623,14 @@ mod tests {
     }
 
     #[test]
-    fn an_off_policy_when_the_reader_hangs_up_forgets_instead_of_releasing() {
+    fn an_off_policy_when_the_reader_hangs_up_revokes_instead_of_releasing_everything() {
         let (follower, timeline) = follower(vec![WINLOGON], 0);
-        let received = sent_then_hung_up(vec![alt(true)]);
-        let ended = run(follower, scripted(vec![ON, OFF]), &received, |_| {});
+        let received = sent_then_hung_up(vec![alt(true), left(true)]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
         assert_eq!(
             ended,
             Ended::Revoked {
+                released: 1,
                 forgot: 1,
                 reading: OFF
             }
@@ -570,6 +640,8 @@ mod tests {
             [
                 Happened::Attached(InputDesktop::Winlogon),
                 Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+                Happened::Did(RecordedAction::Key(ALT, false)),
             ]
         );
     }
@@ -590,6 +662,7 @@ mod tests {
         assert_eq!(
             end.recv_timeout(Duration::from_secs(1)),
             Ok(Ended::Revoked {
+                released: 0,
                 forgot: 0,
                 reading: OFF
             })
