@@ -7,8 +7,8 @@ shipped in [PR 57](https://github.com/j0urneyk/dari/pull/57) (the per-machine in
 [PR 62](https://github.com/j0urneyk/dari/pull/62), [PR 63](https://github.com/j0urneyk/dari/pull/63), and
 [PR 64](https://github.com/j0urneyk/dari/pull/64) (fixes to the helper's desktop rights and section handles),
 [PR 65](https://github.com/j0urneyk/dari/pull/65) (input on the secure desktop with the `SecureDesktopControl`
-policy, #47), and the PR that closed #48 (Ctrl+Alt+Del). [PR 58](https://github.com/j0urneyk/dari/pull/58)
-recorded the Phase 0 results.
+policy, #47), and [PR 67](https://github.com/j0urneyk/dari/pull/67) (Ctrl+Alt+Del, #48).
+[PR 58](https://github.com/j0urneyk/dari/pull/58) recorded the Phase 0 results.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
