@@ -12,10 +12,11 @@ the signed-in user's session instead, so a user must be signed in (autologon on 
   start -Name host -RunLevel Limited ...   # with UAC on, runs with the user's filtered token (medium integrity), like the installed app
   wait  -Name host -TimeoutSeconds 180   # exits with the program's exit code
   stop  -Name host
+  running -Name host   # exits 0 while the task runs, 1 otherwise
 #>
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('start', 'wait', 'stop')]
+    [ValidateSet('start', 'wait', 'stop', 'running')]
     [string] $Action,
     [Parameter(Mandatory)]
     [ValidatePattern('^[A-Za-z0-9-]+$')]
@@ -102,5 +103,11 @@ switch ($Action) {
     }
     'stop' {
         Remove-Task
+    }
+    'running' {
+        $registered = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+        $state = if ($registered) { $registered.State } else { 'not registered' }
+        Write-Output "$task`: $state"
+        if ($state -ne 'Running') { exit 1 }
     }
 }

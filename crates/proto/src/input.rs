@@ -97,34 +97,39 @@ impl Validate for InputEvent {
     fn validate(&self) -> Result<(), ValidationError> {
         match self {
             InputEvent::PointerMove(_) | InputEvent::PointerButton { .. } => Ok(()),
-            InputEvent::Scroll { dx, dy } => {
-                if dx.unsigned_abs() > MAX_SCROLL_LINES.unsigned_abs()
-                    || dy.unsigned_abs() > MAX_SCROLL_LINES.unsigned_abs()
-                {
-                    Err(ValidationError::InvalidValue { field: "scroll" })
-                } else {
-                    Ok(())
-                }
-            }
-            InputEvent::Key { key, .. } => match key {
-                KeyCode::Character(character) if character.is_control() => {
-                    Err(ValidationError::InvalidValue { field: "key" })
-                }
-                KeyCode::Named(NamedKey::Function(number))
-                    if *number == 0 || *number > MAX_FUNCTION_KEY =>
-                {
-                    Err(ValidationError::InvalidValue { field: "key" })
-                }
-                KeyCode::Character(_) | KeyCode::Named(_) => Ok(()),
-            },
-            InputEvent::Text(text) => {
-                if text.is_empty() {
-                    return Err(ValidationError::InvalidValue { field: "text" });
-                }
-                validate_display_text("text", text, MAX_INPUT_TEXT_CHARS)
-            }
+            InputEvent::Scroll { dx, dy } => validate_scroll(i32::from(*dx), i32::from(*dy)),
+            InputEvent::Key { key, .. } => validate_key(*key),
+            InputEvent::Text(text) => validate_text(text),
         }
     }
+}
+
+pub(crate) fn validate_scroll(dx: i32, dy: i32) -> Result<(), ValidationError> {
+    let max = u32::from(MAX_SCROLL_LINES.unsigned_abs());
+    if dx.unsigned_abs() > max || dy.unsigned_abs() > max {
+        Err(ValidationError::InvalidValue { field: "scroll" })
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_key(key: KeyCode) -> Result<(), ValidationError> {
+    match key {
+        KeyCode::Character(character) if character.is_control() => {
+            Err(ValidationError::InvalidValue { field: "key" })
+        }
+        KeyCode::Named(NamedKey::Function(number)) if number == 0 || number > MAX_FUNCTION_KEY => {
+            Err(ValidationError::InvalidValue { field: "key" })
+        }
+        KeyCode::Character(_) | KeyCode::Named(_) => Ok(()),
+    }
+}
+
+pub(crate) fn validate_text(text: &str) -> Result<(), ValidationError> {
+    if text.is_empty() {
+        return Err(ValidationError::InvalidValue { field: "text" });
+    }
+    validate_display_text("text", text, MAX_INPUT_TEXT_CHARS)
 }
 
 #[cfg(test)]

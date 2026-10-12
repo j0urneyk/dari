@@ -31,7 +31,9 @@ PEER is `local` (this Mac), `macos:USER@HOST`, or `windows:USER@HOST`.
   --known-hosts FILE         SSH known_hosts file to use
   --build                    Copy this checkout to every SSH peer and build dari-check there
   --windows-target TRIPLE    Target for --build on Windows (default: x86_64-pc-windows-msvc)
-  --cases LIST               Comma-separated subset of the cases below (default: all)
+  --cases LIST               Comma-separated subset of the cases below (default: all but the
+                             secure cases)
+  --secure-cases LIST        The secure-desktop.sh cases a secure case runs (default: its own)
   --no-audio                 Skip the audio cases (for peers without a sound output)
   --out DIR                  Where logs and frames go (default: target/crosscheck/<time>)
   --release TAG              Also install that release on both peers and connect the installed
@@ -40,11 +42,15 @@ PEER is `local` (this Mac), `macos:USER@HOST`, or `windows:USER@HOST`.
 Cases: a-host-direct, b-host-direct, a-host-relay, b-host-relay, a-host-view-only,
        b-host-view-only, a-host-audio, b-host-audio; with --release also a-host-installed,
        b-host-installed
+Secure cases, run only when --cases names them: a-host-secure, b-host-secure. Each runs
+       secure-desktop.sh against that peer, which must be Windows over SSH with UAC on and Dari
+       installed per machine; this machine views. With --a-displays 2 or --b-displays 2 it
+       passes --second-display
 EOF
 }
 
 a_peer='' b_peer='' a_ip='' b_ip='' a_displays='' b_displays='' relay_ip='' identity='' known_hosts=''
-build=0 windows_target='x86_64-pc-windows-msvc' cases='' audio=1 out='' release=''
+build=0 windows_target='x86_64-pc-windows-msvc' cases='' secure_cases='' audio=1 out='' release=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --a) a_peer=$2; shift 2 ;;
@@ -59,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --build) build=1; shift ;;
     --windows-target) windows_target=$2; shift 2 ;;
     --cases) cases=$2; shift 2 ;;
+    --secure-cases) secure_cases=$2; shift 2 ;;
     --no-audio) audio=0; shift ;;
     --out) out=$2; shift 2 ;;
     --release) release=$2; shift 2 ;;
@@ -106,6 +113,12 @@ for side in a b; do
   esac
 done
 ((locals < 2)) || { echo "at most one peer can be local" >&2; exit 2; }
+for side in a b; do
+  if [[ ",$cases," == *",$side-host-secure,"* && $(field "$side" os)/$(field "$side" via) != windows/ssh ]]; then
+    echo "$side-host-secure: --$side must be windows:USER@HOST" >&2
+    exit 2
+  fi
+done
 
 # This machine's address towards $1.
 address_towards() {
@@ -495,6 +508,26 @@ for entry in "${all_cases[@]}"; do
 done
 for host in a b; do
   if selected "$host-host-audio"; then run_audio_case "$host-host-audio" "$host"; fi
+done
+
+run_secure_case() {
+  local side=$1 name="$1-host-secure" secure_args
+  echo
+  echo "== $name: the installed app on $side hosts, this machine answers its secure screens"
+  secure_args=(--b "windows:$(field "$side" dest)" --b-ip "$(field "$side" ip)" --out "$out/$name")
+  [[ -n $identity ]] && secure_args+=(--identity "$identity")
+  [[ -n $known_hosts ]] && secure_args+=(--known-hosts "$known_hosts")
+  [[ $(field "$side" displays) == 2 ]] && secure_args+=(--second-display)
+  [[ -n $secure_cases ]] && secure_args+=(--cases "$secure_cases")
+  if "$root/scripts/crosscheck/secure-desktop.sh" "${secure_args[@]}"; then
+    summary+=("PASS $name")
+  else
+    summary+=("FAIL $name (see $out/$name)")
+    failures=$((failures + 1))
+  fi
+}
+for host in a b; do
+  if [[ ",$cases," == *",$host-host-secure,"* ]]; then run_secure_case "$host"; fi
 done
 
 # The release as users get it: each peer installs its own OS's package, and the installed apps

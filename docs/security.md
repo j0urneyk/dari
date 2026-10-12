@@ -16,6 +16,7 @@ attackers that goal holds against, how, and what it doesn't cover.
 | Malicious host | Sends malformed data to the viewer, or files nobody asked for | Frame and decode size limits, display-string validation, clipboard limit; files from the host are saved only after the viewer user accepts them |
 | Relay operator or fake relay | Observes or tampers with relayed traffic | The session is end-to-end QUIC + SPAKE2; the relay only sees ciphertext |
 | mDNS spoofer on the same LAN | Advertises fake "nearby devices" | Advertisements are display hints only; connecting always uses PAKE authentication |
+| Malware running as the signed-in Windows user | Drives `dari.exe` and the secure-desktop helper to answer its own UAC consent prompts | The `SecureDesktopControl` policy and the event log limit it; see [the Windows secure-desktop helper](#the-windows-secure-desktop-helper) |
 
 Out of scope: a host or viewer machine that is already compromised, a user who tells the attacker the password
 (social engineering), and denial of service.
@@ -91,7 +92,8 @@ and reports `HostStatus.input = NotAllowed` and `HostStatus.files = NotAllowed`.
 stops its own clipboard sharing and refuses to send or accept files too.
 
 The headless CLI host (`dari host`) has nobody to approve requests, so it gives control to any viewer that knows the
-password and turns off the clipboard and file transfer. Use it only on servers or for testing.
+password and turns off the clipboard and file transfer. With `--view-only` it grants every viewer a view-only
+session instead. Use it only on servers or for testing.
 
 ## Audio
 
@@ -158,13 +160,15 @@ sides' public IPs.
 
 ## The Windows secure-desktop helper
 
-On Windows, Dari adds two SYSTEM processes, `dari-service.exe service` and `dari-service.exe helper`, so it can later
-show and answer UAC prompts and the lock screen ([design](design/secure-desktop.md)). The helper shows them today;
-answering them comes with #47. Neither has network code: a test
+On Windows, Dari adds two SYSTEM processes, `dari-service.exe service` and `dari-service.exe helper`, so a viewer can
+see and answer UAC prompts and the lock screen ([design](design/secure-desktop.md)). Neither has network code: a test
 reads `dari-service.exe`'s import table and fails if it links `ws2_32.dll` or another Windows networking DLL. A remote
 peer still reaches only `dari.exe`, and only after the password and approval: the app starts the helper only for an
 approved session, and with input off for a view-only one. The helper reports which desktop receives input and sends
-frames of any desktop but `Default` through a shared section. The app ignores its input messages until #47.
+frames of any desktop but `Default` through a shared section. While the helper reports a desktop other than
+`Default`, the app's input thread sends the viewer's input to it as `OsInput`, after the app validated and mapped it.
+The helper validates each message again and injects only while its input thread is attached to a desktop other than
+`Default`. The only peer-chosen data that reaches SYSTEM code is that input and display IDs.
 
 | Boundary | Who is on the other side | Check |
 | --- | --- | --- |
@@ -179,24 +183,62 @@ in the system directory (`GetSystemDirectoryW`) and that its token's user is Loc
 only shares the name. The helper runs with that token restricted by `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`,
 which keeps the SYSTEM SID and System integrity but removes every privilege except `SeChangeNotifyPrivilege`. It opens
 the input desktop with no desktop-specific access rights, which is enough to name, attach to, and duplicate `Winlogon`
-and `Default`. Injecting input there (#47) will need `DESKTOP_JOURNALPLAYBACK` on the input thread's own handle. Its
-first event log entry lists its user, integrity level, session, and privileges. It inherits only the app's process
-handle, runs in a job that ends it when the service exits, loads DLLs only from System32, creates no windows, and exits
-when the app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console
+and `Default`. Its input thread opens its own handle with `DESKTOP_JOURNALPLAYBACK` and no other right, which is
+what `SendInput` needed there in the test VM. A helper started without input has no input thread and no such handle,
+and drops every input message. Its first event log entry lists its user, integrity level, session, and privileges.
+It inherits only the app's process handle, runs in a job that ends it when the service exits, loads DLLs only from
+System32, creates no windows, and exits when the app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console
 program started as SYSTEM opens a console window on the user's desktop.
+
+Keys held on the secure desktop don't stay down. Before the app moves input between the user's desktop and the
+helper, it releases every held key and button through the old route. The helper tracks what it injected itself. At a
+desktop switch it forgets that without injecting anything, because Windows clears key state at the switch. When its
+input thread ends while it is attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it
+releases what it holds there. It never injects on `Default`, not even a release. Its log names how many inputs it released and why, never which keys. Text and keys never appear in
+the `Debug` output of the pipe's messages, because the lock screen's password goes through them.
+
+### Same-user malware can answer its own consent prompts
 
 Code running as the signed-in user can do what `dari.exe` can, including talking to the service and the helper as if it
 were the app. The image check stops other programs, not code injected into Dari. Such code can start `dari.exe`, inject
-into it, and drive the helper, which today shows the secure desktop and with #47 will answer it. The design's [What this design can't stop](design/secure-desktop.md#what-this-design-cant-stop) explains
-why that cost was accepted.
+into it, and drive the helper. So while the policy below is on, malware running as an administrator in UAC's default
+consent mode can click **Yes** on its own consent prompts. The design's
+[What this design can't stop](design/secure-desktop.md#what-this-design-cant-stop) explains why that cost was
+accepted. Three facts bound it:
+
+- Microsoft doesn't treat UAC consent as a security boundary, and the default consent mode already has documented
+  auto-elevation bypasses. Dari adds one more, not the first.
+- Credential prompts, which standard users see, still need an administrator's password. The lock screen still needs
+  the user's password or PIN. The helper lets code type them, not know them.
+- A remote peer gains nothing. It still has to pass the password and approval to reach `dari.exe`.
+
+Two controls limit it further:
+
+- The DWORD `SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`, which only administrators can write and
+  Group Policy can manage. A missing value or 1 means on, 0 means off, and any other value or type means off. The
+  service reads it for each `StartHelper` and `SendSas`. At off it starts the helper without input and refuses
+  `SendSas` with `Refused(PolicyOff)`, so viewers still see the secure desktop but can't answer it. Turning it off
+  applies from the next session: the service decides input only when it starts a helper, so a helper that already
+  runs with input keeps it until its session ends. Every way to
+  change it needs an administrator: the installer's checkbox, and the host setting **Let viewers answer UAC prompts
+  and the lock screen**, which runs `dari-service.exe policy on` or `policy off` through a UAC prompt. While the
+  value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
+- The Application event log under the source `DariService`. The service writes a warning, ID 3, each time it starts
+  a helper with input on, naming the session and both process IDs. `policy on` and `policy off` write ID 4 with the
+  user who changed the value. These entries record that something used the feature. They can't prove that a remote
+  viewer did.
 
 ## Known limitations
 
 - There's no TOFU (pinning the host certificate fingerprint on first sight). The one-time password authenticates
   every session, so it wasn't considered necessary, but it should be revisited if unattended access (permanent
   passwords) is ever added.
-- The viewer sees the Windows secure desktop (UAC, the lock screen) but can't inject input there or send
-  Ctrl+Alt+Del yet.
+- The viewer can answer the Windows secure desktop (UAC, the lock screen) but can't send Ctrl+Alt+Del yet (#48).
+- While `SecureDesktopControl` is on, malware running as the signed-in administrator can answer its own UAC consent
+  prompts through Dari. See
+  [Same-user malware can answer its own consent prompts](#same-user-malware-can-answer-its-own-consent-prompts).
+- Turning `SecureDesktopControl` off applies from the next session. A helper that already runs with input keeps it
+  until its session ends.
 - The private key and settings are stored in plain files in the user data directory (no OS keychain).
 
 ## Hardening found in review

@@ -1,7 +1,8 @@
 //! Wire protocol shared by Dari hosts and viewers.
 //!
 //! This crate defines every message exchanged over a session, the protocol version rules,
-//! and a length-bounded framing codec. It performs no I/O of its own.
+//! and a length-bounded framing codec. Its only I/O is reading the secure-desktop policy from the
+//! Windows registry.
 
 mod audio;
 mod codec;
@@ -10,6 +11,8 @@ mod frame_section;
 mod handshake;
 mod input;
 mod local;
+#[cfg(windows)]
+mod registry;
 mod relay;
 mod stream;
 mod transfer;
@@ -37,8 +40,9 @@ pub use input::{
 };
 pub use local::{
     AppToHelper, DesktopName, HelperPipeName, HelperToApp, InputDesktop, LOCAL_FRAME_LIMIT,
-    MAX_DESKTOP_NAME_CHARS, PIPE_CLIENT_RIGHTS, PIPE_RANDOM_BYTES, Refusal, SERVICE_PIPE,
-    ServiceReply, ServiceRequest,
+    MAX_DESKTOP_NAME_CHARS, MAX_OS_COORDINATE, OsInput, PIPE_CLIENT_RIGHTS, PIPE_RANDOM_BYTES,
+    POLICY_KEY, POLICY_VALUE, Refusal, SERVICE_PIPE, SecureDesktopControl, ServiceReply,
+    ServiceRequest,
 };
 pub use relay::{
     Allocation, DEFAULT_RELAY_PORT, DeviceId, RELAY_ACK_MAGIC, RELAY_ALPN, RELAY_BIND_MAGIC,

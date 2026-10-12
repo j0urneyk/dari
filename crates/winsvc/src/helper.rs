@@ -5,27 +5,32 @@ use std::sync::mpsc;
 use std::thread::{self, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
-use dari_proto::{AppToHelper, HelperToApp};
+use dari_input::EnigoBackend;
+use dari_proto::{AppToHelper, HelperToApp, OsInput};
 
 use crate::channel::{AppChannel, Offered, Outbox, SectionFactory};
 use crate::command::HelperArgs;
 use crate::frames::{MessageReader, write_message};
+use crate::injector::{self, Follower, Note};
 use crate::screen::{DesktopWorld, ScreenEvent, ScreenMachine};
 use crate::win32::{
-    AppSections, DxgiWorld, EventLog, InheritedProcess, Pipe, has_exited, own_identity, process_id,
-    restrict_dll_search,
+    AppSections, DxgiWorld, EventLog, InheritedProcess, InputThreadDesktop, Pipe, has_exited,
+    own_identity, process_id, restrict_dll_search,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WRITE_TIME: Duration = Duration::from_secs(5);
-/// The app is untrusted: a full queue stops the reader, so the pipe pushes back on the app
-/// instead of the helper's memory growing.
+/// The app is untrusted: a full queue of either kind stops the reader, so the pipe pushes back
+/// on the app instead of the helper's memory growing or input being lost.
 const QUEUED_COMMANDS: usize = 8;
+const QUEUED_INPUTS: usize = 64;
 const SCREEN_STOPPED: &str = "the screen thread stopped";
 
 pub(crate) fn run(args: &HelperArgs) -> ExitCode {
     // Before anything else can load a DLL.
     let dll_search = restrict_dll_search();
+    // Before any thread, so `SetCursorPos` takes the physical pixels the app computed.
+    dari_input::prepare_process();
     let log = EventLog::open();
     let result = dll_search.map_err(|error| format!("cannot restrict DLL loading: {error}"));
     match result.and_then(|()| serve(args, log.as_ref())) {
@@ -58,7 +63,45 @@ fn serve(args: &HelperArgs, log: Option<&EventLog>) -> Result<&'static str, Stri
     {
         return Err("the pipe's server isn't the app the service vetted".into());
     }
-    converse(&pipe, &app, DxgiWorld::default)
+    converse(
+        &pipe,
+        &app,
+        DxgiWorld::default,
+        args.input.then_some(inject),
+        log,
+    )
+}
+
+fn inject(inputs: &mpsc::Receiver<OsInput>) -> usize {
+    let log = EventLog::open();
+    let log = log.as_ref();
+    let backend = match EnigoBackend::new() {
+        Ok(backend) => backend,
+        Err(error) => {
+            if let Some(log) = log {
+                log.error(&format!("helper: cannot inject input: {error}"));
+            }
+            return 0;
+        }
+    };
+    let follower = Follower::new(InputThreadDesktop::default(), backend);
+    injector::run(follower, inputs, |note| {
+        if let Some(log) = log {
+            log.info(&describe(&note));
+        }
+    })
+}
+
+fn describe(note: &Note) -> String {
+    match note {
+        Note::Forgot { count, on } => format!(
+            "helper: forgot {count} held inputs at the switch to {on}: Windows cleared key state"
+        ),
+        Note::AttachFailed { to, error } => {
+            format!("helper: dropping input: cannot attach the input thread to {to}: {error}")
+        }
+        Note::ReplayFailed { on } => format!("helper: input failed to replay on {on}"),
+    }
 }
 
 /// Talks to the app until either side stops. This thread is the pipe's only reader; a screen
@@ -67,6 +110,8 @@ fn converse<W: DesktopWorld>(
     pipe: &Pipe,
     app: &InheritedProcess,
     world: impl FnOnce() -> W + Send,
+    input: Option<impl FnOnce(&mpsc::Receiver<OsInput>) -> usize + Send>,
+    log: Option<&EventLog>,
 ) -> Result<&'static str, String> {
     thread::scope(|scope| {
         let (commands, received) = mpsc::sync_channel(QUEUED_COMMANDS);
@@ -76,16 +121,32 @@ fn converse<W: DesktopWorld>(
             let channel = AppChannel::new(PipeOutbox(pipe), AppSections::new(app));
             run_screen(machine, channel, &received, log.as_ref())
         });
-        let reason = read_app(pipe, app, &commands, &screen);
+        let (inputs, injector) = input.map_or((None, None), |input| {
+            let (inputs, received) = mpsc::sync_channel(QUEUED_INPUTS);
+            (Some(inputs), Some(scope.spawn(move || input(&received))))
+        });
+        let reason = read_app(pipe, app, &commands, inputs.as_ref(), &screen, log);
         drop(commands);
+        drop(inputs);
         let screen_reason = screen
             .join()
             .map_err(|_| "the screen thread panicked".to_owned())?;
-        Ok(if reason == SCREEN_STOPPED {
+        let reason = if reason == SCREEN_STOPPED {
             screen_reason
         } else {
             reason
-        })
+        };
+        if let Some(injector) = injector {
+            let released = injector
+                .join()
+                .map_err(|_| "the input thread panicked".to_owned())?;
+            if let Some(log) = log {
+                log.info(&format!(
+                    "helper: released {released} held inputs because {reason}"
+                ));
+            }
+        }
+        Ok(reason)
     })
 }
 
@@ -99,16 +160,32 @@ fn read_app(
     pipe: &Pipe,
     app: &InheritedProcess,
     commands: &mpsc::SyncSender<ScreenCommand>,
+    inputs: Option<&mpsc::SyncSender<OsInput>>,
     screen: &ScopedJoinHandle<'_, &'static str>,
+    log: Option<&EventLog>,
 ) -> &'static str {
     let mut messages = MessageReader::<AppToHelper>::new();
+    let mut drop_noted = false;
+    let mut note_drop = |why: &str| {
+        if !drop_noted && let Some(log) = log {
+            log.info(&format!("helper: dropping input: {why}"));
+        }
+        drop_noted = true;
+    };
     loop {
         let command = match messages.read(pipe, Some(Instant::now() + POLL_INTERVAL)) {
             Ok(Some(AppToHelper::SelectDisplay(display))) => {
                 Some(ScreenCommand::SelectDisplay(display))
             }
             Ok(Some(AppToHelper::RequestFrame)) => Some(ScreenCommand::RequestFrame),
-            Ok(Some(AppToHelper::Input(_))) => None,
+            Ok(Some(AppToHelper::Input(input))) => {
+                match inputs.map(|inputs| inputs.send(input)) {
+                    None => note_drop("the helper started without input"),
+                    Some(Err(mpsc::SendError(_))) => note_drop("the input thread stopped"),
+                    Some(Ok(())) => {}
+                }
+                None
+            }
             Ok(Some(AppToHelper::Stop)) => return "the app ended the link",
             Ok(None) => return "the app closed its pipe",
             Err(error) if error.kind() == io::ErrorKind::TimedOut => None,
@@ -218,7 +295,9 @@ pub(crate) fn server_is_app(pipe: &Pipe, app: &impl AsRawHandle) -> io::Result<b
 
 #[cfg(test)]
 mod tests {
-    use dari_proto::InputDesktop;
+    use std::sync::Mutex;
+
+    use dari_proto::{InputDesktop, KeyCode, NamedKey};
 
     use super::*;
     use crate::dxgi_result::Hresult;
@@ -227,6 +306,8 @@ mod tests {
     use crate::test_support::test_pipe;
     use crate::tracker::{DesktopSource, Observation};
     use crate::win32::open_client_process;
+
+    const NO_INPUT: Option<fn(&mpsc::Receiver<OsInput>) -> usize> = None;
 
     #[derive(Debug)]
     struct NoOutputs;
@@ -277,7 +358,7 @@ mod tests {
         let this = open_client_process(std::process::id()).unwrap();
         let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
         thread::scope(|scope| {
-            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs));
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, NO_INPUT, None));
             let deadline = Some(Instant::now() + Duration::from_secs(10));
             write_message(&server, &AppToHelper::SelectDisplay(5), deadline).unwrap();
             let mut replies = MessageReader::<HelperToApp>::new();
@@ -301,11 +382,94 @@ mod tests {
         let this = open_client_process(std::process::id()).unwrap();
         let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
         thread::scope(|scope| {
-            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs));
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, NO_INPUT, None));
             let deadline = Some(Instant::now() + Duration::from_secs(10));
             write_message(&server, &AppToHelper::Stop, deadline).unwrap();
             assert_eq!(helper.join().unwrap(), Ok("the app ended the link"));
         });
+    }
+
+    fn alt_down() -> AppToHelper {
+        AppToHelper::Input(OsInput::Key {
+            key: KeyCode::Named(NamedKey::Alt),
+            pressed: true,
+        })
+    }
+
+    #[test]
+    fn a_helper_without_input_drops_input_and_keeps_serving() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, NO_INPUT, None));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            for _ in 0..2 * QUEUED_INPUTS {
+                write_message(&server, &alt_down(), deadline).unwrap();
+            }
+            write_message(&server, &AppToHelper::SelectDisplay(5), deadline).unwrap();
+            let mut replies = MessageReader::<HelperToApp>::new();
+            assert_eq!(
+                replies.read(&server, deadline).unwrap(),
+                Some(HelperToApp::DesktopChanged(InputDesktop::Winlogon))
+            );
+            assert_eq!(
+                replies.read(&server, deadline).unwrap(),
+                Some(HelperToApp::ScreenUnavailable { display: 5 })
+            );
+            drop(server);
+            assert_eq!(helper.join().unwrap(), Ok("the app closed its pipe"));
+        });
+    }
+
+    #[test]
+    fn input_reaches_the_input_thread_until_the_app_ends_the_link() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        let replayed = Mutex::new(Vec::new());
+        let input = |inputs: &mpsc::Receiver<OsInput>| {
+            replayed.lock().unwrap().extend(inputs.iter());
+            1
+        };
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            write_message(&server, &alt_down(), deadline).unwrap();
+            write_message(&server, &AppToHelper::Stop, deadline).unwrap();
+            assert_eq!(helper.join().unwrap(), Ok("the app ended the link"));
+        });
+        let AppToHelper::Input(alt) = alt_down() else {
+            unreachable!()
+        };
+        assert_eq!(*replayed.lock().unwrap(), [alt]);
+    }
+
+    #[test]
+    fn a_slow_input_thread_holds_the_reader_back_instead_of_losing_input() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        let replayed = Mutex::new(0);
+        let input = |inputs: &mpsc::Receiver<OsInput>| {
+            thread::sleep(Duration::from_secs(1));
+            *replayed.lock().unwrap() += inputs.iter().count();
+            0
+        };
+        let sent = 4 * QUEUED_INPUTS;
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            for _ in 0..sent {
+                write_message(&server, &alt_down(), deadline).unwrap();
+            }
+            write_message(&server, &AppToHelper::Stop, deadline).unwrap();
+            assert_eq!(helper.join().unwrap(), Ok("the app ended the link"));
+        });
+        assert_eq!(*replayed.lock().unwrap(), sent);
     }
 
     #[test]

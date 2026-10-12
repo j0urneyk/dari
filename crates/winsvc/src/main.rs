@@ -11,6 +11,8 @@ mod command;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dxgi_result;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod injector;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod limiter;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod pointer;
@@ -25,6 +27,8 @@ mod tracker;
 mod frames;
 #[cfg(windows)]
 mod helper;
+#[cfg(windows)]
+mod policy;
 #[cfg(windows)]
 mod scm;
 #[cfg(windows)]
@@ -41,17 +45,40 @@ fn main() -> ExitCode {
 
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let Some(command) = Command::parse(&arguments) else {
-        return fail("usage: dari-service <install|uninstall|service>");
+        return fail("usage: dari-service <install|uninstall|service|policy on|policy off>");
     };
     let result = match command {
         Command::Service => scm::run_service(),
         Command::Install => scm::install(),
         Command::Uninstall => scm::uninstall(),
         Command::Helper(args) => return helper::run(&args),
+        Command::Policy(control) => return set_policy(control),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => fail(&failure.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn set_policy(control: dari_proto::SecureDesktopControl) -> ExitCode {
+    use dari_proto::POLICY_VALUE;
+
+    match policy::write(control) {
+        Ok(()) => {
+            if let Some(log) = win32::EventLog::open() {
+                let user = win32::own_user().unwrap_or_else(|_| "an unidentified user".into());
+                log.policy_changed(&format!(
+                    "{user} set {POLICY_VALUE} to {} ({control:?})",
+                    control.as_stored()
+                ));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) if policy::is_access_denied(&error) => fail(&format!(
+            "only administrators can change {POLICY_VALUE}: run this from an elevated prompt"
+        )),
+        Err(error) => fail(&format!("cannot write {POLICY_VALUE}: {error}")),
     }
 }
 

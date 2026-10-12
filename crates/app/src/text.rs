@@ -103,6 +103,8 @@ pub(crate) struct Text {
     pub(crate) transfer_failed: &'static str,
     pub(crate) drop_to_send: &'static str,
     pub(crate) share_audio: &'static str,
+    pub(crate) secure_desktop_control: &'static str,
+    pub(crate) secure_desktop_control_hint: &'static str,
     pub(crate) sound_on: &'static str,
     pub(crate) sound_off: &'static str,
     pub(crate) toggle_sound: &'static str,
@@ -129,6 +131,14 @@ impl Text {
             format!("{name}이(가) 이 기기에 접속하려고 합니다.")
         } else {
             format!("{name} wants to connect to this device.")
+        }
+    }
+
+    pub(crate) fn secure_desktop_control_failed(&self, detail: &str) -> String {
+        if self.korean {
+            format!("설정을 바꾸지 못했습니다 ({detail}).")
+        } else {
+            format!("Could not change this setting ({detail}).")
         }
     }
 
@@ -310,6 +320,8 @@ static KOREAN: Text = Text {
     transfer_failed: "실패",
     drop_to_send: "놓으면 상대 기기로 파일을 보냅니다",
     share_audio: "소리 공유",
+    secure_desktop_control: "원격 사용자가 UAC 창과 잠금 화면에 응답하도록 허용",
+    secure_desktop_control_hint: "바꾸려면 관리자 승인이 필요합니다.",
     sound_on: "소리 켜짐",
     sound_off: "소리 꺼짐",
     toggle_sound: "원격 기기의 소리 켜기/끄기",
@@ -416,6 +428,8 @@ static ENGLISH: Text = Text {
     transfer_failed: "Failed",
     drop_to_send: "Drop to send to the remote device",
     share_audio: "Share sound",
+    secure_desktop_control: "Let viewers answer UAC prompts and the lock screen",
+    secure_desktop_control_hint: "Changing this asks for administrator approval.",
     sound_on: "Sound on",
     sound_off: "Sound off",
     toggle_sound: "Play or mute the remote device's sound",

@@ -13,6 +13,7 @@ name = "dari-service"
 path = "src/main.rs"
 
 [dependencies]
+dari-input.workspace = true
 dari-proto.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -41,6 +42,7 @@ windows = { workspace = true, features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
+windows-registry.workspace = true
 windows-service.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

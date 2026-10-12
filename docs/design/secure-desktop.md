@@ -2,7 +2,8 @@
 
 Status: approved. Option B, a per-machine-only installer, and secure-screen control on by default. Built so far:
 the per-machine install and `DariService` (#44), the helper, its pipes, and desktop following (#45), and the capture
-of the secure desktop (#46). Input on the secure desktop (#47) and Ctrl+Alt+Del (#48) aren't built yet.
+of the secure desktop (#46), and input on the secure desktop with the `SecureDesktopControl` policy (#47).
+Ctrl+Alt+Del (#48) isn't built yet.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
@@ -97,7 +98,7 @@ The app keeps Windows.Graphics.Capture and `SendInput` on `Default` and hands of
 | --- | --- | --- |
 | Code running as SYSTEM | All of the host, including the network stack | Desktop following, DXGI capture, `SendInput`, `SendSAS`, two local pipes |
 | A remote peer's way to SYSTEM | Any parser bug in the host | None directly. A peer must first take over `dari.exe`, then exploit the helper's pipe |
-| Peer-chosen data that SYSTEM code parses | Everything: handshake, control messages, clipboard, file streams | `InputEvent` (including `Text` up to 256 characters) and display IDs, after `Validate` |
+| Peer-chosen data that SYSTEM code parses | Everything: handshake, control messages, clipboard, file streams | `OsInput` (including `Text` up to 256 characters) and display IDs, after `Validate` |
 | Same-user malware answering UAC consent prompts | Possible (it can drive the approval UI and act as a viewer) | Possible (it can act as `dari.exe` on the pipe). See the security model |
 | Capture paths | One (DXGI) | Two (Windows.Graphics.Capture, then DXGI while `Winlogon` is up) |
 | Clipboard, files, audio | Need impersonation of the user | Unchanged |
@@ -129,9 +130,9 @@ viewer ══QUIC+SPAKE2══► dari.exe (user, medium integrity)
 ```
 
 `dari-service.exe` is a new binary from a new Windows-only crate, `crates/winsvc` (`dari-winsvc`). It depends on
-`dari-proto` for framing and input types and on `dari-input` for enigo's key mapping. It doesn't depend on
-`dari-media`, `dari-net`, or `dari-session`, and it never links `ws2_32.dll`. A CI step checks its import table for
-that, so the rule holds without anyone remembering it.
+`dari-proto` for framing and input types and on `dari-input` for `EnigoBackend` and its held-input tracking. It
+doesn't depend on `dari-media`, `dari-net`, or `dari-session`, and it never links `ws2_32.dll`. A CI step checks its
+import table for that, so the rule holds without anyone remembering it.
 
 ### Session lifecycle
 
@@ -147,8 +148,8 @@ that, so the rule holds without anyone remembering it.
 4. The helper connects to the app's pipe. Each side checks the other (see the security model) before any message
    passes.
 5. The helper reports every input desktop change. While `Default` is the input desktop, the app captures and injects
-   as it does today. While `Winlogon` is, the app's capture stream reads frames from the helper, and its input goes
-   to the helper.
+   as it does today. While any other desktop is, such as `Winlogon`, the app's capture stream reads frames from the
+   helper, and its input goes to the helper.
 6. When the session ends, the app sends `Stop` and closes both pipes once the helper has closed its own. The helper
    releases every key and button it holds and exits on `Stop` or when its pipe closes, so no SYSTEM process stays in
    the user's session between sessions.
@@ -156,7 +157,7 @@ that, so the rule holds without anyone remembering it.
 The connection to the helper belongs to the host session, not to the capturer. `host_session.rs` stops and
 respawns the capture thread on `SelectDisplay`, `SetQuality`, and `SetFrameRate`, and `open_capturer` runs inside
 the new thread, so a capturer can't own anything that must outlive it. On Windows the session opens one
-`SecureDesktopLink` after approval. The capturer and the input backend each borrow it, and the session forwards
+`SecureDesktopLink` after approval. The capturer and the input thread each borrow it, and the session forwards
 `SelectDisplay` to the helper itself. A capture restart doesn't restart the helper.
 
 If the helper dies, the link reports it, the app falls back to PR 36's notice for the rest of the session, and the
@@ -168,20 +169,28 @@ If the service isn't installed or refuses, the app behaves as PR 36 does: the vi
 ### Following the input desktop
 
 The helper keeps one state value, the input desktop, as `Default`, `Winlogon`, or another name, and runs two
-threads that each attach to it: capture and input. Neither thread creates a window or installs a hook, because
-`SetThreadDesktop` fails on a thread that has either.
+threads that each attach to it: capture and input. The input thread exists only in a helper started with input.
+Neither thread creates a window or installs a hook, because `SetThreadDesktop` fails on a thread that has either.
 
 - Every 100 ms, and right after `AcquireNextFrame` fails with `DXGI_ERROR_ACCESS_LOST` or
   `DXGI_ERROR_INVALID_CALL`, the helper calls `OpenInputDesktop` and reads the desktop's name with
   `GetUserObjectInformationW(UOI_NAME)`, the same check PR 36 uses.
-- When the name changes, the helper sends `DesktopChanged(kind)` to the app. Each thread then calls
-  `SetThreadDesktop` on the new desktop before its next capture or injection, the same idea as RustDesk's
-  `try_change_desktop`.
-- Held keys need care on both sides. Before the app routes input to the new target, it sends releases for every
-  held key and button through the old route. The helper also tracks what it holds itself, and releases it before a
-  desktop switch, when its pipe closes, and when it exits. `InputSession::release_all` in the app reaches only
-  `Default`, so without the helper's own tracking, an Alt held for Alt+Y would stay down on the lock screen if the
-  viewer dropped mid-prompt.
+- When the name changes, the helper sends `DesktopChanged(kind)` to the app. Each thread checks the input desktop
+  itself and calls `SetThreadDesktop` on the new desktop before its next capture or injection, the same idea as
+  RustDesk's `try_change_desktop`. The input thread checks every 100 ms while idle and before each event.
+- Held keys need care on both sides. Before the app routes input to the new target, it releases every held key and
+  button through the old route. The helper also tracks what it holds itself. At a desktop switch it forgets what it
+  holds without sending anything, because Windows already cleared key state. When its input thread ends while it is
+  attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it releases what it holds there.
+  `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
+  for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt.
+- Windows clears key state at a desktop switch. In the test VM, with UAC on, a medium-integrity process pressed a
+  key with `SendInput` on `Default` before a UAC prompt. After the prompt closed and `Default` returned,
+  `GetAsyncKeyState` read the key as up. While `Winlogon` was the input desktop, that process's `SendInput` returned
+  0 with error 5. So a release that lands late, or can't land because the desktop already switched, leaves nothing
+  down. The app needs no timer or extra message to release at the exact moment of a switch. The helper releases
+  after it attaches, because the error 5 above shows that a thread on a desktop that no longer receives input can't
+  inject.
 
 ### Capturing the secure desktop with DXGI Desktop Duplication
 
@@ -239,14 +248,39 @@ next one a keyframe. `HostStatus.screen` stays `Available` throughout.
 
 ### Injecting input
 
-On Windows, `HostPlatform::open_input` returns a routing backend. While the input desktop is `Default` it calls
-`EnigoBackend` in-process, as now. While it is `Winlogon` it sends each event to the helper as `Input(InputEvent)`,
-with the pointer already converted to physical virtual-desktop pixels. The helper validates each event with the
-existing `Validate` rules and replays it with its own `EnigoBackend` and `SetCursorPos`. The helper process enables
-Per-Monitor V2 DPI awareness, as the app does, so the coordinates mean the same thing in both processes.
+The routing lives in `dari-session`, not in the platform. The input thread runs one `InputSession` over a `Router`
+backend (`crates/session/src/input_route.rs`). The router sends each `InputBackend` call either to the platform's
+backend, `EnigoBackend` in-process as before, or to the helper over the link. Before each input command, the thread
+reads the link's route. While the helper is connected and reports `Winlogon`, input goes to the helper. Otherwise, and always when there is no link or the link ended, it stays local. When the target changes,
+`InputSession::retarget` first releases every held key and button through the old target, and only then switches.
+That is the only way the target changes, so the release through the old route holds by construction.
+`HostPlatform::open_input` is unchanged. An earlier draft returned a routing backend from it, but the platform
+can't see the session's link, and routing in the session runs in the loopback tests on every platform.
 
-The helper drops every input event if it was started with `input: false`. That check is for app bugs. The security
-model explains why it doesn't stop malware.
+The pipe carries `Input(OsInput)` instead of `Input(InputEvent)`. `OsInput` is one `InputBackend` call as the
+app's input thread made it: `Move` in physical virtual-desktop pixels, `Button`, `Scroll`, `Key`, or `Text`. The app
+has already mapped the viewer's normalized position onto the selected display, the same conversion it does for
+`SetCursorPos`, so the helper needs no display geometry, and the pipe can't carry a normalized position. `OsInput`
+passes `Validate` with the same key, scroll, and text rules as `InputEvent`, through shared functions, and each
+coordinate must be within 131,072 of zero. Its `Debug` output leaves out keys and text, because the lock screen's
+password goes through it.
+
+The helper enables Per-Monitor V2 DPI awareness before it starts any thread, as the app does, so the coordinates
+mean the same thing in both processes. Its main thread hands each `Input` to the input thread over a queue of 64.
+When the queue is full, the main thread waits, as it does for the screen thread's queue, so the pipe pushes back on
+the app and no input is lost. A dropped key-up would leave a key down on `Winlogon`, such as Shift while the viewer
+types the lock screen's password. The input thread opens its
+own input desktop handle with only `DESKTOP_JOURNALPLAYBACK`, attaches to it, and replays each call through an
+`Injector` over its own `EnigoBackend`, which moves the pointer with `SetCursorPos`. The `Injector`, in
+`dari-input`, is the held-key tracking that `InputSession` uses too. The thread injects only while it is attached to
+`Winlogon`. On `Default` the app injects as the user, and a SYSTEM injector on any desktop but the secure one would
+bypass User Interface Privilege Isolation there. If an attach fails, the thread drops input until the next attach succeeds. At a switch it forgets what it holds and logs
+`helper: forgot N held inputs at the switch to <desktop>`. When the thread ends, it releases what it holds only if it
+is attached to `Winlogon`, and logs `helper: released N held inputs because <reason>`. It never logs key codes or text.
+
+A helper started with `input: false` has no input thread, no `Injector`, and no `DESKTOP_JOURNALPLAYBACK` handle,
+and drops every input message. That check is for app bugs. The security model explains why it doesn't stop
+malware.
 
 ### Ctrl+Alt+Del
 
@@ -282,7 +316,7 @@ that holds them.
 | Pipe and server | From app | To app |
 | --- | --- | --- |
 | `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
-| `dari-helper-<random>`, created by the app | `Input(InputEvent)`, `SelectDisplay(id)`, `RequestFrame`, `Stop` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
+| `dari-helper-<random>`, created by the app | `Input(OsInput)`, `SelectDisplay(id)`, `RequestFrame`, `Stop` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
 doesn't stop another process from creating the name first. It makes the server's own creation fail loudly when that
@@ -314,6 +348,19 @@ service at all.
   old uninstaller or read a path from the registry: any process of the user can replace both, and the installer
   runs as an administrator. It keeps the user's data in `%LOCALAPPDATA%\dari`, which the app still uses because it
   still runs as the user.
+- A custom page after the directory page shows the checkbox **Let viewers answer UAC prompts and the lock screen**
+  and a short explanation: a viewer allowed to control the PC can then click and type on those screens, programs
+  running as the user could use this too, and the setting can be changed later in Dari's settings. The page is in
+  English only, because cargo-packager 0.11.8 builds the installer in English only, and adding Korean would show
+  NSIS's language picker. The checkbox starts from the stored value, read with the service's rule, so a first
+  install starts checked and an administrator's 0 stays unchecked on a repair or an upgrade. Silent and passive
+  installs skip the page and keep that starting value: a first silent install writes 1, and a silent upgrade keeps a
+  stored 0. After `dari-service.exe install`, `Section Install` runs `dari-service.exe policy on` or `policy off`,
+  and a failure stops the installer like the install step.
+- The uninstaller deletes `SecureDesktopControl`, and the `Dari` policy key when it is then empty, unless it runs
+  with `/P`. The installer's reinstall page runs the old uninstaller with `/P` before an upgrade, so an
+  unconditional delete would turn an administrator's 0 back on. `dari-service.exe uninstall` leaves the value alone
+  for the same reason.
 - Installing now shows a UAC prompt, and a user without administrator rights can't install Dari. That is the price
   of the service.
 - `platform.yml`'s installer smoke test already looks for `dari.exe` under `%ProgramFiles%`. The test must also
@@ -325,8 +372,11 @@ service at all.
   rule that a new kind is only ever sent to a peer whose version defines it.
 - With the service running, the viewer sees the secure desktop instead of PR 36's notice. PR 36's notice remains
   for hosts without the service: per-user installs that haven't upgraded, or a refused `StartHelper`.
-- The host's settings show whether secure-screen control is on (see the policy below), so the host user knows
-  whether a viewer can answer UAC prompts.
+- The host's **Sharing** settings show whether secure-screen control is on (see the policy below), so the host user
+  knows whether a viewer can answer UAC prompts. The row is a switch, **Let viewers answer UAC prompts and the lock
+  screen**, with the hint that changing it asks for administrator approval. It appears only where
+  `dari-service.exe` sits beside `dari.exe`. Turning it on or off runs `dari-service.exe policy on` or `policy off`
+  with `ShellExecuteExW` and the `runas` verb, waits for it on a background thread, and then reads the value again.
 
 ## Security model
 
@@ -393,13 +443,29 @@ This is the main cost of the feature, and it was accepted with the default below
 
 Two controls limit it further:
 
-- An `HKLM` policy value, `SecureDesktopControl`, that only an administrator can set. At 0 the service starts helpers
-  with input off and refuses `SendSas`, so viewers can still see the secure desktop but not answer it. The installer
-  offers it as a checkbox, **Let viewers answer UAC prompts and the lock screen**. Later, the host's settings change
-  it through `dari-service.exe policy on` or `policy off`, started with `runas`, so every change shows a UAC prompt.
-  While the value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
-- The service writes an Application event log entry each time it starts a helper with input, and each `SendSAS`.
-  These entries record that something used the feature. They can't prove that a remote viewer did.
+- A policy value that only an administrator can set: the DWORD `SecureDesktopControl` under
+  `HKLM\SOFTWARE\Policies\Dari`. Group Policy can manage that key. A missing value or 1 means on, 0 means off, and
+  any other value or a value of another type means off, so a garbled value fails closed. The service reads the value
+  for each `StartHelper` and `SendSas`, so a change applies from the next session. At off it starts the helper with
+  input off and refuses `SendSas` with `Refused(PolicyOff)`, so viewers can still see the secure desktop but not
+  answer it. `dari-service.exe policy on` and `policy off` are Dari's only writers of the value. Without
+  administrator rights the command exits with code 1 and writes an error that names administrators to the
+  Application log. `dari-service.exe` is a GUI-subsystem program, so a console doesn't wait for it or show that
+  error: run it with `start /wait` or `Start-Process -Wait` and read the exit code. The installer offers the value
+  as a checkbox, **Let viewers answer UAC prompts and the lock screen**. The host's settings change it through the
+  same command, started with `runas`, so every change shows a UAC prompt. While the value is 0, the helper sends no
+  input, so malware can't answer the prompt that would turn it on.
+- The service writes an Application event log entry each time it starts a helper with input on: a warning with ID
+  3 that names the session, the helper's process ID, and the app's process ID. `policy on` and `policy off` write an
+  entry with ID 4 that names the user who changed the value. An entry for each `SendSAS` comes with #48. These
+  entries record that something used the feature. They can't prove that a remote viewer did.
+
+`dari-service.exe install` registers the `DariService` event source under
+`HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\DariService`, with `EventMessageFile` set to
+`%SystemRoot%\System32\EventCreate.exe` and `TypesSupported` set to 7, and `uninstall` removes it. Before #47 the
+source wasn't registered, and in the VM `Get-WinEvent` couldn't render DariService's entries. `EventCreate.exe`'s
+message table renders the entry's text for event IDs 1 to 1000, as measured in the VM, so Dari needs no message
+table of its own. The service's IDs are 1 (information), 2 (error), 3, and 4.
 
 ## Testing
 
@@ -448,6 +514,9 @@ consent prompt to answer, and an elevated host would hide integrity problems. Th
 
 `lock-unlock` types the VM's password, so the case never saves its frames after the password field gets focus, and
 the viewer's log redacts `Text` and key events in that case.
+
+`scripts/crosscheck/secure-desktop.sh` runs every case above except `cad`, which waits for #48.
+[development.md](../development.md#local-windows-11-vm) describes how the script judges each case as built.
 
 Two installer cases run outside `dari-check`. An upgrade from a 0.0.x per-user install checks the migration. Stopping
 the service, starting a process that creates `\\.\pipe\dari-service`, and starting the service again checks that
@@ -498,7 +567,8 @@ no slice of its own, because each slice updates the documents it affects, as `do
 - The installer is per-machine only. A user without administrator rights can't install Dari, and no per-user
   layout needs testing.
 - Secure-screen control is on by default (option 1 below). The installer's checkbox is checked, and its page shows
-  the explanation. A silent install sets `SecureDesktopControl` to 1.
+  the explanation. A silent install sets `SecureDesktopControl` to 1 when no value is stored. When a value is
+  stored, the installer keeps it, so a silent upgrade doesn't undo an administrator's 0.
 
 ## Why secure-screen control is on by default
 

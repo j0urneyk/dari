@@ -50,6 +50,9 @@ enum Command {
         /// Relay server to register with, so viewers elsewhere can connect by ID.
         #[arg(long)]
         relay: Option<String>,
+        /// Let viewers only see the screen, not control the keyboard and mouse.
+        #[arg(long)]
+        view_only: bool,
     },
     /// Connect to a host without the GUI and report stream statistics.
     Connect {
@@ -81,7 +84,11 @@ pub fn run() -> anyhow::Result<()> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
                 match command {
-                    Command::Host { port, relay } => cli::host(port, relay).await,
+                    Command::Host {
+                        port,
+                        relay,
+                        view_only,
+                    } => cli::host(port, relay, view_only).await,
                     Command::Connect {
                         address,
                         relay,

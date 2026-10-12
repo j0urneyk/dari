@@ -9,14 +9,22 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - When a Windows host shows a User Account Control prompt or the lock screen, the viewer now sees it, on every
-  display, and the session carries on when it closes. Answering it from the viewer comes in a
-  later release; until then someone at the host answers it.
+  display, and the session carries on when it closes.
+- In a session that allows control, the viewer can answer a Windows host's User Account Control prompts and lock
+  screen: click **Yes**, press Alt+Y or Esc, or type the password. Keys held when the screen appears or the viewer
+  disconnects don't stay down. Ctrl+Alt+Del can't be sent from the viewer yet.
+- The Windows host's **Sharing** settings have **Let viewers answer UAC prompts and the lock screen**, on by default.
+  Changing it asks for administrator approval, and an administrator can also set it with Group Policy
+  (`SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`). The Windows installer asks the same question on
+  its own page, and an upgrade keeps the answer. Dari records each session that may answer these screens in the
+  Windows Application log.
+- `dari host --view-only` lets viewers of the headless host only see the screen.
 
 ### Changed
 
 - The Windows installer now installs Dari for all users in `C:\Program Files\Dari` and needs administrator rights.
-  It adds the `DariService` Windows service, which later releases use to show and answer UAC prompts and the lock
-  screen. Installing over an earlier per-user install moves it and keeps your settings and device identity.
+  It adds the `DariService` Windows service, which shows UAC prompts and the lock screen to the viewer and lets it
+  answer them. Installing over an earlier per-user install moves it and keeps your settings and device identity.
 - Text on a still remote screen sharpens within half a second after it stops changing, and the Quality preset streams
   screens up to 3840x2160 at their full resolution instead of scaling them to 2560 pixels.
 

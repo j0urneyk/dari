@@ -1,20 +1,23 @@
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::EventLog::{
-    DeregisterEventSource, EVENTLOG_ERROR_TYPE, EVENTLOG_INFORMATION_TYPE, REPORT_EVENT_TYPE,
-    RegisterEventSourceW, ReportEventW,
+    DeregisterEventSource, EVENTLOG_ERROR_TYPE, EVENTLOG_INFORMATION_TYPE, EVENTLOG_WARNING_TYPE,
+    REPORT_EVENT_TYPE, RegisterEventSourceW, ReportEventW,
 };
 use windows::core::PCWSTR;
 
 use super::wide;
 
-const SOURCE: &str = "DariService";
+pub(crate) const EVENT_SOURCE: &str = "DariService";
+/// The event types [`EventLog`] reports, for the source's `TypesSupported` registry value.
+pub(crate) const TYPES_SUPPORTED: u16 =
+    EVENTLOG_ERROR_TYPE.0 | EVENTLOG_WARNING_TYPE.0 | EVENTLOG_INFORMATION_TYPE.0;
 
 #[derive(Debug)]
 pub(crate) struct EventLog(HANDLE);
 
 impl EventLog {
     pub(crate) fn open() -> Option<Self> {
-        let source = wide(SOURCE);
+        let source = wide(EVENT_SOURCE);
         // SAFETY: `source` is NUL-terminated and outlives the call.
         unsafe { RegisterEventSourceW(PCWSTR::null(), PCWSTR(source.as_ptr())) }
             .ok()
@@ -29,6 +32,16 @@ impl EventLog {
         self.report(EVENTLOG_ERROR_TYPE, 2, message);
     }
 
+    pub(crate) fn input_helper_started(&self, message: &str) {
+        self.report(EVENTLOG_WARNING_TYPE, 3, message);
+    }
+
+    pub(crate) fn policy_changed(&self, message: &str) {
+        self.report(EVENTLOG_INFORMATION_TYPE, 4, message);
+    }
+
+    /// `id` stays within 1 to 1000, the IDs whose message `EventCreate.exe`, the registered
+    /// message file, renders.
     fn report(&self, kind: REPORT_EVENT_TYPE, id: u32, message: &str) {
         let message = wide(message);
         let strings = [PCWSTR(message.as_ptr())];

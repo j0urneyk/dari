@@ -178,10 +178,20 @@ jobs:
           $setup = (Get-ChildItem target/release -Filter *-setup.exe | Select-Object -First 1).FullName
           $perUserLinks = (Join-Path ([Environment]::GetFolderPath('Programs')) 'Dari\Dari.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dari.lnk')
           $perUserProductKey = 'HKCU:\Software\dari\Dari'
+          $policyKey = 'HKLM:\SOFTWARE\Policies\Dari'
 
-          function Invoke-Setup([string]$path, [string]$what) {
-            $process = Start-Process -FilePath $path -ArgumentList '/S' -Wait -PassThru
+          function Invoke-Setup([string]$path, [string]$what, [string]$arguments = '/S') {
+            $process = Start-Process -FilePath $path -ArgumentList $arguments -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "$what exited with code $($process.ExitCode)" }
+          }
+
+          function Assert-Policy([int]$expected, [string]$after) {
+            $key = Get-Item -LiteralPath $policyKey -ErrorAction SilentlyContinue
+            $value = if ($key) { $key.GetValue('SecureDesktopControl') }
+            if ($null -eq $value) { throw "SecureDesktopControl is missing after $after" }
+            $kind = $key.GetValueKind('SecureDesktopControl')
+            if ($kind -ne 'DWord' -or $value -ne $expected) { throw "SecureDesktopControl is $kind $value after $after, not DWord $expected" }
+            Write-Host "after ${after}: SecureDesktopControl is $value"
           }
 
           function Get-DataHashes {
@@ -228,6 +238,9 @@ jobs:
             if ($service.PathName -ne $expectedPath) { throw "DariService's image path is $($service.PathName), not $expectedPath" }
             $failureActions = sc.exe qfailure DariService | Out-String
             if ($failureActions -notmatch 'RESTART -- Delay = 5000') { $failureActions; throw 'DariService does not restart on failure' }
+            $entry = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'DariService' } -MaxEvents 1 -ErrorAction SilentlyContinue
+            if (-not $entry) { throw "the Application log has no DariService entry after $after" }
+            if (-not $entry.Message -or $entry.Message -match 'cannot be found') { throw "DariService's event $($entry.Id) does not render after ${after}: $($entry.Message)" }
             foreach ($file in 'dari.exe', 'dari-service.exe') {
               if (-not (Test-Path -LiteralPath (Join-Path $installDir $file))) { throw "$file is not in $installDir after $after" }
             }
@@ -281,9 +294,19 @@ jobs:
           Invoke-Setup $setup 'the branch installer over the per-user install'
           if (Test-Path -LiteralPath $canaryMarker) { throw 'the installer ran the program named by the per-user UninstallString' }
           Assert-Installed 'the upgrade from a per-user install'
+          Assert-Policy 1 'the upgrade from a per-user install'
 
+          New-ItemProperty -LiteralPath $policyKey -Name SecureDesktopControl -PropertyType DWord -Value 0 -Force | Out-Null
           Invoke-Setup $setup 'the branch installer run again'
           Assert-Installed 'a repair'
+          Assert-Policy 0 'a repair'
+
+          # The reinstall page runs the installed uninstaller this way before an upgrade.
+          Invoke-Setup (Join-Path $installDir 'uninstall.exe') 'the uninstaller run with /P' "/S /P _?=$installDir"
+          Assert-Policy 0 'the uninstaller run with /P'
+          Invoke-Setup $setup 'the branch installer after the uninstaller run with /P'
+          Assert-Installed 'an upgrade'
+          Assert-Policy 0 'an upgrade'
 
           Invoke-Setup (Join-Path $installDir 'uninstall.exe') 'the uninstaller'
           for ($i = 0; $i -lt 30 -and (Get-Service DariService -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
@@ -292,5 +315,9 @@ jobs:
             if (Test-Path -LiteralPath (Join-Path $installDir $file)) { throw "$file remains in $installDir after uninstalling" }
           }
           if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dari') { throw 'the uninstall key remains after uninstalling' }
+          # The uninstaller finishes in a temporary copy of itself, which can outlive the process started here.
+          for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $policyKey); $i++) { Start-Sleep -Milliseconds 500 }
+          if (Get-ItemProperty -LiteralPath $policyKey -Name SecureDesktopControl -ErrorAction SilentlyContinue) { throw 'SecureDesktopControl remains after uninstalling' }
+          if (Test-Path -LiteralPath $policyKey) { throw "$policyKey remains after uninstalling" }
           Assert-DataUnchanged 'uninstalling'
-          Write-Host 'uninstalling removed DariService and the files and kept the data'
+          Write-Host 'uninstalling removed DariService, the files, and the policy, and kept the data'

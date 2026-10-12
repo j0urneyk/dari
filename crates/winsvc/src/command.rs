@@ -1,12 +1,14 @@
 use std::ffi::OsString;
 
-use dari_proto::HelperPipeName;
+use dari_proto::{HelperPipeName, SecureDesktopControl};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
     Service,
     Install,
     Uninstall,
+    /// `policy on|off`. Needs an administrator.
+    Policy(SecureDesktopControl),
     /// Started only by the service: `helper <pipe> <input|no-input> <app process handle>`.
     Helper(HelperArgs),
 }
@@ -35,6 +37,8 @@ impl Command {
             ["service"] => Some(Self::Service),
             ["install"] => Some(Self::Install),
             ["uninstall"] => Some(Self::Uninstall),
+            ["policy", "on"] => Some(Self::Policy(SecureDesktopControl::On)),
+            ["policy", "off"] => Some(Self::Policy(SecureDesktopControl::Off)),
             ["helper", pipe, input, app] => Some(Self::Helper(HelperArgs {
                 pipe: HelperPipeName::parse(pipe).ok()?,
                 input: match input {
@@ -83,6 +87,27 @@ mod tests {
         assert_eq!(parse(&[]), None);
         assert_eq!(parse(&["Install"]), None);
         assert_eq!(parse(&["install", "service"]), None);
+    }
+
+    #[test]
+    fn policy_takes_exactly_on_or_off() {
+        assert_eq!(
+            parse(&["policy", "on"]),
+            Some(Command::Policy(SecureDesktopControl::On))
+        );
+        assert_eq!(
+            parse(&["policy", "off"]),
+            Some(Command::Policy(SecureDesktopControl::Off))
+        );
+        for bad in [
+            &["policy"][..],
+            &["policy", "On"],
+            &["policy", "1"],
+            &["policy", "0"],
+            &["policy", "on", "off"],
+        ] {
+            assert_eq!(parse(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

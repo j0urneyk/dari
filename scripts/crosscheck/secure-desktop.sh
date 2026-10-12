@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The viewer can't answer a prompt before #47, so this script dismisses each UAC prompt over SSH
-# by ending consent.exe.
-#
 # Runs on the macOS /bin/bash (3.2).
 set -euo pipefail
+
+all_cases=(uac-allow uac-deny secure-second-display drop-mid-prompt helper-killed secure-policy-off
+  secure-view-only lock-unlock)
 
 usage() {
   cat <<'EOF'
@@ -14,22 +14,35 @@ Usage: scripts/crosscheck/secure-desktop.sh --b windows:USER@HOST [options]
   --identity FILE            SSH private key to log in with
   --known-hosts FILE         SSH known_hosts file to use
   --port N                   UDP port the host listens on (default: 47832)
-  --no-uac                   Skip the UAC prompt case
-  --lock                     Also lock the peer; a person unlocks it when asked
-  --helper-killed            Also end the secure-desktop helper during a UAC prompt; the viewer
-                             must get the secure-desktop notice and the session must go on.
-                             Runs last: the helper doesn't come back in that session
-  --second-display           While each screen is up, also select the peer's second display
-                             (vm/add-second-display.sh) and check it shows the secure desktop
-  --timeout SECONDS          How long each step may take (default: 120; 600 with --lock)
+  --cases LIST               Comma-separated subset of the cases below (default: all of them;
+                             secure-second-display only with --second-display)
+  --second-display           The peer has a second display (vm/add-second-display.sh): every
+                             viewer expects two displays and checks both show each screen, and
+                             secure-second-display runs
+  --vm-password FILE         The peer user's password, which lock-unlock types (default:
+                             ~/.dari-check-vm/password)
+  --timeout SECONDS          How long each step may take (default: 120)
   --settle-ms N              How long a secure screen must stay still before its frame is
                              saved (default: dari-check's)
   --out DIR                  Where logs and frames go (default: target/crosscheck/secure-<time>)
+
+Cases (in the order they run):
+  uac-allow                  The viewer answers a UAC prompt with Alt+Y; result.txt is elevated
+  uac-deny                   The viewer answers with Esc; no result.txt
+  secure-second-display      The viewer answers with Alt+Y while the second display is selected
+  drop-mid-prompt            The viewer holds Alt and disconnects; the helper logs that it
+                             released it, and Esc from a new viewer still cancels the prompt
+  helper-killed              The viewer holds F20 and the script ends the helper; the viewer
+                             gets the notice, and no key is down once the prompt is gone
+  secure-policy-off          SecureDesktopControl is off; the viewer sees the prompt, but its
+                             Alt+Y does nothing
+  secure-view-only           The host grants view-only sessions; the viewer's Alt+Y does nothing
+  lock-unlock                The viewer types the peer user's password on the lock screen
 EOF
 }
 
-peer='' ip='' identity='' known_hosts='' port=47832 uac=1 lock=0 helper_killed=0 second_display=0
-timeout='' settle_ms='' out=''
+peer='' ip='' identity='' known_hosts='' port=47832 cases='' second_display=0
+vm_password=$HOME/.dari-check-vm/password timeout=120 settle_ms='' out=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --b) peer=$2; shift 2 ;;
@@ -37,10 +50,9 @@ while [[ $# -gt 0 ]]; do
     --identity) identity=$2; shift 2 ;;
     --known-hosts) known_hosts=$2; shift 2 ;;
     --port) port=$2; shift 2 ;;
-    --no-uac) uac=0; shift ;;
-    --lock) lock=1; shift ;;
-    --helper-killed) helper_killed=1; shift ;;
+    --cases) cases=$2; shift 2 ;;
     --second-display) second_display=1; shift ;;
+    --vm-password) vm_password=$2; shift 2 ;;
     --timeout) timeout=$2; shift 2 ;;
     --settle-ms) settle_ms=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
@@ -56,16 +68,26 @@ if [[ -z $ip ]]; then
   ip=${dest#*@}
   [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pass --b-ip: $ip is not an IPv4 address" >&2; exit 2; }
 fi
-if [[ -z $timeout ]]; then
-  if ((lock)); then timeout=600; else timeout=120; fi
+if [[ -n $cases ]]; then
+  for name in ${cases//,/ }; do
+    [[ " ${all_cases[*]} " == *" $name "* ]] || { echo "unknown case: $name" >&2; exit 2; }
+  done
+  if [[ ",$cases," == *,secure-second-display,* ]] && ((!second_display)); then
+    echo "secure-second-display needs --second-display" >&2
+    exit 2
+  fi
 fi
-((uac || lock || helper_killed)) || { echo "nothing to check: --no-uac without --lock or --helper-killed" >&2; exit 2; }
+selected() {
+  if [[ -n $cases ]]; then [[ ",$cases," == *",$1,"* ]]; else [[ $1 != secure-second-display ]] || ((second_display)); fi
+}
+if selected lock-unlock && [[ ! -r $vm_password ]]; then
+  echo "lock-unlock types the peer user's password: cannot read $vm_password (pass --vm-password)" >&2
+  exit 2
+fi
 
 root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 out=${out:-$root/target/crosscheck/secure-$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$out/frames"
-view_log=$out/view.log
-host_log=$out/host.log
 
 ssh_options=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new
   -o ControlMaster=auto -o "ControlPath=/tmp/dari-secure-%C" -o ControlPersist=120)
@@ -95,13 +117,16 @@ start_secure() {
     -Log "'$dir\\logs\\secure-$1.log'"
 }
 stop_task() { script interactive.ps1 stop -Name "$1" >/dev/null 2>&1 || true; }
+value_of() { tr -d '\r' | sed -n "s/^$1: //p" | head -n 1; }
 
+host_mode='' host_runs=0 host_log='' passwords_used=0
 wait_for_host_line() {
-  local key=$1 deadline=$((SECONDS + $2))
+  local key=$1 nth=$2 deadline=$((SECONDS + $3)) value
   while ((SECONDS < deadline)); do
     fetch "$peer_host_log" "$host_log" 2>/dev/null || true
-    if [[ -f $host_log ]] && grep -q "^$key: " "$host_log"; then
-      sed -n "s/^$key: //p" "$host_log" | head -n 1 | tr -d '\r'
+    value=$(sed -n "s/^$key: //p" "$host_log" 2>/dev/null | sed -n "${nth}p" | tr -d '\r')
+    if [[ -n $value ]]; then
+      printf '%s\n' "$value"
       return 0
     fi
     sleep 1
@@ -109,11 +134,67 @@ wait_for_host_line() {
   return 1
 }
 
-view_pid=''
+ensure_host() {
+  local mode=$1 arguments="'host','--port','$port'"
+  [[ $host_mode == "$mode" ]] && return 0
+  stop_task secure-host
+  host_mode=''
+  host_runs=$((host_runs + 1))
+  host_log=$out/host-$host_runs-$mode.log
+  passwords_used=0
+  [[ $mode == view-only ]] && arguments+=",'--view-only'"
+  script interactive.ps1 start -Name secure-host -RunLevel Limited -Exe "'$dir\\secure-host.cmd'" \
+    -Arguments "$arguments" -Log "'$peer_host_log'" || return 1
+  wait_for_host_line 'Access password' 1 60 >/dev/null || { echo "the installed app did not start hosting"; return 1; }
+  host_mode=$mode
+}
+
+next_password() {
+  local password
+  password=$(wait_for_host_line 'Access password' $((passwords_used + 1)) 60) ||
+    { echo "the host did not issue password $((passwords_used + 1))"; return 1; }
+  passwords_used=$((passwords_used + 1))
+  (umask 077 && printf '%s\n' "$password" >"$out/password")
+}
+
+log_mark() {
+  fetch "$peer_host_log" "$host_log" 2>/dev/null || true
+  wc -l <"$host_log" | tr -d ' '
+}
+winlogon_then_default() {
+  local mark=$1 deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
+    fetch "$peer_host_log" "$host_log" 2>/dev/null || true
+    awk -v mark="$mark" 'NR <= mark { next }
+      /secure-desktop helper: DesktopChanged\(Winlogon\)/ { winlogon = 1 }
+      winlogon && /secure-desktop helper: DesktopChanged\(Default\)/ { found = 1 }
+      END { exit !found }' "$host_log" && return 0
+    sleep 1
+  done
+  echo "the host log shows no DesktopChanged(Winlogon) followed by DesktopChanged(Default)"
+  return 1
+}
+
+view_pid='' view_log=''
+start_viewer() {
+  local name=$1
+  shift
+  next_password || return 1
+  view_log=$out/$name-view.log
+  local view_args=(secure-view "$ip:$port" --password-file "$out/password" --out "$out/frames/$name"
+    --timeout "$timeout" "$@")
+  [[ -n $settle_ms ]] && view_args+=(--settle-ms "$settle_ms")
+  ((second_display)) && view_args+=(--select-display --expect-displays 2)
+  "$root/target/debug/dari-check" "${view_args[@]}" >"$view_log" 2>&1 &
+  view_pid=$!
+  wait_for_viewer READY || return 1
+  rm -f "$out/password"
+}
+
 wait_for_viewer() {
   local line=$1 limit=$((timeout * 4 + 60))
   local deadline=$((SECONDS + limit))
-  echo "waiting for the viewer to print $line"
+  echo "  waiting for the viewer to print $line"
   while ! grep -qx "$line" "$view_log" 2>/dev/null; do
     if ! kill -0 "$view_pid" 2>/dev/null; then
       grep -qx "$line" "$view_log" 2>/dev/null && return 0
@@ -125,11 +206,184 @@ wait_for_viewer() {
   done
 }
 
-cleanup() {
-  if [[ -n $view_pid ]]; then kill "$view_pid" 2>/dev/null || true; fi
+finish_viewer() {
+  local code=0
+  wait "$view_pid" || code=$?
+  view_pid=''
+  grep -E '^(FAIL|RESULT)' "$view_log" | sed 's/^/  view: /' || true
+  ((code == 0)) || { echo "the viewer's checks failed (exit $code)"; return 1; }
+}
+
+show_uac() { secure clear-result >/dev/null && start_secure uac; }
+uac_result() {
+  script interactive.ps1 wait -Name secure-uac -TimeoutSeconds 60 >/dev/null || true
+  secure result | value_of result
+}
+expect_result() {
+  local result
+  result=$(uac_result)
+  [[ $result == "$1" ]] || { echo "result.txt: ${result:-unknown}, expected $1"; return 1; }
+}
+
+answer_case() {
+  local name=$1 keys=$2 expected=$3 mark
+  shift 3
+  ensure_host control || return 1
+  mark=$(log_mark)
+  start_viewer "$name" --screen "$name=$keys" "$@" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  expect_result "$expected" || return 1
+  winlogon_then_default "$mark"
+}
+
+answer_grace=5
+
+unanswered_case() {
+  local name=$1 mode=$2
+  shift 2
+  ensure_host "$mode" || return 1
+  start_viewer "$name" --screen "$name=alt-y" "$@" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  sleep "$answer_grace"
+  secure cancel-uac || return 1
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  expect_result missing
+}
+
+policy_off=0
+policy_off_case() {
+  local code=0
+  echo "  turning SecureDesktopControl off"
+  policy_off=1
+  secure policy -State off || return 1
+  unanswered_case secure-policy-off control || code=$?
+  echo "  turning SecureDesktopControl on"
+  secure policy -State on && policy_off=0
+  return "$code"
+}
+
+helper_release() {
+  local mark=$1 events=$2 deadline=$((SECONDS + 30)) released
+  while ((SECONDS < deadline)); do
+    secure events -After "$mark" | tr -d '\r' >"$events" || true
+    released=$(sed -n 's/.*helper: released \([0-9][0-9]*\) held inputs because.*/\1/p' "$events" | sort -n | tail -n 1)
+    if [[ -n $released ]]; then
+      echo "$released"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+drop_case() {
+  local name=drop-mid-prompt mark log released
+  ensure_host control || return 1
+  log=$(log_mark)
+  mark=$(secure event-mark | value_of mark)
+  start_viewer "$name" --screen "$name=hold-alt-leave" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  finish_viewer || return 1
+  released=$(helper_release "$mark" "$out/$name-events.log") ||
+    { echo "DariService's log shows no 'helper: released N held inputs'"; return 1; }
+  echo "  the helper released $released held inputs"
+  ((released >= 1)) || { echo "the helper released $released held inputs, not at least 1"; return 1; }
+  start_viewer "$name-esc" --screen "$name-esc:present=esc" || return 1
+  wait_for_viewer "SEEN $name-esc" || return 1
+  wait_for_viewer "SENT $name-esc" || return 1
+  wait_for_viewer "BACK $name-esc" || return 1
+  finish_viewer || return 1
+  expect_result missing || return 1
+  winlogon_then_default "$log"
+}
+
+keys_down() {
+  start_secure keys-down >/dev/null || return 1
+  script interactive.ps1 wait -Name secure-keys-down -TimeoutSeconds 60 >/dev/null || return 1
+  fetch "$dir\\logs\\secure-keys-down.log" "$out/keys-down.log" || return 1
+  value_of 'keys down' <"$out/keys-down.log"
+}
+
+helper_killed_case() {
+  local name=helper-killed finish=$out/helper-killed.finish down
+  ensure_host control || return 1
+  rm -f "$finish"
+  start_viewer "$name" --screen "$name:notice=hold-f20" --finish-when "$finish" || return 1
+  show_uac || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  secure kill-helper || return 1
+  wait_for_viewer "NOTICE $name" || return 1
+  secure cancel-uac || return 1
+  wait_for_viewer "BACK $name" || return 1
+  down=$(keys_down) || { echo "could not read the keys down"; return 1; }
+  touch "$finish"
+  finish_viewer || return 1
+  expect_result missing || return 1
+  [[ $down == none ]] || { echo "keys down on Default after the prompt: $down"; return 1; }
+}
+
+unlock() {
+  local name=lock-unlock mark
+  ensure_host control || return 1
+  mark=$(log_mark)
+  start_viewer "$name" --screen "$name=password" --secret-file "$vm_password" || return 1
+  start_secure lock || return 1
+  wait_for_viewer "SEEN $name" || return 1
+  wait_for_viewer "SENT $name" || return 1
+  wait_for_viewer "BACK $name" || return 1
+  finish_viewer || return 1
+  winlogon_then_default "$mark" || return 1
+  script interactive.ps1 running -Name secure-host || { echo "the host task stopped"; return 1; }
+}
+
+lock_case() {
+  local code=0 leaked
+  unlock || code=$?
+  fetch "$peer_host_log" "$host_log" || true
+  leaked=$(grep -lF -f "$vm_password" "$out"/*.log || true)
+  [[ -z $leaked ]] || { echo "the password appears in: $leaked"; return 1; }
+  return "$code"
+}
+
+run_case() {
+  case "$1" in
+    uac-allow) answer_case uac-allow alt-y elevated ;;
+    uac-deny) answer_case uac-deny esc missing ;;
+    secure-second-display) answer_case secure-second-display alt-y elevated --answer-on-other-display ;;
+    drop-mid-prompt) drop_case ;;
+    helper-killed) helper_killed_case ;;
+    secure-policy-off) policy_off_case ;;
+    secure-view-only) unanswered_case secure-view-only view-only --view-only ;;
+    lock-unlock) lock_case ;;
+  esac
+}
+
+recover() {
+  local task
+  if [[ -n $view_pid ]]; then
+    kill "$view_pid" 2>/dev/null || true
+    wait "$view_pid" 2>/dev/null || true
+    view_pid=''
+  fi
   rm -f "$out/password"
   secure cancel-uac >/dev/null 2>&1 || true
-  for name in secure-uac secure-lock secure-host; do stop_task "$name"; done
+  for task in secure-uac secure-lock secure-keys-down; do stop_task "$task"; done
+}
+
+cleanup() {
+  recover
+  if ((policy_off)); then secure policy -State on >/dev/null 2>&1 || echo "turn SecureDesktopControl on again" >&2; fi
+  stop_task secure-host
   ssh "${ssh_options[@]}" -O exit "$dest" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -143,85 +397,16 @@ secure prepare
 
 declare -a summary=()
 failures=0
-pass() { summary+=("PASS $1"); }
-fail() { summary+=("FAIL $1"); failures=$((failures + 1)); }
-
-script interactive.ps1 start -Name secure-host -RunLevel Limited -Exe "'$dir\\secure-host.cmd'" \
-  -Arguments "'host','--port','$port'" -Log "'$peer_host_log'"
-password=$(wait_for_host_line 'Access password' 60) || { echo "the installed app did not start hosting" >&2; exit 1; }
-(umask 077 && printf '%s\n' "$password" >"$out/password")
-
-screens=()
-((uac)) && screens+=(--screen uac)
-((lock)) && screens+=(--screen lock)
-((helper_killed)) && screens+=(--screen helper-killed:notice)
-view_args=(secure-view "$ip:$port" --password-file "$out/password" --out "$out/frames" --timeout "$timeout"
-  "${screens[@]}")
-[[ -n $settle_ms ]] && view_args+=(--settle-ms "$settle_ms")
-((second_display)) && view_args+=(--select-display --expect-displays 2)
-"$root/target/debug/dari-check" "${view_args[@]}" >"$view_log" 2>&1 &
-view_pid=$!
-
-prompt_case() {
-  local label=$1 meanwhile=${2:-}
-  start_secure uac || return 1
-  wait_for_viewer "SEEN $label" || return 1
-  if [[ $meanwhile == kill-helper ]]; then
-    secure kill-helper || return 1
-    wait_for_viewer "NOTICE $label" || return 1
-  fi
-  secure cancel-uac
-  wait_for_viewer "BACK $label" || return 1
-  stop_task secure-uac
-}
-
-lock_case() {
-  start_secure lock || return 1
-  wait_for_viewer 'SEEN lock' || return 1
+for name in "${all_cases[@]}"; do
+  selected "$name" || continue
   echo
-  echo ">>> Unlock $peer in its window now (the UTM window for the VM). The viewer waits up to ${timeout}s."
-  echo
-  wait_for_viewer 'BACK lock' || return 1
-  stop_task secure-lock
-}
-
-if wait_for_viewer READY; then
-  rm -f "$out/password"
-  ran=1
-  if ((uac)); then
-    echo "== uac"
-    if prompt_case uac; then pass uac; else fail uac; ran=0; fi
-  fi
-  if ((ran && lock)); then
-    echo "== lock"
-    if lock_case; then pass lock; else fail lock; ran=0; fi
-  fi
-  if ((ran && helper_killed)); then
-    echo "== helper-killed"
-    if prompt_case helper-killed kill-helper; then pass helper-killed; else fail helper-killed; ran=0; fi
-  fi
-else
-  fail 'the viewer connects and saves a baseline'
-  ran=0
-fi
-((ran)) || kill "$view_pid" 2>/dev/null || true
-
-view_code=0
-wait "$view_pid" || view_code=$?
-view_pid=''
-if ((view_code == 0)); then pass "the viewer's checks"; else fail "the viewer's checks (exit $view_code)"; fi
-grep -E '^(FAIL|RESULT)' "$view_log" | sed 's/^/  view: /' || true
-
-stop_task secure-host
-fetch "$peer_host_log" "$host_log" || true
-desktops=(Winlogon)
-((uac || lock)) && desktops+=(Default)
-for desktop in "${desktops[@]}"; do
-  count=$(grep -c "secure-desktop helper: DesktopChanged($desktop)" "$host_log" 2>/dev/null || true)
-  if ((${count:-0} > 0)); then
-    pass "the host log shows the helper's DesktopChanged($desktop) (${count}x)"
+  echo "== $name"
+  if run_case "$name"; then
+    summary+=("PASS $name")
   else
-    fail "the host log shows the helper's DesktopChanged($desktop)"
+    summary+=("FAIL $name")
+    failures=$((failures + 1))
+    recover
   fi
 done
 

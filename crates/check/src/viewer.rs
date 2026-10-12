@@ -31,7 +31,7 @@ const DEFAULT_PORT: u16 = 47821;
 /// Pause between pointer moves, so the host reads each landing before the next move.
 const POINTER_PAUSE: Duration = Duration::from_millis(400);
 /// Pause between key events, so the host's input method sees each one.
-const KEY_PAUSE: Duration = Duration::from_millis(60);
+pub(crate) const KEY_PAUSE: Duration = Duration::from_millis(60);
 /// How long the viewer waits for a new frame before asking the host for a keyframe.
 pub(crate) const KEYFRAME_AFTER: Duration = Duration::from_secs(1);
 
@@ -320,13 +320,13 @@ async fn type_keys(viewer: &ViewerHandle, keys: &str) {
     }
 }
 
-async fn tap(viewer: &ViewerHandle, key: KeyCode) {
+pub(crate) async fn tap(viewer: &ViewerHandle, key: KeyCode) {
     press(viewer, key, true).await;
     press(viewer, key, false).await;
 }
 
 /// Sends one key event and gives the host's input method time to handle it.
-async fn press(viewer: &ViewerHandle, key: KeyCode, pressed: bool) {
+pub(crate) async fn press(viewer: &ViewerHandle, key: KeyCode, pressed: bool) {
     viewer.send_input(InputEvent::Key { key, pressed });
     tokio::time::sleep(KEY_PAUSE).await;
 }

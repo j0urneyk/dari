@@ -9,21 +9,21 @@ dari (app) ──► dari-session ──┬──► dari-net ───┐
                               ├──► dari-media ─┼──► dari-proto
                               └──► dari-input ─┘
 dari-relay ──► dari-net, dari-proto
-dari-winsvc (Windows only) ──► dari-proto
+dari-winsvc (Windows only) ──► dari-input, dari-proto
 ```
 
 ## Crates
 
 | Crate | Path | Responsibility | Key dependencies |
 | --- | --- | --- | --- |
-| `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O | serde, postcard, tokio-util |
+| `dari-proto` | `crates/proto` | Message types, protocol version, length-bounded framing, message validation. No I/O but reading the secure-desktop policy from the Windows registry | serde, postcard, tokio-util, windows-registry (Windows) |
 | `dari-net` | `crates/net` | Device certificates, one-time passwords, SPAKE2 handshake, attempt throttling, QUIC endpoints, mDNS discovery, relay client | quinn, rustls (ring), rcgen, spake2, mdns-sd |
 | `dari-media` | `crates/media` | Display enumeration and capture, downscaling, H.264 encode/decode, the capture thread, system audio capture, Opus, playback | xcap, objc2 (ScreenCaptureKit, VideoToolbox), windows (Windows.Graphics.Capture, Direct3D 11, Media Foundation), fast_image_resize, openh264, yuv, cpal, opus-rs |
 | `dari-input` | `crates/input` | Input injection, held-key tracking, ⌘↔Ctrl mapping, Windows DPI and cursor handling | enigo, windows |
 | `dari-session` | `crates/session` | Host service, host sessions (approval, capture, input, clipboard, file transfer), viewer sessions | tokio, arboard |
 | `dari-relay` | `crates/relay` | Rendezvous (ID issuing) and UDP forwarding server binary | quinn, tokio |
 | `dari` | `crates/app` | gpui-kit desktop app and the headless CLI (`host`, `connect`) | gpui-kit, clap, directories, toml |
-| `dari-winsvc` | `crates/winsvc` | `dari-service.exe`, Windows only: the `DariService` LocalSystem service, the SYSTEM helper it starts for a session, and the `install` and `uninstall` commands the installer runs (see [the secure-desktop helper](#the-secure-desktop-helper-windows)). No network code | windows-service, windows |
+| `dari-winsvc` | `crates/winsvc` | `dari-service.exe`, Windows only: the `DariService` LocalSystem service, the SYSTEM helper it starts for a session, the `install` and `uninstall` commands the installer runs, and `policy on` and `policy off`, which write the `SecureDesktopControl` policy (see [the secure-desktop helper](#the-secure-desktop-helper-windows)). No network code | windows-service, windows, windows-registry |
 
 ### External dependencies
 
@@ -294,7 +294,8 @@ than through a manifest). When the display changes, the input coordinate space f
 Windows.Graphics.Capture and `SendInput` can't reach the Winlogon desktop, which shows UAC prompts, the lock screen,
 and the Ctrl+Alt+Del screen. Two more processes, both `dari-service.exe`, can. The
 [secure desktop design](design/secure-desktop.md) describes the whole plan. The helper reports which desktop receives
-input and captures every desktop other than `Default` with DXGI Desktop Duplication. Input on Winlogon comes later.
+input, captures every desktop other than `Default` with DXGI Desktop Duplication, and injects the viewer's input
+on `Winlogon`. Ctrl+Alt+Del comes later (#48).
 
 ```text
 dari.exe (user, medium integrity)
@@ -302,7 +303,8 @@ dari.exe (user, medium integrity)
   │                                   vets the client, starts the helper
   └── \\.\pipe\dari-helper-<random> ◄── dari-service.exe helper (SYSTEM, the user's session)
         ▲                               reports the input desktop every 100 ms,
-        │                               duplicates the selected display off Default
+        │                               duplicates the selected display off Default,
+        │                               injects the app's OsInput off Default
         └── frame section (read-only in dari.exe) ◄── the helper writes RGBA frames
 ```
 
@@ -334,8 +336,10 @@ The session owns the link, and each capture thread borrows a read-only `SecureDe
 display the viewer watches, before the first capture and before each display switch, and the link forwards it to the
 helper as `SelectDisplay`.
 
-The helper runs two threads. The main thread is the pipe's only reader and passes the app's messages to the screen
-thread. The screen thread is the pipe's only writer, so the pipe's order is the order things happened: a `Frame`
+The helper runs two threads, and a third for input when it was started with input (see
+[Answering the secure desktop](#answering-the-secure-desktop)). The main thread is the pipe's only reader and passes
+the app's messages to the screen thread. The screen thread is the pipe's only writer, so the pipe's order is the
+order things happened: a `Frame`
 after `DesktopChanged(Winlogon)` shows Winlogon. The screen thread polls the input desktop every 100 ms
 (`ScreenMachine` in `screen.rs`). On any desktop but `Default` it attaches to that desktop with `SetThreadDesktop`,
 finds the DXGI output whose `HMONITOR` matches the selected display on any adapter, creates a Direct3D 11 device on
@@ -383,11 +387,49 @@ never shown. While the helper is connected, the platform capturer's own `SecureD
 helper reports every switch. Before the helper connects and after its link ends, that report passes through, and the
 viewer gets PR 36's notice.
 
+#### Answering the secure desktop
+
+The host session's input thread runs one `InputSession` over a `Router` backend (`input_route.rs`).
+`HostPlatform::open_input` still returns the platform's backend, and the router holds it next to a `SecureInput`
+handle on the link. The handle doesn't keep the link open, so dropping the link still stops the helper. Before each
+input command, `follow_route` reads the link's route. While the helper is connected and reports `Winlogon`, input goes
+to the helper. Otherwise it goes to the platform's backend. When the target changes,
+`InputSession::retarget` releases every held key and button through the old target first. Windows clears key state
+when the input desktop switches, so releasing at the next command instead of at the switch leaves nothing down. To
+the helper, the router sends each `InputBackend` call as `OsInput` (`Move` in physical virtual-desktop pixels,
+`Button`, `Scroll`, `Key`, `Text`), which the link's task writes to the pipe as `AppToHelper::Input`. A view-only
+session has no input thread, so it routes nothing.
+
+The helper makes itself Per-Monitor V2 DPI aware before it starts any thread, as the app does. With input, its main
+thread hands each `Input` to the input thread over a queue of 64. When the queue is full, the main thread waits, so
+the pipe pushes back on the app and no input is lost. The input
+thread (`injector.rs`, which has no `unsafe` and is tested on every platform) checks the input desktop every 100 ms
+while idle and before each event. When the desktop changes, it opens a new handle with only
+`DESKTOP_JOURNALPLAYBACK`, attaches to it with `SetThreadDesktop`, and forgets what its `Injector` holds without injecting anything, because
+Windows cleared key state at the switch. It replays
+input through the `Injector` and `EnigoBackend` only while it is attached to `Winlogon`, and
+drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits while the thread is attached to
+`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. A helper started without input has no input thread
+and drops every `Input`.
+
+The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request
+through `SecureDesktopControl::read` (`crates/proto/src/registry.rs`, Windows only, through the safe
+`windows-registry` API). A missing value or a DWORD of 1 is on, and anything else is off. At
+off, `admit` turns `StartHelper { input: true }` into `input: false` and refuses `SendSas` with `PolicyOff`.
+`dari-service.exe policy on|off` writes the value and needs an administrator. The host settings' switch
+(`secure_desktop/win/policy.rs`, re-exported from `dari-session`) reads the value through the same function and
+appears only when
+`dari-service.exe` sits beside `dari.exe`. A change runs `dari-service.exe policy on|off` with `ShellExecuteExW` and
+the `runas` verb on a background thread, waits for the UAC prompt and the command, and reads the value again.
+
 Both pipes carry `dari-proto`'s local messages (`crates/proto/src/local.rs`) in 64 KiB postcard frames, and every
 message passes `Validate`. The service and the helper write to the Application event log under the source
-`DariService`: the service's start, a pipe it can't create, each helper it starts and each client it refuses (at
-most 10 refusals a minute; more are closed without a reply or a log entry), and the helper's user, integrity level,
-session, privileges, and why it exited. `dari-service.exe` is built without a console, and a test reads its import
+`DariService`, which `dari-service.exe install` registers with `%SystemRoot%\System32\EventCreate.exe` as its
+message file and `uninstall` removes it. They log the service's start, a pipe it can't create, each helper it starts
+and each client it refuses (at most 10 refusals a minute; more are closed without a reply or a log entry), and the
+helper's user, integrity level, session, privileges, and why it exited. The entry for a helper started with input
+is a warning with ID 3, and each `policy on|off` writes ID 4, naming the user who changed the value.
+`dari-service.exe` is built without a console, and a test reads its import
 table to check that it never links `ws2_32.dll` or another Windows networking DLL.
 
 ## Viewer flow

@@ -29,9 +29,10 @@ use tracing::{debug, info, warn};
 use crate::SessionEndReason;
 use crate::clipboard::ClipboardSync;
 use crate::host::{ApprovalDecision, ApprovalRequest, HostEvent, HostPolicy};
+use crate::input_route::{Router, follow_route};
 use crate::platform::HostPlatform;
 use crate::secure_desktop::{
-    SecureDesktopEvent, SecureDesktopLink, SecureDesktopView, TwoSourceCapturer,
+    SecureDesktopEvent, SecureDesktopLink, SecureDesktopView, SecureInput, TwoSourceCapturer,
 };
 use crate::transfer::{
     PEER_FILE_STREAMS, TransferCommand, TransferPolicy, TransferStep, Transfers,
@@ -495,7 +496,9 @@ impl HostSession {
         if let Some(display) = self.displays.first() {
             let geometry = geometry(display);
             if control_allowed {
-                let (input, availability) = spawn_input_thread(self.platform.clone(), geometry);
+                let secure = self.secure_desktop.as_ref().map(SecureDesktopLink::input);
+                let (input, availability) =
+                    spawn_input_thread(self.platform.clone(), geometry, secure);
                 self.status.input = match availability {
                     Some(availability) => availability.await.unwrap_or(Availability::Unavailable),
                     None => Availability::Unavailable,
@@ -1005,6 +1008,7 @@ impl Drop for InputQueue {
 fn spawn_input_thread(
     platform: Arc<dyn HostPlatform>,
     geometry: DisplayGeometry,
+    secure: Option<SecureInput>,
 ) -> (Option<InputQueue>, Option<oneshot::Receiver<Availability>>) {
     let (commands, mut queue) = mpsc::channel(INPUT_QUEUE);
     let stopped = Arc::new(AtomicBool::new(false));
@@ -1029,11 +1033,12 @@ fn spawn_input_thread(
                     return;
                 }
             };
-            let mut session = InputSession::new(backend, geometry);
+            let mut session = InputSession::new(Router::new(backend, secure), geometry);
             while let Some(command) = queue.blocking_recv() {
                 if thread_stopped.load(Ordering::Acquire) {
                     break;
                 }
+                follow_route(&mut session);
                 match command {
                     InputCommand::Event(event) => {
                         if let Err(error) = session.apply(&event) {

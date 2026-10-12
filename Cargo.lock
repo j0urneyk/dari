@@ -1828,6 +1828,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio-util",
  "unicode-normalization",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
@@ -1881,11 +1882,13 @@ name = "dari-winsvc"
 version = "0.0.3"
 dependencies = [
  "bytes",
+ "dari-input",
  "dari-proto",
  "object",
  "serde",
  "tokio-util",
  "windows 0.62.2",
+ "windows-registry 0.6.1",
  "windows-service",
 ]
 
