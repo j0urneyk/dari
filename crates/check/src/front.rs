@@ -1,15 +1,33 @@
-//! What is in front on a Windows desktop.
+//! What is in front on a Windows desktop. The Start menu and its search sit above always-on-top
+//! windows, so while one is open it takes the clicks and keys meant for the input window.
 
 use std::path::Path;
 
+use enigo::{Direction, Enigo, Key, Keyboard as _, Settings};
 use windows::Win32::Foundation::{CloseHandle, HWND, POINT};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GA_ROOT, GetAncestor, GetCursorPos, GetWindowTextW, GetWindowThreadProcessId, WindowFromPoint,
+    GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowTextW,
+    GetWindowThreadProcessId, WindowFromPoint,
 };
 use windows::core::PWSTR;
+
+/// The programs that draw the Start menu and its search.
+const START_MENU: [&str; 2] = ["StartMenuExperienceHost.exe", "SearchHost.exe"];
+
+/// Closes the Start menu with Escape, as a person would, if it has the keyboard. Returns whether
+/// it did.
+pub(crate) fn close_start_menu() -> bool {
+    // SAFETY: takes no arguments.
+    let foreground = unsafe { GetForegroundWindow() };
+    if !program(foreground).is_some_and(|name| START_MENU.contains(&name.as_str())) {
+        return false;
+    }
+    Enigo::new(&Settings::default())
+        .is_ok_and(|mut keys| keys.key(Key::Escape, Direction::Click).is_ok())
+}
 
 /// The program and title of the top-level window under the pointer, as in
 /// `SearchHost.exe "Search"`.

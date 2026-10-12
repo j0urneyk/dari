@@ -92,6 +92,11 @@ impl ApplicationHandler<Finished> for Probe {
         if self.window.is_some() {
             return;
         }
+        // The Start menu sits above always-on-top windows.
+        #[cfg(windows)]
+        if crate::front::close_start_menu() {
+            println!("closed the Start menu, which would cover the input window");
+        }
         // Centred on the primary display, so the viewer's click at the display's centre lands in
         // it; on top, so nothing else on the host takes the click.
         let mut attributes = Window::default_attributes()
