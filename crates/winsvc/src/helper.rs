@@ -6,12 +6,12 @@ use std::thread::{self, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
 use dari_input::EnigoBackend;
-use dari_proto::{AppToHelper, HelperToApp, OsInput};
+use dari_proto::{AppToHelper, HelperToApp, OsInput, POLICY_VALUE, SecureDesktopControl};
 
 use crate::channel::{AppChannel, Offered, Outbox, SectionFactory};
 use crate::command::HelperArgs;
 use crate::frames::{MessageReader, write_message};
-use crate::injector::{self, Follower, Note};
+use crate::injector::{self, Ended, Follower, Note};
 use crate::screen::{DesktopWorld, ScreenEvent, ScreenMachine};
 use crate::win32::{
     AppSections, DxgiWorld, EventLog, InheritedProcess, InputThreadDesktop, Pipe, has_exited,
@@ -85,11 +85,25 @@ fn inject(inputs: &mpsc::Receiver<OsInput>) -> usize {
         }
     };
     let follower = Follower::new(InputThreadDesktop::default(), backend);
-    injector::run(follower, inputs, |note| {
+    let ended = injector::run(follower, SecureDesktopControl::read, inputs, |note| {
         if let Some(log) = log {
             log.info(&describe(&note));
         }
-    })
+    });
+    match ended {
+        Ended::HungUp { released } => released,
+        Ended::Revoked { forgot } => {
+            if let Some(log) = log {
+                log.input_revoked(&format!(
+                    "helper pid {}: {POLICY_VALUE} reads off, so the viewer's input no longer \
+                     reaches the secure desktop for the rest of this session. It forgot {forgot} \
+                     held inputs without releasing them. The viewer still sees the secure desktop.",
+                    std::process::id()
+                ));
+            }
+            0
+        }
+    }
 }
 
 fn describe(note: &Note) -> String {
@@ -297,10 +311,12 @@ pub(crate) fn server_is_app(pipe: &Pipe, app: &impl AsRawHandle) -> io::Result<b
 mod tests {
     use std::sync::Mutex;
 
+    use dari_input::RecordingBackend;
     use dari_proto::{InputDesktop, KeyCode, NamedKey};
 
     use super::*;
     use crate::dxgi_result::Hresult;
+    use crate::injector::InputDesk;
     use crate::pointer::RawPointerShape;
     use crate::screen::{AcquiredFrame, Duplicate, Duplication, Size};
     use crate::test_support::test_pipe;
@@ -445,6 +461,57 @@ mod tests {
             unreachable!()
         };
         assert_eq!(*replayed.lock().unwrap(), [alt]);
+    }
+
+    #[derive(Debug)]
+    struct WinlogonDesk<'a>(&'a Mutex<Vec<InputDesktop>>);
+
+    impl InputDesk for WinlogonDesk<'_> {
+        fn input_desktop(&mut self) -> Option<InputDesktop> {
+            Some(InputDesktop::Winlogon)
+        }
+
+        fn attach(&mut self, desktop: &InputDesktop) -> Result<(), String> {
+            self.0.lock().unwrap().push(desktop.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_revoked_input_thread_leaves_the_screen_serving() {
+        let (server, path) = test_pipe();
+        let client = Pipe::open(&path).unwrap();
+        let this = open_client_process(std::process::id()).unwrap();
+        let app = InheritedProcess::adopt(this.as_raw_handle() as usize).unwrap();
+        let attached = Mutex::new(Vec::new());
+        let ended = Mutex::new(None);
+        let input = |inputs: &mpsc::Receiver<OsInput>| {
+            let follower = Follower::new(WinlogonDesk(&attached), RecordingBackend::default());
+            let revoked = injector::run(follower, || SecureDesktopControl::Off, inputs, |_| {});
+            *ended.lock().unwrap() = Some(revoked);
+            0
+        };
+        thread::scope(|scope| {
+            let helper = scope.spawn(|| converse(&client, &app, || NoOutputs, Some(input), None));
+            let deadline = Some(Instant::now() + Duration::from_secs(10));
+            for _ in 0..2 * QUEUED_INPUTS {
+                write_message(&server, &alt_down(), deadline).unwrap();
+            }
+            write_message(&server, &AppToHelper::SelectDisplay(5), deadline).unwrap();
+            let mut replies = MessageReader::<HelperToApp>::new();
+            assert_eq!(
+                replies.read(&server, deadline).unwrap(),
+                Some(HelperToApp::DesktopChanged(InputDesktop::Winlogon))
+            );
+            assert_eq!(
+                replies.read(&server, deadline).unwrap(),
+                Some(HelperToApp::ScreenUnavailable { display: 5 })
+            );
+            drop(server);
+            assert_eq!(helper.join().unwrap(), Ok("the app closed its pipe"));
+        });
+        assert_eq!(*ended.lock().unwrap(), Some(Ended::Revoked { forgot: 0 }));
+        assert_eq!(*attached.lock().unwrap(), []);
     }
 
     #[test]

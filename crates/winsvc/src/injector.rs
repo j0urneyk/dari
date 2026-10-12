@@ -2,7 +2,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dari_input::{Injector, InputBackend};
-use dari_proto::{InputDesktop, OsInput};
+use dari_proto::{InputDesktop, OsInput, SecureDesktopControl};
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -99,18 +99,50 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
             }
         }
     }
+
+    /// Forgets what it holds on any desktop and injects nothing. Releasing could finish what the
+    /// viewer started: a button up over **Yes** completes the click, and a Space up activates the
+    /// focused button. Returns how many inputs it forgot.
+    pub(crate) fn revoke(mut self) -> usize {
+        self.injector.forget()
+    }
 }
 
+/// Why the input thread stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The pipe reader hung up. `released` inputs held on `Winlogon` were released there.
+    HungUp { released: usize },
+    /// `SecureDesktopControl` read off. The `forgot` held inputs were forgotten, not released.
+    Revoked { forgot: usize },
+}
+
+/// Follows the input desktop and replays `inputs` on `Winlogon` until the reader hangs up or
+/// `policy` reads off. `policy` is read after every receive, input or timeout, so an off value
+/// stops input within one `FOLLOW_INTERVAL` plus one replay, however busy the app keeps the
+/// channel.
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
+    mut policy: impl FnMut() -> SecureDesktopControl,
     inputs: &mpsc::Receiver<OsInput>,
     mut note: impl FnMut(Note),
-) -> usize {
+) -> Ended {
     loop {
-        let input = match inputs.recv_timeout(FOLLOW_INTERVAL) {
+        let received = inputs.recv_timeout(FOLLOW_INTERVAL);
+        // Before `finish` too: under an off policy the helper injects nothing, releases included.
+        if policy() == SecureDesktopControl::Off {
+            return Ended::Revoked {
+                forgot: follower.revoke(),
+            };
+        }
+        let input = match received {
             Ok(input) => Some(input),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return follower.finish(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Ended::HungUp {
+                    released: follower.finish(),
+                };
+            }
         };
         follower
             .step(input.as_ref())
@@ -126,6 +158,7 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
+    use SecureDesktopControl::{Off, On};
     use dari_input::{InjectError, RecordedAction, RecordingBackend};
     use dari_proto::{KeyCode, MouseButton, NamedKey};
 
@@ -387,7 +420,16 @@ mod tests {
         let notes = Arc::new(Mutex::new(Vec::new()));
         let thread = {
             let notes = notes.clone();
-            thread::spawn(move || run(follower, &received, |note| notes.lock().unwrap().push(note)))
+            thread::spawn(move || {
+                run(
+                    follower,
+                    || On,
+                    &received,
+                    |note| {
+                        notes.lock().unwrap().push(note);
+                    },
+                )
+            })
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         while !timeline
@@ -407,7 +449,7 @@ mod tests {
             })
             .unwrap();
         drop(inputs);
-        assert_eq!(thread.join().unwrap(), 2);
+        assert_eq!(thread.join().unwrap(), Ended::HungUp { released: 2 });
         assert_eq!(
             taken(&timeline),
             [
@@ -419,5 +461,101 @@ mod tests {
             ]
         );
         assert_eq!(*notes.lock().unwrap(), []);
+    }
+
+    /// Like `ScriptedDesk`: each read takes the next value, and the last one sticks.
+    fn scripted(controls: Vec<SecureDesktopControl>) -> impl FnMut() -> SecureDesktopControl {
+        let mut controls = VecDeque::from(controls);
+        let mut last = On;
+        move || {
+            if let Some(next) = controls.pop_front() {
+                last = next;
+            }
+            last
+        }
+    }
+
+    /// A receiver holding `inputs`, whose sender has hung up.
+    fn queued(inputs: Vec<OsInput>) -> mpsc::Receiver<OsInput> {
+        let (sender, received) = mpsc::sync_channel(inputs.len());
+        for input in inputs {
+            sender.send(input).unwrap();
+        }
+        received
+    }
+
+    fn left(pressed: bool) -> OsInput {
+        OsInput::Button {
+            button: MouseButton::Left,
+            pressed,
+        }
+    }
+
+    #[test]
+    fn turning_the_policy_off_forgets_held_input_without_releasing_it() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = queued(vec![alt(true), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let mut notes = Vec::new();
+        let ended = run(follower, scripted(vec![On, On, Off]), &received, |note| {
+            notes.push(note)
+        });
+        assert_eq!(ended, Ended::Revoked { forgot: 2 });
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+        assert_eq!(notes, []);
+    }
+
+    #[test]
+    fn an_off_policy_at_the_first_read_injects_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = queued(vec![alt(true)]);
+        let ended = run(follower, scripted(vec![Off]), &received, |_| {});
+        assert_eq!(ended, Ended::Revoked { forgot: 0 });
+        assert_eq!(taken(&timeline), []);
+    }
+
+    #[test]
+    fn an_off_policy_when_the_reader_hangs_up_forgets_instead_of_releasing() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = queued(vec![alt(true)]);
+        let ended = run(follower, scripted(vec![On, Off]), &received, |_| {});
+        assert_eq!(ended, Ended::Revoked { forgot: 1 });
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(ALT, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_idle_thread_notices_the_policy_within_a_second() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let (inputs, received) = mpsc::sync_channel::<OsInput>(1);
+        let (ended, end) = mpsc::channel();
+        thread::spawn(move || {
+            let _sent = ended.send(run(
+                follower,
+                scripted(vec![On, On, Off]),
+                &received,
+                |_| {},
+            ));
+        });
+        assert_eq!(
+            end.recv_timeout(Duration::from_secs(1)),
+            Ok(Ended::Revoked { forgot: 0 })
+        );
+        assert_eq!(
+            taken(&timeline),
+            [Happened::Attached(InputDesktop::Winlogon)]
+        );
+        drop(inputs);
     }
 }
