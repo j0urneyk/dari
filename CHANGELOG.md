@@ -43,6 +43,8 @@ All notable changes to this project are documented here. The format follows
   instead of showing a frozen picture.
 - A second User Account Control prompt that follows an unchanged screen is reported too, instead of leaving the viewer
   on a frozen picture.
+- From a Mac, a key you release while ⌘ is down, such as the A of ⌘A, now goes up on the host too. It used to stay
+  pressed there until the viewer window lost focus.
 
 ## [0.0.3] - 2026-10-08
 

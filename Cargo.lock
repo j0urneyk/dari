@@ -1706,6 +1706,7 @@ name = "dari"
 version = "0.0.3"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "clap",
  "dari-input",
  "dari-media",
@@ -1721,6 +1722,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
  "rpassword",
  "serde",
  "sha2 0.10.9",

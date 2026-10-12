@@ -499,7 +499,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) and the overlays for waiting, approval, and a finished session |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
-| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode`, and on macOS, telling a modifier chord macOS consumed from a deliberate modifier tap |
+| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode`, and on macOS, telling a modifier chord macOS consumed from a deliberate modifier tap and handing windows the key releases AppKit drops while ⌘ is down |
 | `input_source.rs` (macOS) | Reads the Mac's selected keyboard input source and decides when a switch of it becomes a Hangul/English tap on the host |
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
@@ -521,6 +521,10 @@ gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and co
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window
 loses focus, every held key, button, and modifier is released so nothing stays pressed on the remote side.
 
+AppKit never sends a window the release of a key let go while ⌘ is down, so ⌘A would leave A pressed on the host
+until the window lost focus. At launch the app adds a local key-up monitor (`keymap::deliver_command_key_ups`) that
+hands those releases to their window itself, as winit and GLFW do.
+
 macOS consumes the keys that switch its input source (Caps Lock, Ctrl+Space, the Globe key), so no Hangul/English
 key ever reaches the viewer. Instead, the viewer subscribes to GPUI's `on_keyboard_layout_change`, which the macOS
 platform fires on `NSTextInputContextKeyboardSelectionDidChangeNotification`, and reads the selected source from
@@ -534,11 +538,17 @@ macOS also keeps the key of some modifier chords for itself (Ctrl+Space, ⌘Spac
 only the modifiers go down and up. Forwarded as they are, they reach the host as a lone modifier tap. On Windows a
 lone Win tap opens Start, and with shortcut translation on, the Mac's Control becomes Win. The input source
 notification arrives only after Control is up (5 to 210 ms later in testing), too late to put the Hangul key
-inside the chord. Instead, on every modifier change the viewer asks Core Graphics how long ago a key went down at the
-HID level (`CGEventSourceSecondsSinceLastEventType`), which counts the keys macOS kept. If a key went down while the
-modifiers were held and none reached the viewer, it taps F20, a key no shortcut uses, before the modifiers come up.
+inside the chord. Instead, on every modifier change the viewer asks Core Graphics how long ago a key went down and how
+long ago a modifier changed at the HID level (`CGEventSourceSecondsSinceLastEventType`). These ages count the keys
+macOS kept, and they don't depend on when the main thread delivers the event. The chord starts when the HID level saw
+the first modifier go down, because a busy main thread delivers that modifier late. At 110 frames per second it
+arrived up to 17 ms late, after the key of a synthetic Ctrl+Space. If a key went down between that start and the
+current modifier change, and none reached the viewer, the viewer taps F20, a key no shortcut uses, before the modifiers
+come up. This holds while the delivery lag is shorter than the time the modifier is held. In testing, a person held
+Control for 400 ms or more, and synthetic input held it for about 30 ms.
 A deliberate modifier tap has no key under it and still reaches the host as a tap. Releasing everything when the
-window loses focus takes the same path, so the record of held modifiers starts over.
+window loses focus takes the same path, so the record of held modifiers starts over. That release happens while the
+modifiers can still be down, so the viewer bounds it by the current time instead of the last HID modifier change.
 
 ## Relay
 

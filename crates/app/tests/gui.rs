@@ -51,7 +51,8 @@ mod macos {
     use gpui_kit::*;
 
     use dari::test_support::{
-        AppAssets, AppState, Home, Settings, TokioRuntime, apply_theme, open_viewer_window,
+        AppAssets, AppState, HidEvents, Home, Settings, TokioRuntime, apply_theme,
+        open_viewer_window,
     };
 
     const DISPLAY: DisplayInfo = DisplayInfo {
@@ -442,8 +443,28 @@ mod macos {
             control: true,
             ..Modifiers::default()
         };
-        let long_ago = Duration::from_secs(60);
-        let just_now = Duration::ZERO;
+        let now = Instant::now();
+        let ago = |millis| now - Duration::from_millis(millis);
+        let pressed = HidEvents {
+            key_down: None,
+            modifier_change: ago(30),
+        };
+        let pressed_after_key = HidEvents {
+            key_down: Some(ago(15)),
+            modifier_change: ago(25),
+        };
+        let released = HidEvents {
+            key_down: None,
+            modifier_change: now,
+        };
+        let released_after_key = HidEvents {
+            key_down: Some(ago(15)),
+            modifier_change: now,
+        };
+        let released_before_key = HidEvents {
+            key_down: Some(ago(5)),
+            modifier_change: ago(10),
+        };
         let control_key = |pressed| RecordedAction::Key(KeyCode::Named(NamedKey::Control), pressed);
         let mask_key = |pressed| {
             RecordedAction::Key(
@@ -454,11 +475,15 @@ mod macos {
         let recorded_before = actions.lock().unwrap().len();
         cx.update(|cx| {
             view.update(cx, |view, _| {
-                view.modifiers_changed(control, long_ago);
-                view.modifiers_changed(Modifiers::default(), just_now);
-                view.modifiers_changed(control, long_ago);
-                view.modifiers_changed(Modifiers::default(), long_ago);
-                view.modifiers_changed(control, long_ago);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
+                view.modifiers_changed(control, pressed_after_key);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released);
+                view.modifiers_changed(control, pressed);
+                view.modifiers_changed(Modifiers::default(), released_before_key);
+                view.modifiers_changed(control, pressed);
             });
         });
         let control_a = Keystroke {
@@ -485,13 +510,19 @@ mod macos {
         .unwrap();
         cx.update(|cx| {
             view.update(cx, |view, _| {
-                view.modifiers_changed(Modifiers::default(), just_now);
+                view.modifiers_changed(Modifiers::default(), released_after_key);
             });
         });
         let expected = [
             control_key(true),
             mask_key(true),
             mask_key(false),
+            control_key(false),
+            control_key(true),
+            mask_key(true),
+            mask_key(false),
+            control_key(false),
+            control_key(true),
             control_key(false),
             control_key(true),
             control_key(false),
@@ -968,8 +999,124 @@ mod macos {
         drop(host);
     }
 
+    #[allow(
+        unsafe_code,
+        reason = "defines an NSView that counts key releases, and creates its window"
+    )]
+    mod appkit {
+        use std::cell::Cell;
+
+        use objc2::rc::Retained;
+        use objc2::{DefinedClass as _, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+        use objc2_app_kit::{
+            NSApplication, NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventType, NSView,
+            NSWindow, NSWindowStyleMask,
+        };
+        use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+        define_class!(
+            #[unsafe(super(NSView))]
+            #[thread_kind = MainThreadOnly]
+            #[ivars = Cell<u32>]
+            struct KeyUpCounter;
+
+            impl KeyUpCounter {
+                #[unsafe(method(acceptsFirstResponder))]
+                fn accepts_first_responder(&self) -> bool {
+                    true
+                }
+
+                #[unsafe(method(keyDown:))]
+                fn key_down(&self, _event: &NSEvent) {}
+
+                #[unsafe(method(keyUp:))]
+                fn key_up(&self, _event: &NSEvent) {
+                    self.ivars().set(self.ivars().get() + 1);
+                }
+            }
+        );
+
+        impl KeyUpCounter {
+            fn new(main_thread: MainThreadMarker) -> Retained<Self> {
+                let this = Self::alloc(main_thread).set_ivars(Cell::new(0));
+                // SAFETY: `init` is NSView's designated initializer.
+                unsafe { msg_send![super(this), init] }
+            }
+        }
+
+        fn key_ups_from_tap(
+            app: &NSApplication,
+            window: &NSWindow,
+            view: &KeyUpCounter,
+            flags: NSEventModifierFlags,
+        ) -> u32 {
+            let before = view.ivars().get();
+            let a = NSString::from_str("a");
+            for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+                let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                    kind,
+                    NSPoint::new(0.0, 0.0),
+                    flags,
+                    0.0,
+                    window.windowNumber(),
+                    None,
+                    &a,
+                    &a,
+                    false,
+                    0,
+                )
+                .unwrap();
+                app.sendEvent(&event);
+            }
+            view.ivars().get() - before
+        }
+
+        pub(super) fn key_releases_while_command_is_down_reach_the_window() {
+            let main_thread = MainThreadMarker::new().unwrap();
+            let app = NSApplication::sharedApplication(main_thread);
+            // SAFETY: a plain titled window, kept alive by `window` and never closed.
+            let window = unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(
+                    NSWindow::alloc(main_thread),
+                    NSRect::new(NSPoint::new(-3000.0, -3000.0), NSSize::new(100.0, 100.0)),
+                    NSWindowStyleMask::Titled,
+                    NSBackingStoreType::Buffered,
+                    false,
+                )
+            };
+            let view = KeyUpCounter::new(main_thread);
+            window.setContentView(Some(&view));
+            window.makeKeyAndOrderFront(None);
+            window.makeFirstResponder(Some(&view));
+
+            let plain = NSEventModifierFlags::empty();
+            let command = NSEventModifierFlags::Command;
+            assert_eq!(
+                key_ups_from_tap(&app, &window, &view, plain),
+                1,
+                "key events reach the view at all"
+            );
+            assert_eq!(
+                key_ups_from_tap(&app, &window, &view, command),
+                0,
+                "AppKit now hands over a key's release while ⌘ is down; deliver_command_key_ups can go"
+            );
+            dari::test_support::deliver_command_key_ups();
+            assert_eq!(
+                key_ups_from_tap(&app, &window, &view, command),
+                1,
+                "⌘A's release reaches the window once"
+            );
+            assert_eq!(
+                key_ups_from_tap(&app, &window, &view, plain),
+                1,
+                "a plain key's release still arrives once"
+            );
+        }
+    }
+
     pub(super) fn run() {
-        let tests: [(&str, fn()); 6] = [
+        let tests: [(&str, fn()); 7] = [
             (
                 "files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save",
                 files_dropped_on_the_viewer_reach_the_host_and_offers_wait_for_save,
@@ -993,6 +1140,10 @@ mod macos {
             (
                 "viewer_window_shows_the_remote_screen_and_forwards_input",
                 viewer_window_shows_the_remote_screen_and_forwards_input,
+            ),
+            (
+                "key_releases_while_command_is_down_reach_the_window",
+                appkit::key_releases_while_command_is_down_reach_the_window,
             ),
         ];
         for (name, test) in tests {
