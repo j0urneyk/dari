@@ -17,6 +17,8 @@ mod tls;
 pub use discovery::{
     Advertisement, Browser, DiscoveryError, DiscoveryEvent, NearbyDevice, fingerprint_hint,
 };
+#[cfg(feature = "test-support")]
+pub use endpoint::connect_as_version;
 pub use endpoint::{
     ConnectError, EndpointError, HANDSHAKE_TIMEOUT, HostEndpoint, HostSettings, RelayedAcceptor,
     connect,

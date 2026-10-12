@@ -21,8 +21,8 @@ use dari_media::{
 use dari_net::{AccessPassword, DeviceIdentity};
 use dari_proto::TransferEnd;
 use dari_proto::{
-    Availability, InputDesktop, InputEvent, KeyCode, MouseButton, NamedKey, OsInput,
-    PointerPosition,
+    Availability, ControlMessage, InputDesktop, InputEvent, KeyCode, MouseButton, NamedKey,
+    OsInput, PROTOCOL_VERSION, PointerPosition, ProtocolVersion,
 };
 use dari_session::{
     ApprovalDecision, ClipboardAccess, ClipboardFactory, HostConfig, HostEvent, HostPlatform,
@@ -30,7 +30,7 @@ use dari_session::{
     Transfer, TransferDirection, TransferState, ViewerConfig, ViewerEvent, ViewerTarget,
     connect_viewer, start_host,
 };
-use futures_util::FutureExt;
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 const DISPLAY: DisplayInfo = DisplayInfo {
@@ -1865,7 +1865,7 @@ async fn next_input(driver: &mut LinkDriver) -> OsInput {
     loop {
         match next_command(driver).await {
             Some(LinkCommand::Input(input)) => return input,
-            Some(LinkCommand::SelectDisplay(_)) => {}
+            Some(LinkCommand::SelectDisplay(_) | LinkCommand::SecureAttention) => {}
             None => panic!("the session dropped the link"),
         }
     }
@@ -2025,4 +2025,190 @@ async fn input_returns_to_the_users_desktop_when_the_helper_link_ends() {
         *actions.lock().unwrap(),
         [RecordedAction::Text("local".into())]
     );
+}
+
+struct RawViewer {
+    _link: dari_net::SessionLink,
+    control: dari_net::MessageSender<ControlMessage>,
+    messages: dari_net::MessageReceiver<ControlMessage>,
+    next_token: u64,
+}
+
+impl RawViewer {
+    async fn connect(host: &Host, version: ProtocolVersion) -> Self {
+        let connection = dari_net::connect_as_version(
+            host.handle.local_address(),
+            &host.password,
+            "test-viewer".into(),
+            version,
+        )
+        .await
+        .unwrap();
+        let (link, mut control, messages) = connection.split();
+        control
+            .send(&ControlMessage::SetFrameRate(30))
+            .await
+            .unwrap();
+        Self {
+            _link: link,
+            control,
+            messages,
+            next_token: 0,
+        }
+    }
+
+    async fn send(&mut self, message: ControlMessage) {
+        self.control.send(&message).await.unwrap();
+    }
+
+    async fn next(&mut self) -> ControlMessage {
+        tokio::time::timeout(Duration::from_secs(10), self.messages.next())
+            .await
+            .expect("the host sent nothing")
+            .expect("the control stream ended")
+            .unwrap()
+    }
+
+    async fn secure_attention(&mut self) -> Availability {
+        loop {
+            if let ControlMessage::SecureAttentionStatus(availability) = self.next().await {
+                return availability;
+            }
+        }
+    }
+
+    async fn sent_so_far(&mut self) -> Vec<ControlMessage> {
+        self.next_token += 1;
+        let token = self.next_token;
+        self.send(ControlMessage::Ping { token }).await;
+        let mut sent = Vec::new();
+        loop {
+            match self.next().await {
+                ControlMessage::Pong { token: answered } if answered == token => return sent,
+                message => sent.push(message),
+            }
+        }
+    }
+}
+
+fn no_secure_attention_status(sent: &[ControlMessage]) -> bool {
+    !sent
+        .iter()
+        .any(|message| matches!(message, ControlMessage::SecureAttentionStatus(_)))
+}
+
+fn secure_attention_commands(driver: &mut LinkDriver) -> usize {
+    let mut asked = 0;
+    while let Some(Some(command)) = driver.command().now_or_never() {
+        if command == LinkCommand::SecureAttention {
+            asked += 1;
+        }
+    }
+    asked
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewer_learns_when_it_can_raise_ctrl_alt_del_and_its_request_reaches_the_service() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let mut viewer = RawViewer::connect(&host, PROTOCOL_VERSION).await;
+    let (_input, mut helper) = only_link(&links).await;
+    let sent = viewer.sent_so_far().await;
+    assert!(
+        no_secure_attention_status(&sent),
+        "a status was sent while the helper connects: {sent:?}"
+    );
+    viewer.send(ControlMessage::SecureAttention).await;
+    viewer.sent_so_far().await;
+    assert_eq!(secure_attention_commands(&mut helper), 0);
+
+    helper.connected(true);
+    helper.desktop_changed(InputDesktop::Default);
+    assert_eq!(viewer.secure_attention().await, Availability::Available);
+
+    viewer.send(ControlMessage::SecureAttention).await;
+    viewer.send(ControlMessage::SecureAttention).await;
+    viewer.sent_so_far().await;
+    assert_eq!(secure_attention_commands(&mut helper), 1);
+
+    helper.secure_attention_refused("DariService refused: SasDisallowed".into());
+    assert_eq!(viewer.secure_attention().await, Availability::Unavailable);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    viewer.send(ControlMessage::SecureAttention).await;
+    viewer.sent_so_far().await;
+    assert_eq!(secure_attention_commands(&mut helper), 0);
+
+    helper.end("the helper closed its pipe".into());
+    let sent = viewer.sent_so_far().await;
+    assert!(
+        no_secure_attention_status(&sent),
+        "an unchanged status was sent again: {sent:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_del_is_unavailable_without_the_services_grant() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let mut viewer = RawViewer::connect(&host, PROTOCOL_VERSION).await;
+    let (_input, mut helper) = only_link(&links).await;
+    helper.connected(false);
+    helper.desktop_changed(InputDesktop::Default);
+    assert_eq!(viewer.secure_attention().await, Availability::Unavailable);
+    viewer.send(ControlMessage::SecureAttention).await;
+    let sent = viewer.sent_so_far().await;
+    assert!(no_secure_attention_status(&sent), "{sent:?}");
+    assert_eq!(secure_attention_commands(&mut helper), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_del_turns_unavailable_when_the_helper_ends() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let mut viewer = RawViewer::connect(&host, PROTOCOL_VERSION).await;
+    let (_input, helper) = only_link(&links).await;
+    helper.connected(true);
+    assert_eq!(viewer.secure_attention().await, Availability::Available);
+    helper.end("the helper closed its pipe".into());
+    assert_eq!(viewer.secure_attention().await, Availability::Unavailable);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_only_sessions_report_ctrl_alt_del_not_allowed_and_refuse_it() {
+    let (platform, links) = helper_platform();
+    let mut host = start_with(platform, true).await;
+    let mut viewer = RawViewer::connect(&host, PROTOCOL_VERSION).await;
+    approve(&mut host, ApprovalDecision::ViewOnly).await;
+    assert_eq!(viewer.secure_attention().await, Availability::NotAllowed);
+
+    let (input, mut helper) = only_link(&links).await;
+    assert!(!input);
+    helper.connected(true);
+    helper.desktop_changed(InputDesktop::Default);
+    viewer.send(ControlMessage::SecureAttention).await;
+    let sent = viewer.sent_so_far().await;
+    assert!(no_secure_attention_status(&sent), "{sent:?}");
+    assert_eq!(secure_attention_commands(&mut helper), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_2_1_viewer_never_receives_the_ctrl_alt_del_messages() {
+    let (platform, links) = helper_platform();
+    let host = start(platform).await;
+    let mut viewer = RawViewer::connect(&host, ProtocolVersion { major: 2, minor: 1 }).await;
+    let (_input, helper) = only_link(&links).await;
+    helper.connected(true);
+    helper.desktop_changed(InputDesktop::Default);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut sent = viewer.sent_so_far().await;
+    helper.end("the helper closed its pipe".into());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    sent.extend(viewer.sent_so_far().await);
+
+    assert!(
+        sent.iter()
+            .any(|message| matches!(message, ControlMessage::HostStatus(_))),
+        "{sent:?}"
+    );
+    assert!(no_secure_attention_status(&sent), "{sent:?}");
 }
