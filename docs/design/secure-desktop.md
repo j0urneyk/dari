@@ -1,9 +1,14 @@
 # Answering the Windows secure desktop from a viewer
 
-Status: approved. Option B, a per-machine-only installer, and secure-screen control on by default. Built so far:
-the per-machine install and `DariService` (#44), the helper, its pipes, and desktop following (#45), and the capture
-of the secure desktop (#46), and input on the secure desktop with the `SecureDesktopControl` policy (#47).
-Ctrl+Alt+Del (#48) isn't built yet.
+Status: implemented. Option B, a per-machine-only installer, and secure-screen control on by default. The work
+shipped in [PR 57](https://github.com/j0urneyk/dari/pull/57) (the per-machine install and `DariService`, #44),
+[PR 59](https://github.com/j0urneyk/dari/pull/59) (the helper, its pipes, and desktop following, #45),
+[PR 61](https://github.com/j0urneyk/dari/pull/61) (the capture of the secure desktop, #46),
+[PR 62](https://github.com/j0urneyk/dari/pull/62), [PR 63](https://github.com/j0urneyk/dari/pull/63), and
+[PR 64](https://github.com/j0urneyk/dari/pull/64) (fixes to the helper's desktop rights and section handles),
+[PR 65](https://github.com/j0urneyk/dari/pull/65) (input on the secure desktop with the `SecureDesktopControl`
+policy, #47), and the PR that closed #48 (Ctrl+Alt+Del). [PR 58](https://github.com/j0urneyk/dari/pull/58)
+recorded the Phase 0 results.
 
 When a Windows host shows a User Account Control (UAC) prompt, the lock screen, or the Ctrl+Alt+Del screen, Windows
 switches to the Winlogon secure desktop. Dari's host can't see or touch that desktop, so the viewer can only tell the
@@ -286,18 +291,27 @@ malware.
 
 The protocol gains one control message, `SecureAttention`, from viewer to host (protocol 2.2, after PR 36's 2.1). A
 second new message, `SecureAttentionStatus(Availability)` from host to viewer, says whether the host can raise it:
-`Available` only when the service runs and the session allows control. It is a message of its own, not a new
-`HostStatus` field, because postcard encodes fields by position: PR 36's `HostStatus::for_version` can swap an enum
-variant for an older peer but can't drop a field, and a 2.1 viewer would fail to decode a longer `HostStatus`. The
-host sends it only to a 2.2 viewer. The viewer shows **Send Ctrl+Alt+Del** in the toolbar menu only then. The user
-can't type the keys on the viewer: a Mac keyboard has no Del key in that position, and a Windows viewer's own
-Ctrl+Alt+Del never reaches the app.
+`Available` only while a helper with input is connected in the console session, so the service runs,
+`SecureDesktopControl` is on, and the session allows control. `HelperStarted { secure_attention }` tells the app what
+the service granted, so the app doesn't read the policy itself. The host sends no status while the helper connects,
+so a viewer never sees `Unavailable` change to `Available` a moment later. It is a message of its own, not a new `HostStatus` field, because postcard encodes fields by
+position: PR 36's `HostStatus::for_version` can swap an enum variant for an older peer but can't drop a field, and a
+2.1 viewer would fail to decode a longer `HostStatus`. The host sends it only to a 2.2 viewer. The viewer shows a
+**Send Ctrl+Alt+Del** button in the toolbar only while it reads `Available`. The design asked for a toolbar menu
+entry, but the toolbar has no menu, so the button sits next to **Send file…**. The user can't type the keys on the
+viewer: a Mac keyboard has no Del key in that position, and a Windows viewer's own Ctrl+Alt+Del never reaches the app.
 
-On `SecureAttention`, the host checks that the session allows control, then sends `SendSas` to the service. The
-service calls `SendSAS(FALSE)`. A call from a service does nothing unless the `SoftwareSASGeneration` value under
+On `SecureAttention`, the host checks that it reports `Available`, then sends `SendSas` to the service, at most once
+a second and one request at a time. A request that arrives while the helper still connects is refused, not queued.
+The service checks that the request comes from the app whose own helper runs with input in the console session, then
+calls `SendSAS(FALSE)`. That call names no session, so Dari offers Ctrl+Alt+Del only in the console session; a
+Remote Desktop session reports `Unavailable`. The service decides that when the helper starts and checks it again
+for each request. A session that becomes the console session later gets the button only in its next Dari session,
+and a console switch in the moment between the check and the call isn't caught. A call from a service does nothing unless the `SoftwareSASGeneration` value under
 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System` allows services (1 or 3). When the value is
-absent, the service does what RustDesk does: it sets the value to 1 for the call and deletes it afterwards. For
-that moment, any service can raise the sequence, including ones that run as LocalService or NetworkService. Raising
+absent, the service does what RustDesk does: it sets the value to 1 for the call and deletes it afterwards. A marker
+in the service's own registry key says the 1 is Dari's, so a value left by a crash is deleted at the service's next
+start or call instead of being read as an administrator's choice. For that moment, any service can raise the sequence, including ones that run as LocalService or NetworkService. Raising
 it only shows the Ctrl+Alt+Del screen, so the exposure is small. When the value exists and doesn't allow services,
 an administrator or a Group Policy chose that. The service then refuses, never writes the value, and reports
 `SecureAttentionStatus(Unavailable)`.
@@ -305,7 +319,7 @@ an administrator or a Group Policy chose that. The service then refuses, never w
 Phase 0 called `SendSAS(FALSE)` from a LocalSystem service in three states. With the value absent, the call
 returned and nothing happened. With the value set to 1, and with the value set only around the call, the
 Ctrl+Alt+Del screen appeared. In that last run a script wrote and deleted the value, not the service. Phase 0
-didn't try values 0, 2, or 3.
+didn't try values 0, 2, or 3. The build loads `sas.dll` from System32 for each call, so the helper never loads it.
 
 ### IPC
 
@@ -315,7 +329,7 @@ that holds them.
 
 | Pipe and server | From app | To app |
 | --- | --- | --- |
-| `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted`, `Refused(reason)` |
+| `dari-service`, created by the service | `StartHelper { pipe, input }`, `SendSas` | `HelperStarted { secure_attention }`, `SasSent`, `Refused(reason)` |
 | `dari-helper-<random>`, created by the app | `Input(OsInput)`, `SelectDisplay(id)`, `RequestFrame`, `Stop` | `DesktopChanged(kind)`, `FrameSection(handle, width, height)`, `Frame(display, slot, sequence)`, `ScreenUnavailable(display)` |
 
 Both servers create their pipes with `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE`. The flag
@@ -457,7 +471,7 @@ Two controls limit it further:
   input, so malware can't answer the prompt that would turn it on.
 - The service writes an Application event log entry each time it starts a helper with input on: a warning with ID
   3 that names the session, the helper's process ID, and the app's process ID. `policy on` and `policy off` write an
-  entry with ID 4 that names the user who changed the value. An entry for each `SendSAS` comes with #48. These
+  entry with ID 4 that names the user who changed the value. Each `SendSAS` writes a warning with ID 5. These
   entries record that something used the feature. They can't prove that a remote viewer did.
 
 `dari-service.exe install` registers the `DariService` event source under
@@ -465,7 +479,7 @@ Two controls limit it further:
 `%SystemRoot%\System32\EventCreate.exe` and `TypesSupported` set to 7, and `uninstall` removes it. Before #47 the
 source wasn't registered, and in the VM `Get-WinEvent` couldn't render DariService's entries. `EventCreate.exe`'s
 message table renders the entry's text for event IDs 1 to 1000, as measured in the VM, so Dari needs no message
-table of its own. The service's IDs are 1 (information), 2 (error), 3, and 4.
+table of its own. The service's IDs are 1 (information), 2 (error), 3, 4, and 5.
 
 ## Testing
 
@@ -515,7 +529,7 @@ consent prompt to answer, and an elevated host would hide integrity problems. Th
 `lock-unlock` types the VM's password, so the case never saves its frames after the password field gets focus, and
 the viewer's log redacts `Text` and key events in that case.
 
-`scripts/crosscheck/secure-desktop.sh` runs every case above except `cad`, which waits for #48.
+`scripts/crosscheck/secure-desktop.sh` runs every case above.
 [development.md](../development.md#local-windows-11-vm) describes how the script judges each case as built.
 
 Two installer cases run outside `dari-check`. An upgrade from a 0.0.x per-user install checks the migration. Stopping

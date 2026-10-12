@@ -295,7 +295,7 @@ Windows.Graphics.Capture and `SendInput` can't reach the Winlogon desktop, which
 and the Ctrl+Alt+Del screen. Two more processes, both `dari-service.exe`, can. The
 [secure desktop design](design/secure-desktop.md) describes the whole plan. The helper reports which desktop receives
 input, captures every desktop other than `Default` with DXGI Desktop Duplication, and injects the viewer's input
-on `Winlogon`. Ctrl+Alt+Del comes later (#48).
+on `Winlogon`. On a viewer's `SecureAttention`, the service raises Ctrl+Alt+Del with `SendSAS`.
 
 ```text
 dari.exe (user, medium integrity)
@@ -429,6 +429,16 @@ message file and `uninstall` removes it. They log the service's start, a pipe it
 and each client it refuses (at most 10 refusals a minute; more are closed without a reply or a log entry), and the
 helper's user, integrity level, session, privileges, and why it exited. The entry for a helper started with input
 is a warning with ID 3, and each `policy on|off` writes ID 4, naming the user who changed the value.
+
+`HelperStarted { secure_attention }` tells the app whether the service lets it ask for Ctrl+Alt+Del: only for a
+helper with input in the console session. The link keeps that grant, and any refusal of `SendSas` but `Failed` takes it
+away. `SecureAttentionState::of` derives the state from the grant and whether the session allows control:
+`ViewOnly`, `NoHelper`, `Connecting`, `NotGranted`, or `Granted`. That state alone gives `SecureAttentionStatus`
+(nothing while `Connecting`) and whether a viewer's `SecureAttention` goes on to the service. The link sends at most
+one request a second and keeps one in flight. The service checks under its helpers' lock that the app's own helper
+runs with input, then releases the lock, checks the console session, and lets `sas.rs` decide from
+`SoftwareSASGeneration` whether to call as is, to set 1 for the call and delete it afterwards, or to refuse. Each
+`SendSAS` writes ID 5. The service answers every `SendSas`, and logs its refusals within a budget of their own.
 `dari-service.exe` is built without a console, and a test reads its import
 table to check that it never links `ws2_32.dll` or another Windows networking DLL.
 

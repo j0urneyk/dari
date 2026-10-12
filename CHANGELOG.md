@@ -12,7 +12,11 @@ All notable changes to this project are documented here. The format follows
   display, and the session carries on when it closes.
 - In a session that allows control, the viewer can answer a Windows host's User Account Control prompts and lock
   screen: click **Yes**, press Alt+Y or Esc, or type the password. Keys held when the screen appears or the viewer
-  disconnects don't stay down. Ctrl+Alt+Del can't be sent from the viewer yet.
+  disconnects don't stay down.
+- **Send Ctrl+Alt+Del** in the viewer's toolbar shows a Windows host's Ctrl+Alt+Del screen. It appears in sessions
+  that allow control while the host's **Let viewers answer UAC prompts and the lock screen** is on. Dari records each
+  use in the Windows Application log, and it leaves a `SoftwareSASGeneration` value that an administrator set alone.
+  Peers now speak protocol 2.2, and they still connect to peers on 2.0 and 2.1.
 - The Windows host's **Sharing** settings have **Let viewers answer UAC prompts and the lock screen**, on by default.
   Changing it asks for administrator approval, and an administrator can also set it with Group Policy
   (`SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`). The Windows installer asks the same question on
