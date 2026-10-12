@@ -78,6 +78,21 @@ impl<B: InputBackend> Injector<B> {
         released
     }
 
+    /// Releases each held key `which` picks, newest first, and returns how many there were. Other
+    /// held keys and buttons stay held. A release the backend fails still counts.
+    pub fn release_keys(&mut self, which: impl Fn(KeyCode) -> bool) -> usize {
+        let (released, kept) = std::mem::take(&mut self.held_keys)
+            .into_iter()
+            .partition::<Vec<_>, _>(|key| which(*key));
+        self.held_keys = kept;
+        for key in released.iter().rev() {
+            if let Err(error) = self.backend.key(*key, false) {
+                debug!(%error, "failed to release a key");
+            }
+        }
+        released.len()
+    }
+
     /// Clears the held set without calling the backend, and returns how many there were. For when
     /// the OS already let go of them, as Windows does when the input desktop switches.
     pub fn forget(&mut self) -> usize {
@@ -433,6 +448,32 @@ mod tests {
         assert_eq!(injector.release_all(), 0);
         drop(injector);
         assert_eq!(*log.borrow(), []);
+    }
+
+    #[test]
+    fn releasing_some_keys_leaves_the_rest_held() {
+        let shift = KeyCode::Named(NamedKey::Shift);
+        let ctrl = KeyCode::Named(NamedKey::Control);
+        let a = KeyCode::Character('a');
+        let backend = Routed::default();
+        let log = Rc::clone(&backend.log);
+        let mut injector = Injector::new(backend);
+        injector.key(shift, true).unwrap();
+        injector.key(a, true).unwrap();
+        injector.key(ctrl, true).unwrap();
+        injector.button(MouseButton::Left, true).unwrap();
+        log.borrow_mut().clear();
+        assert_eq!(injector.release_keys(|key| key == shift || key == ctrl), 2);
+        assert_eq!(
+            *log.borrow(),
+            [
+                (0, RecordedAction::Key(ctrl, false)),
+                (0, RecordedAction::Key(shift, false)),
+            ]
+        );
+        assert_eq!(injector.forget(), 2);
+        drop(injector);
+        assert_eq!(log.borrow().len(), 2);
     }
 
     #[test]

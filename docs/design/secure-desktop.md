@@ -187,8 +187,13 @@ Neither thread creates a window or installs a hook, because `SetThreadDesktop` f
   button through the old route. The helper also tracks what it holds itself. At a desktop switch it forgets what it
   holds without sending anything, because Windows already cleared key state. When its input thread ends while it is
   attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it releases what it holds there.
-  `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
-  for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt.
+  It releases only while `Winlogon` is still the input desktop it reads. When it can't read the input desktop, it
+  releases nothing. Windows would refuse that release anyway (see the next point), and the log counts only releases
+  the helper could send. `InputSession::release_all` in the app reaches only `Default`, so without the helper's own tracking, an Alt held
+  for Alt+Y would stay down on the lock screen if the viewer dropped mid-prompt. When the input thread ends because
+  `SecureDesktopControl` reads off, it releases only held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
+  button down for the local user until they press and release it or the desktop switches, because releasing it
+  could answer the prompt.
 - Windows clears key state at a desktop switch. In the test VM, with UAC on, a medium-integrity process pressed a
   key with `SendInput` on `Default` before a UAC prompt. After the prompt closed and `Default` returned,
   `GetAsyncKeyState` read the key as up. While `Winlogon` was the input desktop, that process's `SendInput` returned
@@ -281,7 +286,8 @@ own input desktop handle with only `DESKTOP_JOURNALPLAYBACK`, attaches to it, an
 `Winlogon`. On `Default` the app injects as the user, and a SYSTEM injector on any desktop but the secure one would
 bypass User Interface Privilege Isolation there. If an attach fails, the thread drops input until the next attach succeeds. At a switch it forgets what it holds and logs
 `helper: forgot N held inputs at the switch to <desktop>`. When the thread ends, it releases what it holds only if it
-is attached to `Winlogon`, and logs `helper: released N held inputs because <reason>`. It never logs key codes or text.
+is attached to `Winlogon`, and logs `helper: released N held inputs because <reason>`. When it ends because the
+policy reads off, it writes event 6 instead of that line. It never logs key codes or text.
 
 A helper started with `input: false` has no input thread, no `Injector`, and no `DESKTOP_JOURNALPLAYBACK` handle,
 and drops every input message. That check is for app bugs. The security model explains why it doesn't stop
@@ -460,26 +466,37 @@ Two controls limit it further:
 - A policy value that only an administrator can set: the DWORD `SecureDesktopControl` under
   `HKLM\SOFTWARE\Policies\Dari`. Group Policy can manage that key. A missing value or 1 means on, 0 means off, and
   any other value or a value of another type means off, so a garbled value fails closed. The service reads the value
-  for each `StartHelper` and `SendSas`, so a change applies from the next session. At off it starts the helper with
-  input off and refuses `SendSas` with `Refused(PolicyOff)`, so viewers can still see the secure desktop but not
-  answer it. `dari-service.exe policy on` and `policy off` are Dari's only writers of the value. Without
-  administrator rights the command exits with code 1 and writes an error that names administrators to the
-  Application log. `dari-service.exe` is a GUI-subsystem program, so a console doesn't wait for it or show that
-  error: run it with `start /wait` or `Start-Process -Wait` and read the exit code. The installer offers the value
+  for each `StartHelper` and `SendSas`. At off it starts the helper with input off and refuses `SendSas` with
+  `Refused(PolicyOff)`, so viewers can still see the secure desktop but not answer it. A helper with input reads the
+  value through the same function after each input it receives and every 100 ms while idle, before it injects
+  anything. A value it can't read reads off, and a key deleted while it reads, as when Group Policy rewrites its
+  keys, reads as missing. When it reads off on `Winlogon`, it releases held Shift, Ctrl, Alt, and Windows keys, because
+  a modifier left down would garble the local user's password or turn their typing into Win shortcuts, and its
+  release can't answer a prompt. It forgets the other keys
+  and buttons it holds without releasing them, because a button up over **Yes** or a Space up on a focused button
+  completes an answer, and its input thread ends. The helper then behaves like one started without input: it keeps
+  serving frames and drops input. The viewer isn't told: its input on the secure desktop just stops having effect. Turning the value off takes input
+  away within about 100 ms. Turning it on applies from the next session, so a brief read failure or a Group Policy
+  rewrite can't hand input back to a running helper. `dari-service.exe policy on` and `policy off` are Dari's only
+  writers of the value. Without administrator rights the command exits with code 1 and writes an error that names
+  administrators to the Application log. `dari-service.exe` is a GUI-subsystem program, so a console doesn't wait
+  for it or show that error: run it with `start /wait` or `Start-Process -Wait` and read the exit code. The installer offers the value
   as a checkbox, **Let viewers answer UAC prompts and the lock screen**. The host's settings change it through the
   same command, started with `runas`, so every change shows a UAC prompt. While the value is 0, the helper sends no
   input, so malware can't answer the prompt that would turn it on.
 - The service writes an Application event log entry each time it starts a helper with input on: a warning with ID
   3 that names the session, the helper's process ID, and the app's process ID. `policy on` and `policy off` write an
-  entry with ID 4 that names the user who changed the value. Each `SendSAS` writes a warning with ID 5. These
-  entries record that something used the feature. They can't prove that a remote viewer did.
+  entry with ID 4 that names the user who changed the value. Each `SendSAS` writes a warning with ID 5. A helper
+  whose input ends because the value reads off writes an information entry with ID 6 that names its process ID, the
+  value it read or why it couldn't read it, and how many held inputs it released and forgot. These entries record that something used the feature. They can't prove that a
+  remote viewer did.
 
 `dari-service.exe install` registers the `DariService` event source under
 `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\DariService`, with `EventMessageFile` set to
 `%SystemRoot%\System32\EventCreate.exe` and `TypesSupported` set to 7, and `uninstall` removes it. Before #47 the
 source wasn't registered, and in the VM `Get-WinEvent` couldn't render DariService's entries. `EventCreate.exe`'s
 message table renders the entry's text for event IDs 1 to 1000, as measured in the VM, so Dari needs no message
-table of its own. The service's IDs are 1 (information), 2 (error), 3, 4, and 5.
+table of its own. The service's IDs are 1 (information), 2 (error), 3, 4, 5, and 6.
 
 ## Testing
 
@@ -522,6 +539,8 @@ consent prompt to answer, and an elevated host would hide integrity problems. Th
 | `cad` | None | Sends `SecureAttention`, waits for a `Winlogon` frame, sends Esc | The helper reported `Winlogon` then `Default` |
 | `secure-view-only` | Same as `uac-allow` | Same, in a view-only session | No `result.txt`, the prompt stays up until the host check dismisses it, and `SecureAttention` is refused |
 | `secure-policy-off` | Sets `SecureDesktopControl=0`, then as `uac-allow` | Same as `uac-allow`, in a session that allows control | No `result.txt`, the viewer still received a `Winlogon` frame, and `SecureAttention` is refused |
+| `secure-policy-revoke` | Same as `uac-allow`, then sets `SecureDesktopControl=0` once the viewer sees the prompt | Waits a second after the change, then sends Alt+Y | No `result.txt`, the desktop returns to `Default` once the host check dismisses the prompt, and the helper logs exactly one ID 6 after the change, from 250 ms before to 1000 ms after the change's ID 4 |
+| `secure-policy-revoke-held` | Same as `uac-allow`, then sets `SecureDesktopControl=0` while the viewer holds Shift and Space on the prompt | Presses Shift, then Space, and holds both | The prompt is still up 2 seconds after the change, no `result.txt` after the host check dismisses it, and the one ID 6 after the change says the helper released 1 modifier key and forgot 1 held input |
 | `drop-mid-prompt` | Same as `uac-allow` | Holds Alt, then disconnects | The helper's log shows it released Alt on pipe close, and the host check can still answer the prompt with Esc |
 | `helper-killed` | Same as `uac-allow`, then ends the helper process | Waits | The viewer gets PR 36's notice, and no key stays down |
 | `secure-second-display` | Same as `uac-allow`, on the VM with two displays | Selects the second display while the prompt is up, then the first | Frames from both displays arrive, and Alt+Y still answers the prompt |
@@ -551,7 +570,7 @@ Each phase ends in something a reviewer can run. Estimates assume one engineer w
 | 0. Spike | A throwaway service and helper in the VM with UAC on: winlogon token, restricted token, `SetThreadDesktop`, DXGI capture of a UAC prompt, a click on **Yes**, `SendSAS` | Screenshots of the prompt from the helper, an elevated `whoami`, and a written answer for each unknown: restricted token, DXGI on the VM's adapter, `SoftwareSASGeneration` | 3 days |
 | 1. Per-machine install | `perMachine` installer, the empty service, `install` and `uninstall`, migration from the per-user install, smoke test | Upgrading a per-user 0.0.x install in the VM leaves one per-machine install, a running service, and the old settings and identity | 1 week |
 | 2. See the secure desktop | `dari-winsvc` helper, both pipes and their checks, desktop following, DXGI capture, shared frames, the two-source capturer | The viewer sees a UAC prompt and the lock screen, and the session survives both switches. `uac-deny` passes with the host answering by hand | 2 weeks |
-| 3. Answer it | The routing input backend, held-key release, `input: false`, the `SecureDesktopControl` policy, event log entries | `uac-allow`, `uac-deny`, `lock-unlock`, and `secure-view-only` pass | 1 week |
+| 3. Answer it | The routing input backend, held-key release, `input: false`, the `SecureDesktopControl` policy, event log entries | `uac-allow`, `uac-deny`, `lock-unlock`, `secure-view-only`, `secure-policy-revoke`, and `secure-policy-revoke-held` pass | 1 week |
 | 4. Ctrl+Alt+Del | Protocol 2.2, the viewer menu item, `SendSas` and its `SoftwareSASGeneration` handling | `cad` passes, and a 2.1 peer still connects | 3 days |
 | 5. Documents | security.md threat model, user guide, README known limitations, architecture.md | The docs describe the shipped behavior | 2 days |
 

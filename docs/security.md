@@ -190,11 +190,17 @@ It inherits only the app's process handle, runs in a job that ends it when the s
 System32, creates no windows, and exits when the app sends `Stop`, its pipe closes, or the app exits. `dari-service.exe` has no console, because a console
 program started as SYSTEM opens a console window on the user's desktop.
 
-Keys held on the secure desktop don't stay down. Before the app moves input between the user's desktop and the
-helper, it releases every held key and button through the old route. The helper tracks what it injected itself. At a
-desktop switch it forgets that without injecting anything, because Windows clears key state at the switch. When its
-input thread ends while it is attached to `Winlogon` (on `Stop`, when its pipe closes, and when the app exits), it
-releases what it holds there. It never injects on `Default`, not even a release. Its log names how many inputs it released and why, never which keys. Text and keys never appear in
+Keys held on the secure desktop don't stay down, with two exceptions. Before the app moves input between the user's
+desktop and the helper, it releases every held key and button through the old route. The helper tracks what it
+injected itself. At a desktop switch it forgets that without injecting anything, because Windows clears key state at
+the switch. When its input thread ends while it is attached to `Winlogon` (on `Stop`, when its pipe closes, and when
+the app exits), it releases what it holds there, but only while `Winlogon` is still the input desktop it reads. When
+it can't read the input desktop, it releases nothing, which is the first exception: Windows refuses injection from a
+thread whose desktop is no longer the input desktop, so the helper sends a release only when it knows it can land.
+The second exception is `SecureDesktopControl` turning off under a running helper. Then the helper releases held Shift, Ctrl, Alt, and Windows keys, and leaves any other held key or
+button down for the local user until they press and release it or the desktop switches, because releasing it could
+answer the prompt.
+It never injects on `Default`, not even a release. Its log names how many inputs it released and why, never which keys. Text and keys never appear in
 the `Debug` output of the pipe's messages, because the lock screen's password goes through them.
 
 ### Same-user malware can answer its own consent prompts
@@ -217,16 +223,24 @@ Two controls limit it further:
 - The DWORD `SecureDesktopControl` under `HKLM\SOFTWARE\Policies\Dari`, which only administrators can write and
   Group Policy can manage. A missing value or 1 means on, 0 means off, and any other value or type means off. The
   service reads it for each `StartHelper` and `SendSas`. At off it starts the helper without input and refuses
-  `SendSas` with `Refused(PolicyOff)`, so viewers still see the secure desktop but can't answer it. Turning it off
-  applies from the next session: the service decides input only when it starts a helper, so a helper that already
-  runs with input keeps it until its session ends. Every way to
+  `SendSas` with `Refused(PolicyOff)`, so viewers still see the secure desktop but can't answer it. A helper that
+  runs with input reads the value too, before it replays each input and every 100 ms while idle, so turning it off
+  takes input away from a running session within about 100 ms. A value the helper can't read counts as off, and a
+  key deleted while the helper reads it counts as missing, as when Group Policy rewrites its keys. When the helper
+  reads off, it releases held Shift, Ctrl, Alt, and Windows keys while `Winlogon` is still the input desktop it
+  reads, forgets the other keys and buttons it holds without releasing them, because their release could answer
+  the prompt, and ends its input thread. It keeps showing the secure
+  desktop. The viewer isn't told: its input on the secure desktop just stops having effect. Turning the value on
+  again applies from the next session. Every way to
   change it needs an administrator: the installer's checkbox, and the host setting **Let viewers answer UAC prompts
   and the lock screen**, which runs `dari-service.exe policy on` or `policy off` through a UAC prompt. While the
   value is 0, the helper sends no input, so malware can't answer the prompt that would turn it on.
 - The Application event log under the source `DariService`. The service writes a warning, ID 3, each time it starts
   a helper with input on, naming the session and both process IDs. `policy on` and `policy off` write ID 4 with the
-  user who changed the value. Each `SendSAS` writes a warning, ID 5 (see below). These entries record that something
-  used the feature. They can't prove that a remote viewer did.
+  user who changed the value. Each `SendSAS` writes a warning, ID 5 (see below). A helper whose input ends because the
+  value reads off writes ID 6, information, naming its process ID, the value it read or why it couldn't read it, and
+  how many held inputs it released and forgot. These entries
+  record that something used the feature. They can't prove that a remote viewer did.
 
 ### Ctrl+Alt+Del
 
@@ -276,8 +290,8 @@ what `SoftwareSASGeneration` was. A refusal is logged as information, and a fail
 - While `SecureDesktopControl` is on, malware running as the signed-in administrator can answer its own UAC consent
   prompts through Dari. See
   [Same-user malware can answer its own consent prompts](#same-user-malware-can-answer-its-own-consent-prompts).
-- Turning `SecureDesktopControl` off applies from the next session. A helper that already runs with input keeps it
-  until its session ends.
+- After `SecureDesktopControl` goes off and on again within one session, the service still grants that session's
+  helper Ctrl+Alt+Del although its input ended, so the viewer can raise a Ctrl+Alt+Del screen it can't answer.
 - The private key and settings are stored in plain files in the user data directory (no OS keychain).
 
 ## Hardening found in review

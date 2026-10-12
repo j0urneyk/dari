@@ -44,6 +44,10 @@ impl EventLog {
         self.report(EVENTLOG_WARNING_TYPE, 5, message);
     }
 
+    pub(crate) fn input_revoked(&self, message: &str) {
+        self.report(EVENTLOG_INFORMATION_TYPE, 6, message);
+    }
+
     /// `id` stays within 1 to 1000, the IDs whose message `EventCreate.exe`, the registered
     /// message file, renders.
     fn report(&self, kind: REPORT_EVENT_TYPE, id: u32, message: &str) {

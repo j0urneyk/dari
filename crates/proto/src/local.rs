@@ -180,16 +180,6 @@ pub enum SecureDesktopControl {
 }
 
 impl SecureDesktopControl {
-    /// `None` is a missing value. Missing or 1 is `On`; anything else is `Off`, so a garbled
-    /// value fails closed. The caller reads a value of another type, or an unreadable key, as a
-    /// value other than 1.
-    pub fn from_stored(value: Option<u32>) -> Self {
-        match value {
-            None | Some(1) => Self::On,
-            Some(_) => Self::Off,
-        }
-    }
-
     /// Whether a helper gets input: only when the app asked for it and the policy is on.
     pub fn helper_input(self, requested: bool) -> bool {
         requested && self == Self::On
@@ -199,6 +189,41 @@ impl SecureDesktopControl {
         match self {
             Self::On => 1,
             Self::Off => 0,
+        }
+    }
+}
+
+/// What reading [`POLICY_VALUE`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyReading {
+    /// No value, or no key.
+    Missing,
+    /// A DWORD.
+    Stored(u32),
+    /// A value that isn't a 4-byte DWORD: another type, or a DWORD of another length.
+    WrongType,
+    /// The registry's error.
+    Unreadable(String),
+}
+
+impl PolicyReading {
+    /// Missing or 1 is `On`. Anything else is `Off`, so a garbled or unreadable value fails
+    /// closed.
+    pub fn control(&self) -> SecureDesktopControl {
+        match self {
+            Self::Missing | Self::Stored(1) => SecureDesktopControl::On,
+            Self::Stored(_) | Self::WrongType | Self::Unreadable(_) => SecureDesktopControl::Off,
+        }
+    }
+}
+
+impl fmt::Display for PolicyReading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing => write!(f, "{POLICY_VALUE} is missing"),
+            Self::Stored(value) => write!(f, "{POLICY_VALUE} is {value}"),
+            Self::WrongType => write!(f, "{POLICY_VALUE} isn't a 4-byte DWORD"),
+            Self::Unreadable(error) => write!(f, "{POLICY_VALUE} could not be read: {error}"),
         }
     }
 }
@@ -776,22 +801,37 @@ mod tests {
     #[test]
     fn a_missing_or_1_policy_is_on_and_anything_else_is_off() {
         use SecureDesktopControl::{Off, On};
-        for (stored, control) in [
-            (None, On),
-            (Some(1), On),
-            (Some(0), Off),
-            (Some(2), Off),
-            (Some(u32::MAX), Off),
+        for (reading, control, said) in [
+            (
+                PolicyReading::Missing,
+                On,
+                "SecureDesktopControl is missing",
+            ),
+            (PolicyReading::Stored(1), On, "SecureDesktopControl is 1"),
+            (PolicyReading::Stored(0), Off, "SecureDesktopControl is 0"),
+            (PolicyReading::Stored(2), Off, "SecureDesktopControl is 2"),
+            (
+                PolicyReading::Stored(u32::MAX),
+                Off,
+                "SecureDesktopControl is 4294967295",
+            ),
+            (
+                PolicyReading::WrongType,
+                Off,
+                "SecureDesktopControl isn't a 4-byte DWORD",
+            ),
+            (
+                PolicyReading::Unreadable("Access is denied. (0x80070005)".into()),
+                Off,
+                "SecureDesktopControl could not be read: Access is denied. (0x80070005)",
+            ),
         ] {
-            assert_eq!(
-                SecureDesktopControl::from_stored(stored),
-                control,
-                "{stored:?}"
-            );
+            assert_eq!(reading.control(), control, "{reading:?}");
+            assert_eq!(reading.to_string(), said);
         }
         for control in [On, Off] {
             assert_eq!(
-                SecureDesktopControl::from_stored(Some(control.as_stored())),
+                PolicyReading::Stored(control.as_stored()).control(),
                 control
             );
         }

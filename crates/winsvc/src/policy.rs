@@ -56,6 +56,7 @@ fn is(error: &Error, code: WIN32_ERROR) -> bool {
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use dari_proto::PolicyReading;
     use windows_registry::{CURRENT_USER, Type};
 
     use super::*;
@@ -91,8 +92,8 @@ mod tests {
         for control in [Off, On, Off] {
             write_in(CURRENT_USER, &path, control).unwrap();
             assert_eq!(
-                SecureDesktopControl::read_from(CURRENT_USER, &path),
-                control
+                PolicyReading::read_from(CURRENT_USER, &path),
+                PolicyReading::Stored(control.as_stored())
             );
             let key = CURRENT_USER.open(&path).unwrap();
             assert_eq!(key.get_type(POLICY_VALUE).unwrap(), Type::U32);

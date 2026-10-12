@@ -2,9 +2,20 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use dari_input::{Injector, InputBackend};
-use dari_proto::{InputDesktop, OsInput};
+use dari_proto::{InputDesktop, KeyCode, NamedKey, OsInput, PolicyReading, SecureDesktopControl};
 
 pub(crate) const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
+
+const MODIFIER_KEYS: [NamedKey; 4] = [
+    NamedKey::Shift,
+    NamedKey::Control,
+    NamedKey::Alt,
+    NamedKey::Meta,
+];
+
+fn is_modifier(key: KeyCode) -> bool {
+    matches!(key, KeyCode::Named(named) if MODIFIER_KEYS.contains(&named))
+}
 
 pub(crate) trait InputDesk {
     fn input_desktop(&mut self) -> Option<InputDesktop>;
@@ -88,29 +99,72 @@ impl<D: InputDesk, B: InputBackend> Follower<D, B> {
         notes
     }
 
-    /// Releases what it holds when attached to a desktop that takes helper input, and forgets
-    /// it anywhere else. Returns how many inputs it released.
-    pub(crate) fn finish(mut self) -> usize {
-        match &self.attachment {
-            Attachment::To(desktop) if desktop.takes_helper_input() => self.injector.release_all(),
-            Attachment::To(_) | Attachment::Failed(_) | Attachment::None => {
-                self.injector.forget();
-                0
-            }
-        }
+    pub(crate) fn finish(self) -> usize {
+        self.end(Injector::release_all).0
     }
+
+    /// A modifier left down would garble what the local user types next, and its release can't
+    /// answer a prompt. Any other release can: a button up over **Yes** completes the click, and
+    /// a Space up activates the focused button.
+    pub(crate) fn revoke(self) -> (usize, usize) {
+        self.end(|injector| injector.release_keys(is_modifier))
+    }
+
+    /// Windows refuses injection from a thread whose desktop is no longer the input desktop.
+    fn end(mut self, release: impl FnOnce(&mut Injector<B>) -> usize) -> (usize, usize) {
+        let still_there = match &self.attachment {
+            Attachment::To(desktop) => {
+                desktop.takes_helper_input()
+                    && self.desk.input_desktop().is_some_and(|now| &now == desktop)
+            }
+            Attachment::Failed(_) | Attachment::None => false,
+        };
+        let released = if still_there {
+            release(&mut self.injector)
+        } else {
+            0
+        };
+        (released, self.injector.forget())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ended {
+    HungUp {
+        released: usize,
+    },
+    Revoked {
+        released: usize,
+        forgot: usize,
+        reading: PolicyReading,
+    },
 }
 
 pub(crate) fn run<D: InputDesk, B: InputBackend>(
     mut follower: Follower<D, B>,
+    mut policy: impl FnMut() -> PolicyReading,
     inputs: &mpsc::Receiver<OsInput>,
     mut note: impl FnMut(Note),
-) -> usize {
+) -> Ended {
     loop {
-        let input = match inputs.recv_timeout(FOLLOW_INTERVAL) {
+        let received = inputs.recv_timeout(FOLLOW_INTERVAL);
+        let reading = policy();
+        if reading.control() == SecureDesktopControl::Off {
+            let (released, forgot) = follower.revoke();
+            return Ended::Revoked {
+                released,
+                forgot,
+                reading,
+            };
+        }
+        let input = match received {
             Ok(input) => Some(input),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return follower.finish(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Ended::HungUp {
+                    released: follower.finish(),
+                };
+            }
         };
         follower
             .step(input.as_ref())
@@ -127,7 +181,7 @@ mod tests {
     use std::time::Instant;
 
     use dari_input::{InjectError, RecordedAction, RecordingBackend};
-    use dari_proto::{KeyCode, MouseButton, NamedKey};
+    use dari_proto::MouseButton;
 
     use super::*;
 
@@ -387,7 +441,16 @@ mod tests {
         let notes = Arc::new(Mutex::new(Vec::new()));
         let thread = {
             let notes = notes.clone();
-            thread::spawn(move || run(follower, &received, |note| notes.lock().unwrap().push(note)))
+            thread::spawn(move || {
+                run(
+                    follower,
+                    || ON,
+                    &received,
+                    |note| {
+                        notes.lock().unwrap().push(note);
+                    },
+                )
+            })
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         while !timeline
@@ -407,7 +470,7 @@ mod tests {
             })
             .unwrap();
         drop(inputs);
-        assert_eq!(thread.join().unwrap(), 2);
+        assert_eq!(thread.join().unwrap(), Ended::HungUp { released: 2 });
         assert_eq!(
             taken(&timeline),
             [
@@ -419,5 +482,234 @@ mod tests {
             ]
         );
         assert_eq!(*notes.lock().unwrap(), []);
+    }
+
+    const ON: PolicyReading = PolicyReading::Stored(1);
+    const OFF: PolicyReading = PolicyReading::Stored(0);
+
+    fn scripted(readings: Vec<PolicyReading>) -> impl FnMut() -> PolicyReading {
+        let mut readings = VecDeque::from(readings);
+        let mut last = ON;
+        move || {
+            if let Some(next) = readings.pop_front() {
+                last = next;
+            }
+            last.clone()
+        }
+    }
+
+    fn sent_then_hung_up(inputs: Vec<OsInput>) -> mpsc::Receiver<OsInput> {
+        let (sender, received) = mpsc::sync_channel(inputs.len());
+        for input in inputs {
+            sender.send(input).unwrap();
+        }
+        received
+    }
+
+    fn left(pressed: bool) -> OsInput {
+        OsInput::Button {
+            button: MouseButton::Left,
+            pressed,
+        }
+    }
+
+    const SHIFT: KeyCode = KeyCode::Named(NamedKey::Shift);
+    const CONTROL: KeyCode = KeyCode::Named(NamedKey::Control);
+    const META: KeyCode = KeyCode::Named(NamedKey::Meta);
+    const SPACE: KeyCode = KeyCode::Named(NamedKey::Space);
+
+    fn key(key: KeyCode) -> OsInput {
+        OsInput::Key { key, pressed: true }
+    }
+
+    #[test]
+    fn turning_the_policy_off_on_winlogon_releases_only_held_modifiers() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let modifiers = MODIFIER_KEYS.map(KeyCode::Named);
+        let mut inputs = vec![left(true), key(SPACE)];
+        inputs.extend(modifiers.map(key));
+        inputs.push(OsInput::Move { x: 5, y: 6 });
+        let received = sent_then_hung_up(inputs);
+        let mut notes = Vec::new();
+        let ended = run(
+            follower,
+            scripted(vec![ON, ON, ON, ON, ON, ON, OFF]),
+            &received,
+            |note| {
+                notes.push(note);
+            },
+        );
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 4,
+                forgot: 2,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline)[7..],
+            [
+                Happened::Did(RecordedAction::Key(META, false)),
+                Happened::Did(RecordedAction::Key(ALT, false)),
+                Happened::Did(RecordedAction::Key(CONTROL, false)),
+                Happened::Did(RecordedAction::Key(SHIFT, false)),
+            ]
+        );
+        assert_eq!(notes, []);
+    }
+
+    #[test]
+    fn turning_the_policy_off_after_a_switch_away_from_winlogon_injects_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, DEFAULT], 0);
+        let received =
+            sent_then_hung_up(vec![key(SHIFT), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 2,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(SHIFT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hang_up_while_the_input_desktop_is_unreadable_releases_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, None], 0);
+        let received = sent_then_hung_up(vec![alt(true), left(true)]);
+        let ended = run(follower, || ON, &received, |_| {});
+        assert_eq!(ended, Ended::HungUp { released: 0 });
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn turning_the_policy_off_while_the_input_desktop_is_unreadable_releases_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON, WINLOGON, None], 0);
+        let received =
+            sent_then_hung_up(vec![key(SHIFT), left(true), OsInput::Move { x: 5, y: 6 }]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 2,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(SHIFT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_off_policy_at_the_first_read_injects_nothing() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = sent_then_hung_up(vec![alt(true)]);
+        let ended = run(follower, scripted(vec![OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 0,
+                reading: OFF
+            }
+        );
+        assert_eq!(taken(&timeline), []);
+    }
+
+    #[test]
+    fn an_unreadable_policy_ends_input_and_says_why() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = sent_then_hung_up(vec![alt(true)]);
+        let unreadable = PolicyReading::Unreadable("Access is denied. (0x80070005)".into());
+        let ended = run(
+            follower,
+            scripted(vec![unreadable.clone()]),
+            &received,
+            |_| {},
+        );
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 0,
+                forgot: 0,
+                reading: unreadable
+            }
+        );
+        assert_eq!(taken(&timeline), []);
+    }
+
+    #[test]
+    fn an_off_policy_when_the_reader_hangs_up_revokes_instead_of_releasing_everything() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let received = sent_then_hung_up(vec![alt(true), left(true)]);
+        let ended = run(follower, scripted(vec![ON, ON, OFF]), &received, |_| {});
+        assert_eq!(
+            ended,
+            Ended::Revoked {
+                released: 1,
+                forgot: 1,
+                reading: OFF
+            }
+        );
+        assert_eq!(
+            taken(&timeline),
+            [
+                Happened::Attached(InputDesktop::Winlogon),
+                Happened::Did(RecordedAction::Key(ALT, true)),
+                Happened::Did(RecordedAction::Button(MouseButton::Left, true)),
+                Happened::Did(RecordedAction::Key(ALT, false)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_idle_thread_notices_the_policy_within_a_second() {
+        let (follower, timeline) = follower(vec![WINLOGON], 0);
+        let (inputs, received) = mpsc::sync_channel::<OsInput>(1);
+        let (ended, end) = mpsc::channel();
+        thread::spawn(move || {
+            let _sent = ended.send(run(
+                follower,
+                scripted(vec![ON, ON, OFF]),
+                &received,
+                |_| {},
+            ));
+        });
+        assert_eq!(
+            end.recv_timeout(Duration::from_secs(1)),
+            Ok(Ended::Revoked {
+                released: 0,
+                forgot: 0,
+                reading: OFF
+            })
+        );
+        assert_eq!(
+            taken(&timeline),
+            [Happened::Attached(InputDesktop::Winlogon)]
+        );
+        drop(inputs);
     }
 }

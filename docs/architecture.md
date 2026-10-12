@@ -409,12 +409,20 @@ while idle and before each event. When the desktop changes, it opens a new handl
 Windows cleared key state at the switch. It replays
 input through the `Injector` and `EnigoBackend` only while it is attached to `Winlogon`, and
 drops input while an attach fails. When the app sends `Stop`, closes its pipe, or exits while the thread is attached to
-`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. A helper started without input has no input thread
-and drops every `Input`.
+`Winlogon`, the thread releases what it holds there, and the helper logs how many inputs it released and why. It
+releases only while `Winlogon` is still the input desktop it reads; when it can't read the input desktop, it releases
+nothing and forgets what it holds. A helper started without input has no input thread
+and drops every `Input`. The input thread also reads `SecureDesktopControl` after every receive, input or 100 ms
+timeout, before it injects anything. When it reads off while attached to `Winlogon`, it releases the held modifier keys
+(`MODIFIER_KEYS` in `crates/winsvc/src/injector.rs`: Shift, Ctrl, Alt, and the Windows key) under the same input
+desktop rule, and forgets everything else it holds without releasing it. It then writes event 6 and ends, so the helper
+goes on like one started without input.
 
 The service reads the `SecureDesktopControl` DWORD under `HKLM\SOFTWARE\Policies\Dari` for every request
 through `SecureDesktopControl::read` (`crates/proto/src/registry.rs`, Windows only, through the safe
-`windows-registry` API). A missing value or a DWORD of 1 is on, and anything else is off. At
+`windows-registry` API). It goes through `PolicyReading`, which keeps what the read found: a missing value (also a
+key deleted while open), a DWORD, another type, or the registry's error. A missing value or a DWORD of 1 is on, and
+anything else is off. At
 off, `admit` turns `StartHelper { input: true }` into `input: false` and refuses `SendSas` with `PolicyOff`.
 `dari-service.exe policy on|off` writes the value and needs an administrator. The host settings' switch
 (`secure_desktop/win/policy.rs`, re-exported from `dari-session`) reads the value through the same function and
@@ -428,7 +436,8 @@ message passes `Validate`. The service and the helper write to the Application e
 message file and `uninstall` removes it. They log the service's start, a pipe it can't create, each helper it starts
 and each client it refuses (at most 10 refusals a minute; more are closed without a reply or a log entry), and the
 helper's user, integrity level, session, privileges, and why it exited. The entry for a helper started with input
-is a warning with ID 3, and each `policy on|off` writes ID 4, naming the user who changed the value.
+is a warning with ID 3, each `policy on|off` writes ID 4, naming the user who changed the value, and a helper whose
+input thread reads the policy off writes ID 6.
 
 `HelperStarted { secure_attention }` tells the app whether the service lets it ask for Ctrl+Alt+Del: only for a
 helper with input in the console session. The link keeps that grant, and any refusal of `SendSas` but `Failed` takes it

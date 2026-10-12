@@ -42,7 +42,8 @@ pub(crate) struct SecureViewArgs {
     /// it itself by sending Ctrl+Alt+Del once the host says it can. KEYS is what the viewer
     /// sends once the screen has settled: `alt-y`, `esc`, `password` (a click, the
     /// --secret-file text, Enter), `hold-alt-leave` (holds Alt and disconnects; last screen
-    /// only), or `hold-f20` (holds F20 until the session ends). Without KEYS the script
+    /// only), `hold-f20` (holds F20 until the session ends), or `hold-shift-space` (presses Shift,
+    /// then Space, and holds both until the session ends). Without KEYS the script
     /// dismisses the screen.
     #[arg(long = "screen", required = true, value_parser = Screen::parse)]
     screens: Vec<Screen>,
@@ -63,6 +64,9 @@ pub(crate) struct SecureViewArgs {
     /// once typing starts, and `RUST_LOG` is ignored for the whole run.
     #[arg(long)]
     secret_file: Option<PathBuf>,
+    /// Before sending the keys of every screen that has keys, wait until this file exists.
+    #[arg(long)]
+    send_when: Option<PathBuf>,
     /// After the last screen, keep the session open until this file exists.
     #[arg(long)]
     finish_when: Option<PathBuf>,
@@ -148,6 +152,9 @@ enum Keys {
     /// F20 has no Windows binding, so a key left down by a bug changes nothing the later cases
     /// type.
     HoldF20,
+    /// Space goes down last: a key pressed after it cancels the focused button's press, and with
+    /// Alt down Space is a system key.
+    HoldShiftSpace,
 }
 
 impl Keys {
@@ -158,6 +165,7 @@ impl Keys {
             "password" => Self::Password,
             "hold-alt-leave" => Self::HoldAltLeave,
             "hold-f20" => Self::HoldF20,
+            "hold-shift-space" => Self::HoldShiftSpace,
             _ => return None,
         })
     }
@@ -171,8 +179,8 @@ impl Screen {
                 text,
                 Keys::parse(keys).ok_or_else(|| {
                     format!(
-                        "unknown keys {keys:?}; try alt-y, esc, password, hold-alt-leave, or \
-                         hold-f20"
+                        "unknown keys {keys:?}; try alt-y, esc, password, hold-alt-leave, \
+                         hold-f20, or hold-shift-space"
                     )
                 })?,
             ),
@@ -451,7 +459,7 @@ async fn check(
     if outcome == Outcome::Done
         && let Some(file) = &args.finish_when
     {
-        finish_when(args, &mut feed.session, &mut verdict, file).await;
+        wait_for_file(args, &mut feed.session, &mut verdict, file).await;
     }
 
     let session = &mut feed.session;
@@ -487,12 +495,12 @@ async fn check(
     verdict
 }
 
-async fn finish_when(
+async fn wait_for_file(
     args: &SecureViewArgs,
     session: &mut Session,
     verdict: &mut Verdict,
     file: &Path,
-) {
+) -> bool {
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
     while !file.exists() {
         if session.ended.is_some() || Instant::now() >= deadline {
@@ -501,7 +509,7 @@ async fn finish_when(
                 file.display(),
                 args.timeout
             ));
-            return;
+            return false;
         }
         session
             .wait_until(Duration::from_millis(250), |session| {
@@ -509,6 +517,7 @@ async fn finish_when(
             })
             .await;
     }
+    true
 }
 
 async fn view_screens(
@@ -696,6 +705,11 @@ async fn view_screen(
     let seen = feed.session.screen_history.len();
 
     if screen.keys != Keys::None {
+        if let Some(file) = &args.send_when
+            && !wait_for_file(args, &mut feed.session, verdict, file).await
+        {
+            return Outcome::Failed;
+        }
         if !send_keys(args, keystrokes, feed, verdict, screen).await {
             return Outcome::Failed;
         }
@@ -832,6 +846,10 @@ async fn send_keys(
             tokio::time::sleep(HOLD_BEFORE_LEAVING).await;
         }
         Keys::HoldF20 => press(viewer, KeyCode::Named(NamedKey::Function(20)), true).await,
+        Keys::HoldShiftSpace => {
+            press(viewer, KeyCode::Named(NamedKey::Shift), true).await;
+            press(viewer, KeyCode::Named(NamedKey::Space), true).await;
+        }
         Keys::Password => {
             let Some(keystrokes) = keystrokes else {
                 verdict.fail(format!("{}: no secret to type", screen.label));
@@ -1595,6 +1613,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn sends_the_keys_only_once_the_send_file_appears() {
+        let scene = Arc::new(Mutex::new(Scene::Desktop));
+        let set = |next| *scene.lock().unwrap() = next;
+        let send = out_dir(&["send"]).with_extension("go");
+        let _absent = std::fs::remove_file(&send);
+        let mut run = start_check(
+            &scene,
+            &[
+                "--screen",
+                "secure-policy-revoke=alt-y",
+                "--send-when",
+                send.to_str().unwrap(),
+                "--settle-ms",
+                "500",
+                "--timeout",
+                "15",
+            ],
+        )
+        .await;
+        run.expect_line("READY").await;
+        set(Scene::Prompt);
+        run.expect_line("SEEN secure-policy-revoke").await;
+        run.expect_silence().await;
+        assert_eq!(run.keys(1).await, [], "no key before the file appears");
+        std::fs::write(&send, "").unwrap();
+        run.expect_line("SENT secure-policy-revoke").await;
+        let alt = named(NamedKey::Alt);
+        let y = KeyCode::Character('y');
+        assert_eq!(
+            run.keys(4).await,
+            [(alt, true), (y, true), (y, false), (alt, false)]
+        );
+        set(Scene::Desktop);
+        run.expect_line("BACK secure-policy-revoke").await;
+        assert_eq!(run.finish().await, ExitCode::SUCCESS);
+        std::fs::remove_file(send).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn types_the_secret_and_saves_no_frame_once_typing_starts() {
         let scene = Arc::new(Mutex::new(Scene::Desktop));
         let secret = out_dir(&["secret"]).with_extension("txt");
@@ -1694,6 +1751,10 @@ mod tests {
             (
                 "killed:notice=hold-f20",
                 screen("killed", Expect::Notice, Keys::HoldF20),
+            ),
+            (
+                "held=hold-shift-space",
+                screen("held", Expect::Captured, Keys::HoldShiftSpace),
             ),
             (
                 "again:present=esc",
