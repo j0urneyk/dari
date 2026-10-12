@@ -106,6 +106,8 @@ fn run_gui() -> anyhow::Result<()> {
     gpui_kit::application()
         .with_assets(style::AppAssets)
         .run(move |cx| {
+            #[cfg(target_os = "macos")]
+            keymap::deliver_command_key_ups();
             init_ui(cx);
             runtime::TokioRuntime::install(runtime, cx);
             state::AppState::install(data_directory, cx);
@@ -137,6 +139,8 @@ pub mod test_support {
     pub use crate::home::Home;
     #[cfg(target_os = "macos")]
     pub use crate::keymap::HidEvents;
+    #[cfg(target_os = "macos")]
+    pub use crate::keymap::deliver_command_key_ups;
     pub use crate::runtime::TokioRuntime;
     pub use crate::settings::Settings;
     pub use crate::state::AppState;

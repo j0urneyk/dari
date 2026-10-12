@@ -490,7 +490,7 @@ the main thread, so the GUI tests (`tests/gui.rs`, `harness = false`) need to st
 | `viewer.rs` | Viewer window: paints frames on a `canvas` with `paint_image` and turns input into protocol events. Toolbar (display, quality, frame rate menu, frames per second and round-trip latency, disconnect) and the overlays for waiting, approval, and a finished session |
 | `video_layout.rs` | Letterbox computation and window → normalized coordinate conversion |
 | `transfers.rs` | The transfer list shown in the host panel and under the viewer toolbar (progress, save/decline, cancel, show in folder) |
-| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode`, and on macOS, telling a modifier chord macOS consumed from a deliberate modifier tap |
+| `keymap.rs` | GPUI `Keystroke` → protocol `KeyCode`, and on macOS, telling a modifier chord macOS consumed from a deliberate modifier tap and handing windows the key releases AppKit drops while ⌘ is down |
 | `input_source.rs` (macOS) | Reads the Mac's selected keyboard input source and decides when a switch of it becomes a Hangul/English tap on the host |
 | `state.rs`, `runtime.rs` | App state (device certificate, settings) and the tokio runtime, kept as GPUI globals |
 | `settings.rs`, `config.rs` | Saving and loading `settings.toml`, the data directory, address and ID parsing, local address list |
@@ -511,6 +511,10 @@ to a fresh atlas texture, takes about 0.25 ms of the 6.9 ms a 144 fps frame allo
 gpui-kit's `Root` uses Tab, Shift-Tab, and ⌘C/Ctrl+C for focus movement and copying. In the remote screen's key
 context (`RemoteScreen`) these keys are unbound with `NoAction` so they reach the remote device. When the window
 loses focus, every held key, button, and modifier is released so nothing stays pressed on the remote side.
+
+AppKit never sends a window the release of a key let go while ⌘ is down, so ⌘A would leave A pressed on the host
+until the window lost focus. At launch the app adds a local key-up monitor (`keymap::deliver_command_key_ups`) that
+hands those releases to their window itself, as winit and GLFW do.
 
 macOS consumes the keys that switch its input source (Caps Lock, Ctrl+Space, the Globe key), so no Hangul/English
 key ever reaches the viewer. Instead, the viewer subscribes to GPUI's `on_keyboard_layout_change`, which the macOS

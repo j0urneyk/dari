@@ -145,6 +145,40 @@ impl Chord {
     }
 }
 
+/// `-[NSApplication sendEvent:]` never hands a window the release of a key let go while ⌘ is down,
+/// so ⌘A would leave A pressed on the host until the window lost focus.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code, reason = "installs an AppKit event monitor")]
+pub fn deliver_command_key_ups() {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit passes a live event for the length of the call.
+        let key_up = unsafe { event.as_ref() };
+        if key_up
+            .modifierFlags()
+            .contains(NSEventModifierFlags::Command)
+            && let Some(window) = key_up.window(main_thread)
+        {
+            window.sendEvent(key_up);
+            return std::ptr::null_mut();
+        }
+        event.as_ptr()
+    });
+    // SAFETY: the handler returns the event AppKit passed it, or null.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyUp, &handler)
+    };
+    std::mem::forget(monitor);
+}
+
 /// F20, which no shortcut binds on the host, so tapping it only turns a modifier tap into a chord.
 #[cfg(target_os = "macos")]
 pub(crate) const CHORD_MASK: [InputEvent; 2] = [
